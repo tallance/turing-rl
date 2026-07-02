@@ -39,6 +39,10 @@ echo "============================================"
 
 # Args validated during our earlier judge_smoke run: dtype bfloat16, drop
 # --enforce-eager, let vLLM auto-detect quantization. TP=8 across all 8 A100s.
+# --reasoning-parser deepseek_r1: splits <think>...</think> out of .content into
+# a separate .reasoning field, matching what OpenRouter returns for the paper's
+# default judge (`reasoning: {enabled: true}` in shared/api_client.py:66-68).
+# Without this flag Qwen3.5-397B thinking is effectively off for JSON-mode calls.
 $PY -m vllm.entrypoints.openai.api_server \
   --model "$MODEL" \
   --download-dir /home/lancewicki/data/hf_cache \
@@ -46,4 +50,5 @@ $PY -m vllm.entrypoints.openai.api_server \
   --max-model-len 16384 \
   --gpu-memory-utilization 0.85 \
   --dtype bfloat16 \
+  --reasoning-parser deepseek_r1 \
   --host 0.0.0.0 --port $PORT
