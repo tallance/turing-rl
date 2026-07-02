@@ -58,3 +58,34 @@ duration of the repro, mark it `PERSISTENT`.
   script under `bash_scripts/grpo/`. Listed here anyway because it lives
   inside their tree and could confuse a `git status` reader.
 
+---
+
+## PERSISTENT: `shared/api_client.py` — judge response dump hook
+
+- **Original**: `post_chat_async` returned `_extract_chat_content(await resp.json())`
+  inline; no place to observe judge payloads/responses.
+- **Patched to**: two new helpers (`_should_dump_judge`, `_dump_judge_response`)
+  and a small refactor of the return-path inside `post_chat_async` that calls
+  them after parsing the response. Also adds `import hashlib`.
+- **Env-gated (off by default)**:
+  - `PERSONA_JUDGE_DUMP_RATE` (float, default `0.0`) — sample rate 0..1.
+    Deterministic per-payload (md5-hashed) so a given payload is always
+    dumped or always skipped.
+  - `PERSONA_JUDGE_DUMP_DIR` (path) — parent dir for per-worker JSONL files.
+    Files: `${DIR}/judge-{SLURM_JOB_ID}-{pid}.jsonl`.
+  - When both unset, the helpers no-op; code path is functionally identical
+    to upstream.
+- **Row shape**:
+  `{ts, worker_pid, latency_ms, model, payload_messages, response}` — full
+  request messages + full response body. `.default=str` on the JSON writer
+  guards against non-serializable fields.
+- **Why**: to inspect what the Turing judge actually returns during GRPO
+  training. First smoke run (job 8921) had ~100% JSON parse failures because
+  we truncated responses at 512 tokens; without dumped bodies we couldn't
+  tell that. Also useful for building post-hoc datasets and debugging
+  reward-signal quality.
+- **Sync path (`post_chat_sync`) intentionally not touched.** Its only
+  caller (`data/sft/generate_cot.py`) already persists its output as parquet.
+- **Reverted**: no. Persistent for the duration of the repro; safe because
+  it's a no-op unless the env vars are set.
+

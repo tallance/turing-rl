@@ -53,6 +53,12 @@ export PERSONA_OPENAI_MAX_RETRIES=3
 # 16384 even for our ~9k-token prompts and easily fits a full {"rating": N, "explanation": "..."}.
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=2048
 
+# Dump every judge call for the smoke (~260 calls * ~15KB = ~4MB). See
+# shared/api_client.py _dump_judge_response. Real runs should drop this to 0.01
+# or unset it entirely.
+export PERSONA_JUDGE_DUMP_RATE=1.0
+export PERSONA_JUDGE_DUMP_DIR=/home/lancewicki/tmp/judge_dumps
+
 # === Wandb ===
 export WANDB_MODE=online
 export WANDB_PROJECT=turing-rl-smoke
