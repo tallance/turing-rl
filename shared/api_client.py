@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -105,6 +106,58 @@ def _extract_chat_content(data: Any) -> str:
     raise ValueError("OpenAI response missing choices[0].message.content")
 
 
+def _should_dump_judge(payload: dict) -> bool:
+    """Deterministic per-payload sampling gate.
+
+    Reads PERSONA_JUDGE_DUMP_RATE (float, default 0.0 = off). If 0, off.
+    If >=1, always on. Otherwise hashes the payload and dumps if the hash
+    bucket falls under the rate. Same payload always makes the same decision.
+    """
+    try:
+        rate = float(os.environ.get("PERSONA_JUDGE_DUMP_RATE", "0.0"))
+    except ValueError:
+        return False
+    if rate <= 0:
+        return False
+    if rate >= 1:
+        return True
+    blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    bucket = int.from_bytes(hashlib.md5(blob).digest()[:8], "big") / (1 << 64)
+    return bucket < rate
+
+
+def _dump_judge_response(payload: dict, response: Any, *, latency_ms: float) -> None:
+    """Append one JSONL row per judge call to a per-worker file.
+
+    File: ${PERSONA_JUDGE_DUMP_DIR}/judge-{slurm_job}-{pid}.jsonl
+    Row : {ts, worker_pid, latency_ms, model, payload_messages, response}
+
+    Safe under aiohttp concurrency: writes are per-process (Ray workers are
+    separate PIDs) and a single JSON line is <PIPE_BUF so append is atomic
+    on Linux. Any failure is swallowed so dumping never breaks training.
+    """
+    try:
+        dump_dir = os.environ.get("PERSONA_JUDGE_DUMP_DIR")
+        if not dump_dir:
+            return
+        os.makedirs(dump_dir, exist_ok=True)
+        job_id = os.environ.get("SLURM_JOB_ID", "nojob")
+        path = os.path.join(dump_dir, f"judge-{job_id}-{os.getpid()}.jsonl")
+        row = {
+            "ts": time.time(),
+            "worker_pid": os.getpid(),
+            "latency_ms": round(latency_ms, 3),
+            "model": payload.get("model"),
+            "payload_messages": payload.get("messages"),
+            "response": response,
+        }
+        line = json.dumps(row, ensure_ascii=False, default=str) + "\n"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as exc:  # noqa: BLE001 - never fail training over logging
+        print(f"[judge_dump] failed to append: {type(exc).__name__}: {exc}", flush=True)
+
+
 async def post_chat_async(
     session,
     payload: dict,
@@ -125,6 +178,7 @@ async def post_chat_async(
         try:
             retry_after = None
             async with semaphore:
+                t0 = time.monotonic()
                 async with session.post(url, headers=headers, json=payload) as resp:
                     if resp.status == 429:
                         body = await resp.text()
@@ -148,7 +202,13 @@ async def post_chat_async(
                                 flush=True,
                             )
                         resp.raise_for_status()
-                        return _extract_chat_content(await resp.json())
+                        data = await resp.json()
+                        content = _extract_chat_content(data)
+                        if _should_dump_judge(payload):
+                            _dump_judge_response(
+                                payload, data, latency_ms=(time.monotonic() - t0) * 1000.0
+                            )
+                        return content
             if retry_after is not None:
                 await asyncio.sleep(retry_after)
                 continue
