@@ -103,3 +103,13 @@ bash_scripts/Untitled
 # Python bytecode (robust against data/ un-ignores)
 *.pyc
 *.pyo
+
+# ==== our (lancewicki) additions ====
+# IDE state
+.vscode/
+# Hydra run dirs (verl writes here on every launch)
+outputs/
+# Generated smoke datasets (regenerated from data/prism/build.py + generate_cot.py)
+data/prism/history_smoke/
+data/prism/prism_history_s42_sft40_grpo60/
+data/sft/qwen3-8b_prism_smoke_sft_cot.*
