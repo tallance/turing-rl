@@ -47,7 +47,7 @@ $PY -m vllm.entrypoints.openai.api_server \
   --model "$MODEL" \
   --download-dir /home/lancewicki/data/hf_cache \
   --tensor-parallel-size 8 \
-  --max-model-len 16384 \
+  --max-model-len 32768 \
   --gpu-memory-utilization 0.85 \
   --dtype bfloat16 \
   --reasoning-parser deepseek_r1 \
