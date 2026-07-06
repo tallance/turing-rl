@@ -48,10 +48,11 @@ export JUDGE_MODEL="Qwen/Qwen3.5-397B-A17B-GPTQ-Int4"
 unset OPENROUTER_API_KEY OPENROUTER_PROVIDER_ORDER
 export PERSONA_OPENAI_TIMEOUT_SECONDS=600
 export PERSONA_OPENAI_MAX_RETRIES=3
-# Judge reply is a small JSON; earlier 512 truncated ~all responses mid-explanation
-# -> every parse failed -> reward fallback to -0.15. 2048 is far under judge --max-model-len
-# 16384 even for our ~9k-token prompts and easily fits a full {"rating": N, "explanation": "..."}.
-export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=2048
+# Judge reply is a small JSON, but --reasoning-parser deepseek_r1 on the judge
+# enables extended thinking: model burns most of the budget inside <think> before
+# emitting JSON. 8192 matches the paper's default (shared/judge_utils.py:388,
+# reward.py:357). Fits within judge --max-model-len=16384 even for our ~9k prompts.
+export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 
 # Dump every judge call for the smoke (~260 calls * ~15KB = ~4MB). See
 # shared/api_client.py _dump_judge_response. Real runs should drop this to 0.01
