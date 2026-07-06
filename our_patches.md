@@ -89,3 +89,23 @@ duration of the repro, mark it `PERSISTENT`.
 - **Reverted**: no. Persistent for the duration of the repro; safe because
   it's a no-op unless the env vars are set.
 
+---
+
+## PERSISTENT: `shared/api_client.py` — `_extract_chat_content` returns "" instead of raising
+
+- **Original** (line 106): `raise ValueError("OpenAI response missing choices[0].message.content")`.
+- **Patched to**: `return ""`.
+- **Why**: with `--reasoning-parser deepseek_r1` on the judge server, if the
+  model hits `finish_reason=length` inside `<think>` before emitting the
+  closing tag, vLLM returns `choices[0].message.content=None`. The raise
+  bubbles past `post_chat_async`'s retry loop (`ValueError` isn't caught by
+  the `aiohttp.ClientError | asyncio.TimeoutError` filter — actually it IS
+  caught, but after 3 attempts it re-raises and kills the whole GRPO step).
+- **Effect after patch**: empty content flows down to `_extract_json` in
+  `training/grpo/reward.py:360`, which returns `None`. Reward code retries
+  the judge call up to 3 times; if all fail, `_turing_parse_failure_result`
+  emits a `-0.15` fallback reward like any other parse failure. Training
+  continues, wandb reports the failure rate as elevated `-0.15` incidence.
+- **Reverted**: no. Persistent; the fallback is strictly safer than
+  crashing.
+

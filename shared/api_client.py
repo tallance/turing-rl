@@ -103,7 +103,12 @@ def _extract_chat_content(data: Any) -> str:
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
         return content
-    raise ValueError("OpenAI response missing choices[0].message.content")
+    # OUR PATCH: when reasoning-parser is enabled and the model hits `length`
+    # inside <think>, vLLM returns choices[0].message.content=None. Rather than
+    # raising (which propagates past the retry loop and kills the whole run),
+    # return "" so downstream _extract_json returns None and the reward code
+    # falls back to a -0.15 penalty like any other parse failure.
+    return ""
 
 
 def _should_dump_judge(payload: dict) -> bool:
