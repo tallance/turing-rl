@@ -46,8 +46,13 @@ export OPENAI_API_BASE="http://${JUDGE_HOST}:${JUDGE_PORT}/v1"
 export OPENAI_API_KEY="dummy-self-hosted"
 export JUDGE_MODEL="Qwen/Qwen3.5-397B-A17B-GPTQ-Int4"
 unset OPENROUTER_API_KEY OPENROUTER_PROVIDER_ORDER
-export PERSONA_OPENAI_TIMEOUT_SECONDS=600
+export PERSONA_OPENAI_TIMEOUT_SECONDS=1200
 export PERSONA_OPENAI_MAX_RETRIES=3
+# With --reasoning-parser deepseek_r1 + 32k KV, judge generation is slow
+# (~30-60s per call). At default 512-way concurrency, calls compete for KV
+# blocks and timeout. Cap at 4 concurrent judge calls so each gets full KV
+# access and finishes within the timeout.
+export TURING_JUDGE_MAX_CONCURRENCY=4
 # Judge reply is a small JSON, but --reasoning-parser deepseek_r1 on the judge
 # enables extended thinking: model burns most of the budget inside <think> before
 # emitting JSON. 8192 matches the paper's default (shared/judge_utils.py:388,
