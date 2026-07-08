@@ -1751,6 +1751,10 @@ import pandas as pd
 from shared.judge_prompts import TURING_PROMPT
 
 
+CALL_ID_COUNTER = {"i": 0}
+CALL_ID_LOCK = None  # created inside main_async
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--pairs", type=Path, required=True)
@@ -1793,7 +1797,14 @@ async def main_async() -> None:
     os.environ["OPENAI_API_KEY"] = "dummy"
 
     import aiohttp
-    from training.grpo.reward import _score_pairwise_likert_with_info
+    from training.grpo.reward import (
+        _score_pairwise_likert_with_info,
+        _build_reward_dump_row,
+        _dump_reward_call,
+        _judge_call_meta,
+        clip_turing_judge_score,
+        adjust_turing_raw_reward,
+    )
 
     pairs = pd.read_parquet(args.pairs)
     if args.max_pairs is not None:
@@ -1813,6 +1824,7 @@ async def main_async() -> None:
 
     connector = aiohttp.TCPConnector(limit=total_concurrency + 8)
     session_timeout = aiohttp.ClientTimeout(total=1200)
+    call_id_lock = asyncio.Lock()
     async with aiohttp.ClientSession(connector=connector, timeout=session_timeout) as session:
         async def do_one(idx: int, row) -> None:
             async with sem:
@@ -1823,8 +1835,14 @@ async def main_async() -> None:
                 # Override per-call by setting env var on this task? No -
                 # api_client reads env at call time. Simpler: patch by env var each call.
                 os.environ["OPENAI_API_BASE"] = ep
+                async with call_id_lock:
+                    CALL_ID_COUNTER["i"] += 1
+                    call_id = CALL_ID_COUNTER["i"]
+                # Prime the ContextVar the reward layer uses to bubble up
+                # prompt/raw_content/reasoning/latency/finish_reason from _openai_chat.
+                _judge_call_meta.set({})
                 try:
-                    await _score_pairwise_likert_with_info(
+                    pairwise_result = await _score_pairwise_likert_with_info(
                         session=session,
                         api_key="dummy",
                         response=row["generated"],
@@ -1838,6 +1856,31 @@ async def main_async() -> None:
                         target_idx=int(row["target_idx"]),
                         randomization_seed_material=f"{args.seed}::{row['pair_id']}",
                     )
+                    # Reward-layer dump: reproduces what compute_score would
+                    # emit at GRPO time, so the GUI viewer (scripts/dump_viewer.py)
+                    # renders sweep rows with the full Human A/B + rubric + reward tabs.
+                    turing_score_raw = float(pairwise_result.get("score", 4.0))
+                    turing_score_clipped = clip_turing_judge_score(turing_score_raw)
+                    unadjusted = (turing_score_clipped - 1.0) / 6.0
+                    reward = adjust_turing_raw_reward(unadjusted)
+                    _dump_reward_call(_build_reward_dump_row(
+                        call_id=call_id,
+                        pairwise_result=pairwise_result,
+                        response=row["generated"],
+                        ground_truth=row["human"],
+                        context=row["context"],
+                        user_history=row["user_history"],
+                        extra_info={
+                            "user_id": row["user_id"],
+                            "post_id": row["post_id"],
+                            "target_idx": int(row["target_idx"]),
+                            "persona": row.get("persona", "") or "",
+                        },
+                        reward=reward,
+                        turing_judge_score_raw=turing_score_raw,
+                        turing_judge_score_clipped=turing_score_clipped,
+                        judge_meta=_judge_call_meta.get(),
+                    ))
                 except Exception as exc:
                     print(f"[sweep] pair {idx} failed: {type(exc).__name__}: {exc}", flush=True)
 
@@ -2316,6 +2359,13 @@ def main() -> None:
                 "post_id": row["post_id"],
                 "target_idx": row["target_idx"],
                 "generated_is_b": generated_is_b,
+                # Copy the pair text so the dump viewer can render context /
+                # response / ground_truth tabs without needing to re-join
+                # against the pair parquet.
+                "generated": row["generated"],
+                "human": row["human"],
+                "context": row["context"],
+                "user_history": row["user_history"],
             })
 
     print(f"[offline] {len(prompts)} prompts total, TP={args.tensor_parallel_size}", flush=True)
@@ -2326,13 +2376,49 @@ def main() -> None:
 
     dump_path = args.out_dir / "reward" / f"reward-offline-{os.getpid()}.jsonl"
     with dump_path.open("w") as fh:
-        for meta, out in zip(metadata, outputs):
+        for i, (meta, out) in enumerate(zip(metadata, outputs)):
             first = out.outputs[0]
-            row = dict(meta)
-            row["judge_raw_content"] = first.text
-            row["judge_finish_reason"] = first.finish_reason
-            row["judge_model"] = MODEL_ID
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+            raw_text = first.text
+            # Emit rows in the SAME shape scripts/dump_viewer.py expects for
+            # reward-layer dumps (see training/grpo/reward.py:_build_reward_dump_row).
+            # generated_is_b + human_side power the Human A/B badge; response +
+            # ground_truth power the tab views; judge_raw_content powers the
+            # rubric parse. Fields we don't compute (reward, penalties) are
+            # zeroed — the viewer tolerates missing/zero values.
+            generated_is_b = bool(meta["generated_is_b"])
+            row = {
+                "ts": time.time(),
+                "call_id": i,
+                "worker_pid": os.getpid(),
+                "user_id": meta["user_id"],
+                "post_id": meta["post_id"],
+                "target_idx": meta["target_idx"],
+                "persona": "",
+                "generated_is_b": generated_is_b,
+                "human_side": "A" if generated_is_b else "B",
+                "randomized_order": "gt_first" if not generated_is_b else "gen_first",
+                "response": meta.get("generated", ""),
+                "ground_truth": meta.get("human", ""),
+                "context": meta.get("context", ""),
+                "user_history": meta.get("user_history", ""),
+                "final_reward": 0.0,
+                "turing_judge_score_raw": 0.0,
+                "turing_judge_score_clipped": 0.0,
+                "source_copy_penalty": 0.0,
+                "assistant_like_penalty": 0.0,
+                "wrong_target_or_role_penalty": 0.0,
+                "unsupported_adversarial_reframing_penalty": 0.0,
+                "rating_gt_first": None,
+                "rating_gen_first": None,
+                "judge_prompt": "",
+                "judge_raw_content": raw_text,
+                "judge_reasoning": "",
+                "judge_latency_ms": None,
+                "judge_finish_reason": first.finish_reason,
+                "judge_model": MODEL_ID,
+                "judge_usage": {},
+            }
+            fh.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
 
     meta_out = {
         "model": MODEL_ID,
@@ -2817,7 +2903,73 @@ git commit -m "add sweep analyzer: aggregate, kappa, plots"
 
 ---
 
-## Task 22: Results-tree README
+## Task 22: Verify GUI dump-viewer renders sweep dumps
+
+**Files:** (no new files; runs the existing `scripts/dump_viewer.py`)
+
+- [ ] **Step 1: Start the viewer on the login pod against one completed cell**
+
+Pick a cell that finished during Task 18. Then, on the **login pod** (not a compute node):
+
+```bash
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
+cd /home/lancewicki/projects/turing-rl && \
+  /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python \
+    scripts/dump_viewer.py \
+    --dumps /home/lancewicki/projects/turing-rl/results/2026-07-08-judge-sweep/raw/sweep/qwen35-397b/off \
+    --port 8082
+```
+
+Expected: prints `loaded N rows from ...  (reward=~1760, http=~1760)` and `serving on http://127.0.0.1:8082/`.
+
+- [ ] **Step 2: SSH-tunnel from your Mac and open the viewer**
+
+```bash
+# From Mac:
+ssh -L 8082:localhost:8082 <cluster-host>
+# Then open http://localhost:8082/ in your browser.
+```
+
+- [ ] **Step 3: Sanity-check every viewer tab renders for a random reward row**
+
+Click a reward-schema row (blue tag). Confirm:
+- Header shows: `Human: A` or `Human: B` badge, non-null rating, non-null final reward.
+- Tab "response" shows the generator's output text.
+- Tab "ground_truth" shows the human reply text.
+- Tab "prompt" shows the assembled Turing prompt (long text with `<|User History|>`, `<|Context|>`, Response A/B blocks, source-copy watchlist).
+- Tab "raw" shows the judge's raw JSON (or truncated fragment if `finish_reason=length`).
+- Tab "reasoning" shows the judge's `<think>` content for thinking-on cells (empty for thinking-off).
+- Tab "judge" shows parsed rubric fields when present.
+- Tab "metadata" shows `generated_is_b`, `human_side`, `randomized_order`, latency, model.
+
+- [ ] **Step 4: Sanity-check the HTTP tab set for one HTTP row**
+
+Filter sidebar → `schema: http`. Click a row. Confirm:
+- Tab "prompt" shows the wire prompt (same string as reward "prompt" tab).
+- Tab "response" shows the raw response body.
+- Tab "parsed" shows extracted JSON if it parses.
+- Tab "metadata" shows latency, tokens, http_ok flag.
+
+- [ ] **Step 5: (Optional) Point viewer at the whole sweep tree for cross-cell browsing**
+
+```bash
+/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python \
+    scripts/dump_viewer.py \
+    --dumps /home/lancewicki/projects/turing-rl/results/2026-07-08-judge-sweep/raw/sweep \
+    --port 8082
+```
+
+Confirm sidebar loads all cells (row count in header should be roughly `10 cells × 3520 rows/cell = 35200`).
+
+- [ ] **Step 6: Stop the viewer (Ctrl-C) and record any UI issues**
+
+If a tab is empty when it shouldn't be, note the row's cell/mode and file the fix as a follow-up. Do NOT modify `scripts/dump_viewer.py` — that's out of scope for this project. The sweep-side fix would be in `scripts/run_judge_sweep_cell.py`'s dump payload or `scripts/run_offline_sweep_cell.py`'s row shape.
+
+No commit — this task is verification only.
+
+---
+
+## Task 23: Results-tree README
 
 **Files:**
 - Create: `results/2026-07-08-judge-sweep/README.md`
@@ -2870,7 +3022,7 @@ git commit -m "add results-tree README"
 
 ---
 
-## Task 23: Append Results section to spec doc
+## Task 24: Append Results section to spec doc
 
 **Files:**
 - Modify: `docs/superpowers/specs/2026-07-08-judge-sweep-design.md`
@@ -2948,12 +3100,13 @@ Checked against spec sections:
 - Section 5.0 (calibration) → Task 17.
 - Section 5.1 (sweep serving plan + client + orchestrator) → Tasks 14, 15, 16, 18.
 - Section 5.2 (offline batched bonus) → Task 19.
-- Section 5 (metrics + output artifacts + results tree) → Tasks 20, 21, 22.
+- Section 5 (metrics + output artifacts + results tree) → Tasks 20, 21, 23.
+- Section 5.3 (GUI dump-viewer workflow) → Task 22.
 - Section 6.1 (analysis pipeline) → Tasks 20, 21.
 - Section 6.2 (ordering) → Reflected in task numbering.
 - Section 6.3 (risks) → Handled inline (calibration gate, resume patch, parity gate).
 - Section 6.4 (guardrails) → No task violates them.
-- Results section → Task 23.
+- Results section → Task 24.
 - Family selection → Task 13.
 
 Type/name consistency check: `PORT_BASE`, `MODEL`, `TP`, `REPLICAS`, `THINKING_MODE`, `CELL_NAME` used consistently across Tasks 14/16/17; `pair_id` schema `<user>::<post>::<idx>` in Task 12 matches `pair_id` field consumed by Task 15 and Task 20; `SIZE_MAP` in Task 21 keys match cell names in Task 16's launcher arrays.

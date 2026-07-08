@@ -39,7 +39,7 @@ The 397B anchor gets the same treatment. Previously it ran with vLLM defaults; t
 ### JSON schema mode (locked)
 **`PERSONA_JUDGE_JSON_SCHEMA=1` for every cell.** This is our patch, documented in `our_patches.md`. It forces the judge's JSON output to contain a `rating` field before the model can end its turn.
 
-Rationale: this is how a small judge would actually be deployed for training-time reward use. The `rating` format-correctness metric becomes trivial (~100% by construction) but full-rubric completeness still varies and remains meaningful.
+Rationale: this is how a small judge would actually be deployed for training-time reward use. The `rating` format-correctness metric becomes ~100% *when the model has budget to reach the rating field* — but budget-exhausted responses (`finish_reason=="length"`) can still truncate mid-JSON before `rating` is emitted, dropping presence below 100%. Full-rubric completeness (per-field presence for the other 27 fields) still varies and remains the meaningful signal. Budget hit-rate is reported separately so we can see when rating-presence-drop is caused by truncation.
 
 ### Non-goals
 - No Sonnet API calls (paper uses Sonnet 4.6 for evaluation, but we're anchoring on the training-time reward judge).
@@ -199,8 +199,8 @@ Before committing to the full 3272-row batched run:
 
 `eval/generate_trained.py`, upstream-untouched.
 - Input: `data/prism/full_s42_history_sft40_grpo60_test10/test.parquet` (880 rows / 128 heldout users).
-- Adapter: from step 4.3.
-- Base: Qwen3-8B.
+- **LoRA adapter from Step 4.3** — this is the artifact; it carries everything SFT learned.
+- Base weights: Qwen3-8B (must match the base used during Step 4.3's SFT — the adapter's low-rank deltas are calibrated to these specific weights). Loaded via vLLM `enable_lora=True`; adapter attached per-request with `LoRARequest`.
 - Sampling (already the code default at `eval/generate_trained.py:44-46`): `T=0.6, top_p=1.0, top_k=-1, min_p=None, pres_pen=0.5, max_tokens=2048` — matches paper Table 4 for PRISM.
 - 1 sample per row → 880 generations.
 - vLLM backend, TP=1 on 1 GPU, ~1 GPU-hour.
@@ -215,7 +215,7 @@ New thin script `scripts/build_judge_pairs.py`:
   - No residual `<reasoning>` tag in `generated`.
   - Every row present.
   - No `human == generated` (would indicate degenerate output or leak).
-- Output: `results/judge_pairs/prism_heldout_880.parquet` with columns `pair_id, user_id, post_id, target_idx, user_history, context, persona, human, generated`.
+- Output: `results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet` with columns `pair_id, user_id, post_id, target_idx, user_history, context, persona, human, generated`.
 - **Frozen artifact** all 5 judges × 2 thinking modes consume.
 
 ### Deliverables from Section 4
@@ -234,7 +234,9 @@ New thin script `scripts/build_judge_pairs.py`:
 - Judge call path: `_score_pairwise_likert_with_info` at `/storage/home/lancewicki/projects/turing-rl/training/grpo/reward.py:491`, unmodified.
 - Response format: `PERSONA_JUDGE_JSON_SCHEMA=1` (grammar-forced rating).
 - `max_completion_tokens=8192`.
-- Dumps: `PERSONA_JUDGE_DUMP_RATE=1.0` for every sweep run. Dumps land at `results/judge_sweep/{judge}/{thinking_mode}/reward/reward-<slurm>-<pid>.jsonl`.
+- Dumps: `PERSONA_JUDGE_DUMP_RATE=1.0` for every sweep run. Two dump types land per cell:
+  - HTTP dumps: automatic via `shared/api_client.py:post_chat_async` → `results/2026-07-08-judge-sweep/raw/sweep/{judge}/{thinking_mode}/http/judge-<slurm>-<pid>.jsonl` (wire-level payload + response).
+  - Reward-layer dumps: manually emitted by the sweep client after each `_score_pairwise_likert_with_info` call, using upstream helpers `_build_reward_dump_row` + `_dump_reward_call` from `training/grpo/reward.py`. Land at `results/2026-07-08-judge-sweep/raw/sweep/{judge}/{thinking_mode}/reward/reward-<slurm>-<pid>.jsonl`. Row shape matches what `compute_score` produces in GRPO training, so the existing GUI viewer at `scripts/dump_viewer.py` renders sweep dumps without modification (Human A/B badge, ground-truth vs generator tabs, parsed rubric, penalty breakdown).
 
 ### Sweep matrix
 **5 sizes (4 smaller judges + 1 anchor) × 2 thinking modes × 1760 calls = 17,600 total judge calls.** 10 cells total.
@@ -249,7 +251,7 @@ Before committing to full sweep:
 - For every (size, thinking-mode) pair — 10 cells total.
 - Each calibration: 50 pairs (100 judge calls with both orderings), same right-sized TP + replica serving config we plan to use for the full cell, real prompts sampled from the 880-pair set, concurrency=16 per endpoint.
 - Reuses `scripts/benchmark_judge_throughput.py` with the pair-set path.
-- Output: `results/judge_sweep/calibration.md` — per-cell measured req/s + p50/p95 latency + extrapolated full-cell wall time (1760 calls).
+- Output: `results/2026-07-08-judge-sweep/raw/calibration/calibration_results.jsonl` (per-call rows) + `calibration_metadata.json` (per-cell serving config + measured req/s). Derived report at `derived/calibration_report.md` — per-cell measured req/s + p50/p95 latency + extrapolated full-cell wall time (1760 calls).
 - Wall time: **~1h upfront** (10 cells × ~5 min each, parallel across nodes).
 - **Gate**: if a cell's extrapolated wall time is >4h (i.e., <0.12 req/s), surface it and decide whether to reduce concurrency, drop the cell, or accept it before launching the real 1760-call cell.
 
@@ -279,13 +281,35 @@ Qwen3-8B thinking-off, TP=8, in-process `LLM.generate` on all 1760 pairs at once
 - Same pair-set, same sampling, same prompt.
 - Accuracy should be identical (same model + sampling + prompt); throughput should be higher.
 - Quantifies the server-vs-offline gap for downstream "training-time judge selection" question.
+- **Emits reward-layer dumps in the same shape as the server cells** (call `_build_reward_dump_row` per generation and write to `raw/sweep/qwen3-8b/off_offline/reward/`) so the GUI viewer works on it identically.
+
+### Step 5.3 — GUI dump-viewer workflow
+
+The existing `scripts/dump_viewer.py` (FastAPI + Jinja) auto-detects reward vs HTTP dump schemas and recurses into subdirs. Sweep produces both. To browse a cell:
+
+```bash
+# On login pod:
+/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python \
+    /storage/home/lancewicki/projects/turing-rl/scripts/dump_viewer.py \
+    --dumps /storage/home/lancewicki/projects/turing-rl/results/2026-07-08-judge-sweep/raw/sweep/qwen3-8b/off \
+    --port 8082
+
+# From Mac: ssh -L 8082:localhost:8082 <cluster-host>, then http://localhost:8082/
+```
+
+The viewer renders per-row: Human A/B badge, final rating, tabs for context / history / response / ground_truth / prompt / raw / reasoning / judge (parsed rubric) / metadata. HTTP tab set (prompt / response / parsed / reasoning / metadata) for wire-debugging rows.
+
+**Cross-cell comparison workflow**: point the viewer at `raw/sweep/` (parent of all cells) to browse the union. Filter chip in the sidebar segments by cell and mode.
+
+**No modifications to `dump_viewer.py`** — the emitted rows match the shape it already consumes.
 
 ### Metrics (per judge, per thinking mode)
 
-Computed offline from dump JSONLs by `scripts/analyze_judge_sweep.py`. Reproducible from dumps alone.
+Computed offline from dump JSONLs by `scripts/analyze_judge_sweep.py`. Reproducible from `raw/` alone.
 
 **Format & budget metrics**:
-- **Format correctness (rating)**: fraction of pairs with valid JSON and a rating field (~100% under `PERSONA_JUDGE_JSON_SCHEMA=1`).
+- **Format correctness (rating)**: fraction of pairs with valid JSON and a rating field. Grammar-forced to ~100% when the model completes within budget; falls below 100% when `finish_reason=="length"` truncates mid-JSON before `rating` is emitted. Reported alongside budget-hit-rate so we can distinguish "model can't produce rating" from "model over-thinks and runs out of tokens."
+- **Rating recovery rate (via fallback parser)**: fraction where `_extract_turing_rating` at `shared/judge_utils.py:652` recovers a rating from malformed/truncated text. Measures the safety net's effectiveness for the training-loop deployment scenario.
 - **Per-field presence probability**: for each of ~28 rubric fields, fraction of responses that include it (this is the meaningful format-correctness signal under the schema patch).
 - **Response length**: distribution of `judge_raw_content` lengths (chars + tokens if `usage.completion_tokens` populated).
 - **Budget hit-rate**: fraction of responses with `finish_reason == "length"`.
@@ -306,18 +330,69 @@ Computed offline from dump JSONLs by `scripts/analyze_judge_sweep.py`. Reproduci
 - **GPU-time per pair**: throughput ÷ GPU count.
 
 ### Output artifacts
-1. **Frozen dumps**: `results/judge_sweep/{judge}/{thinking_mode}/reward/*.jsonl` — 1760 rows each. Never re-run once complete.
-2. **Aggregated results table**: `results/judge_sweep/summary.md` — 10 rows (5 sizes × 2 thinking modes), all metrics from this section as columns.
-3. **Per-metric plots**: `results/judge_sweep/plots/` — accuracy vs judge-size (log-scale, thinking-on/off overlaid; MoE variants plotted at active-param count with a note), kappa vs size, per-field-presence vs size, throughput vs size. Matplotlib PNGs.
-4. **Family-decision doc**: `results/judge_family_decision.md`.
-5. **Design-doc Results section** appended to this file.
+
+All results for this experiment live under **`results/2026-07-08-judge-sweep/`**, structured as `raw/` (immutable — captured once, never regenerated) and `derived/` (computed from `raw/`; safe to delete and recompute).
+
+```
+results/2026-07-08-judge-sweep/
+├── raw/
+│   ├── pairs/
+│   │   └── prism_heldout_880.parquet         # 880-row pair-set from Step 4.5 (frozen input)
+│   ├── generator/
+│   │   ├── heldout_inference.pkl             # per-row {prompt_text, response, reasoning, parsed_response, extra_info}
+│   │   └── heldout_inference_metadata.json   # adapter path, base model, sampling params, wall time
+│   ├── sweep/
+│   │   └── {judge}/{thinking_mode}/
+│   │       ├── reward/reward-<slurm>-<pid>.jsonl   # 1760 rows: full rubric + wire metadata
+│   │       ├── http/judge-<slurm>-<pid>.jsonl      # HTTP wire dump (redundant safety net)
+│   │       └── run_metadata.json             # cell config: judge id, thinking mode, sampling, server args, slurm job id, start/end timestamps, endpoint URLs, concurrency
+│   ├── calibration/
+│   │   ├── calibration_results.jsonl         # per-call rows from Step 5.0 (50-pair micro-cell each)
+│   │   └── calibration_metadata.json         # per-cell serving config + measured req/s
+│   ├── family_smoke/
+│   │   └── qwen3_vs_qwen35_4b/               # Step 6 raw benchmark output
+│   │       ├── results.jsonl
+│   │       └── metadata.json
+│   └── logs/
+│       ├── slurm/*.out                       # copies of all slurm stdout for judge/CoT/SFT jobs
+│       ├── vllm_server/{judge}/{thinking_mode}/server-<pid>.log   # per-endpoint vLLM startup + serving logs
+│       └── sft/                              # SFT training logs (wandb export + slurm out)
+├── derived/
+│   ├── summary.md                            # 10 rows (5 sizes × 2 thinking modes), all metrics as columns
+│   ├── summary.parquet                       # same data, machine-readable for downstream plots
+│   ├── per_pair_metrics.parquet              # per (pair_id, judge, thinking_mode) rows: rating, format_ok, budget_hit, etc.
+│   ├── plots/
+│   │   ├── accuracy_vs_size.png              # thinking-on/off overlaid; MoE plotted at active-param with a note
+│   │   ├── kappa_vs_size.png
+│   │   ├── per_field_presence_vs_size.png
+│   │   ├── budget_hit_vs_size.png
+│   │   ├── throughput_vs_size.png
+│   │   └── rating_distribution_{judge}_{thinking_mode}.png    # one per cell
+│   ├── family_decision.md                    # writeup of Step 6 result
+│   ├── calibration_report.md                 # per-cell measured req/s + p50/p95 + extrapolated wall time
+│   ├── split_verification.md                 # Section 2 report
+│   └── offline_vs_server_comparison.md       # Step 5.2 bonus cell writeup
+└── README.md                                 # one-page tour of what's here and how to regenerate derived/
+```
+
+**Design principles**:
+
+1. **Raw is immutable.** Once a `reward/*.jsonl` dump lands, it's never touched. All metric changes happen in `derived/` by re-running the analyzer.
+2. **Everything in `derived/` is regeneratable.** `scripts/analyze_judge_sweep.py` takes `raw/` as input and produces the entire `derived/` tree. If we want a new metric next month, we add it to the analyzer, delete `derived/`, and re-run — no judge calls repeated.
+3. **Raw rows contain enough to re-derive anything reasonable.** Every reward-dump row contains: full judge prompt, raw content, parsed reasoning, wire metadata, latency, finish_reason, usage tokens, per-ordering ratings, ground truth, generated response, context, user history. Any future metric we might want — e.g., correlation of rating with response length, or per-user accuracy — should be computable without new inference.
+4. **`run_metadata.json` per cell** captures the exact serving config used, so a cell can be exactly reproduced later if needed. Includes: judge id, sampling params, `PERSONA_JUDGE_JSON_SCHEMA` state, endpoint replicas, slurm job id, timestamps.
+5. **Logs kept as-is** in `raw/logs/` alongside the parquet/jsonl dumps. If a cell later looks anomalous, the vLLM server log and slurm stdout are right there.
+
+**Design-doc Results section**: after execution, appended inline to this spec file. Points into `results/2026-07-08-judge-sweep/derived/` for tables and plots.
+
+**GUI viewer compatibility**: `scripts/dump_viewer.py` renders `raw/sweep/{judge}/{thinking_mode}/` directly. Both reward-layer and HTTP dumps produced by the sweep client match the shape the viewer already consumes. See Step 5.3 for the workflow.
 
 ---
 
 ## 6. Analysis, Ordering, and Risks
 
 ### 6.1 Analysis pipeline
-`scripts/analyze_judge_sweep.py` consumes all `results/judge_sweep/{judge}/{thinking_mode}/reward/*.jsonl` dumps + the 880-pair parquet. Reproducible from dumps alone.
+`scripts/analyze_judge_sweep.py` consumes `results/2026-07-08-judge-sweep/raw/` and produces the entire `derived/` tree. Reproducible from `raw/` alone — no judge calls repeated. Idempotent; safe to delete `derived/` and re-run at any time.
 
 ### 6.2 Ordering (max-parallel across 3 nodes)
 
@@ -354,7 +429,10 @@ Non-critical work (steps 6, 7, 8, 9, 10, 14) fits in parallel windows during ste
 
 ### 6.3 Risks and mitigations
 
-- **R1 — Judge parse failures at high rate on small judges (even with schema patch)**. With `PERSONA_JUDGE_JSON_SCHEMA=1`, the `rating` field is grammar-forced to ~100%. But the rest of the rubric is unconstrained. If a small judge emits `{"rating": 4}` and stops, "accuracy" is still valid; "per-field presence" for other 27 fields drops to near zero. Both metrics report honestly. No mitigation needed — the analysis distinguishes them.
+- **R1 — Judge parse failures at high rate on small judges (even with schema patch)**. With `PERSONA_JUDGE_JSON_SCHEMA=1`, `rating` is grammar-forced *when the model has budget to reach it*. Failure modes:
+  - Model emits `{"rating": 4}` and stops — accuracy valid, per-field presence for other 27 fields drops to near zero. Both metrics report honestly.
+  - Model runs out of tokens before emitting `rating` (long `<think>` block + long verbose keys eating the 8192 budget) — `finish_reason=="length"`, JSON truncated, no rating. Rating-presence drops below 100%. Fallback parser `_extract_turing_rating` recovers some cases from raw text.
+  - The interaction of {format correctness, rating recovery rate, budget hit-rate, per-field presence} tells the story per cell. No mitigation needed — the analysis distinguishes them.
 
 - **R2 — 397B anchor throughput dips under real Turing prompts vs the smoke measurement**. Calibration in Step 5.0 will surface this. If a 397B cell projects to >2h, drop `max_completion_tokens` for the anchor to 4096 and note as Deviation. This is our patch territory anyway (the anchor already deviates from paper via GPTQ-Int4).
 
