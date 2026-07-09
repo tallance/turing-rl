@@ -228,9 +228,12 @@ export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data
 export HF_HUB_OFFLINE=1 HF_DATASETS_OFFLINE=1
 cd "$REPO"
 echo "=== re-split only (upstream data.prism.split_data) ==="
-# NOTE: confirm split_data.py's actual flags during execution; adjust here.
+# CONFIRMED flags (data/prism/split_data.py:225-236): --input-dir, --output-dir,
+# --heldout-user-frac, --grpo-frac, --seed. To reproduce the CURRENT split
+# byte-identically, pass the SAME args scripts/slurm/split_prism_full_s42.sh used
+# (mirror that script rather than relying on defaults).
 $PY -u -m data.prism.split_data --input-dir "$REPO/data/prism/full_s42_history" \
-    --output-dir "$FRESH" || { echo "split failed"; exit 2; }
+    --output-dir "$FRESH" --seed 42 || { echo "split failed"; exit 2; }
 STATUS=0
 { echo "# PRISM split verification (re-split hash compare)"; echo;
   echo "Date: $(date -Iseconds)"; echo;
@@ -520,7 +523,7 @@ $PY -u -m training.sft.lora_sft --model qwen3-8b \
     --output_dir $REPO/checkpoints/sft/qwen3_8b_prism_full_s42 \
     --max_seq_length 8192 --resume_from_checkpoint auto
 ```
-(Confirm `--model` accepts `qwen3-8b` — argparse `choices` includes it.)
+(CONFIRMED: `lora_sft.py --model` takes a `MODEL_MAP` **key** — `qwen3-8b` (→ `Qwen/Qwen3-8B`); passing the full HF id would fail `choices`. There is **no** `--config` flag; the yaml is selected from `--model`.)
 
 - [ ] **Step 6: Run — expect PASS.** `python -m pytest tests/test_lora_sft_config.py -v`
 - [ ] **Step 7: Commit** — `git add training/sft/lora_sft.py training/sft/configs/qwen3_8b_lora.yaml scripts/slurm/sft_full.sh tests/test_lora_sft_config.py && git commit -m "add sft step-checkpointing + auto-resume"`
@@ -535,7 +538,7 @@ Faithful to upstream `generate_cot.py`'s served/HTTP path. Reuses its business l
 
 **Interfaces:** Produces `data/sft/prism_full_s42_sft_cot.parquet` (3272 rows) + `.cot_metadata.json`.
 
-- [ ] **Step 1: Inspect `generate_cot.py`** to confirm reusable symbols (`reasoning_leaks_reply` confirmed; the prompt-building template + `_row_context`/`_as_text` need confirming). Reuse what imports cleanly; inline the prompt build otherwise (document which).
+- [ ] **Step 1: Reuse the confirmed upstream symbols.** `data/sft/generate_cot.py` exports (verified locally): `RATIONALIZE_SYSTEM_PROMPT`, `RATIONALIZE_USER_TEMPLATE`, `REGEN_NUDGE`, `_row_context`, `_as_text`, `reasoning_leaks_reply`, `THINKING_TRACE_SOURCE`, and the per-row keys it writes into `extra_info` (`ground_truth_reasoning`, `thinking_trace_source`, `thinking_trace_model`, `thinking_trace_num_regen_attempts`, `thinking_trace_failed_leakage_guard`). The served client imports all of these. Do NOT call `generate_reasoning_for_row` (it is sync `post_chat_sync` + hard-coded `reasoning=True`); build the payload directly for async round-robin.
 
 - [ ] **Step 2: Failing unit test** (payload shape + round-robin; no live HTTP)
 
@@ -585,7 +588,7 @@ Validates the self-hosting substitution against the original's actual reference 
 
 **Files:** none new (upstream `data/sft/build_sft_jsonl.py`).
 
-- [ ] **Step 1: (Cluster)** `python -m data.sft.build_sft_jsonl --input_parquet data/sft/prism_full_s42_sft_cot.parquet --output_jsonl data/sft/prism_full_s42_sft_cot.jsonl` (confirm exact flag names). Gate: `wc -l` == 3272; one line has assistant target `<reasoning>...</reasoning>\n[HUMAN]: ...`. Report back. No commit (data).
+- [ ] **Step 1: (Cluster)** `python -m data.sft.build_sft_jsonl --input_parquet data/sft/prism_full_s42_sft_cot.parquet --output_jsonl data/sft/prism_full_s42_sft_cot.jsonl` (flags CONFIRMED: `--input_parquet`, `--output_jsonl`, `--max_rows`). It **requires** `ground_truth_reasoning` in each row's `extra_info` (raises otherwise) — Task 8's served client writes it, so this is satisfied. Output rows are `{"messages": [...]}` with the assistant turn from `format_sft_assistant_content(ground_truth, ground_truth_reasoning)`. Gate: `wc -l` == 3272; one line's assistant target contains the reasoning envelope + `[HUMAN]:`. Report back. No commit (data).
 
 ---
 
@@ -891,7 +894,11 @@ def test_aggregate_accuracy_tie_excluded():
 
 **Deliberate deviations (documented):** sampling is probe-derived not spec-table (Task 1); calibration uses the real reward path not `benchmark_judge_throughput.py` (Task 18); `--reasoning-parser qwen3` not `deepseek_r1`; env-gated payload extension (the spec's "unmodified reward path" is unachievable for thinking-off + per-cell sampling on self-hosted vLLM). CoT stays **served** (faithful to upstream `generate_cot.py`), with a self-hosted-vs-OpenRouter fidelity check (Task 9) replacing v1's dropped batched-vs-served parity test.
 
-**Placeholder scan:** none. Code steps show code; cluster steps give commands + gates. Runtime confirmations are explicitly flagged (PRISM raw field names/metadata keys, `split_data.py` flags, `build_sft_jsonl` flags, the heldout pickle nesting, `generate_cot.py` reusable symbols) because they can't be verified from the Mac.
+**Placeholder scan:** none. Code steps show code; cluster steps give commands + gates.
+
+**Code-level items resolved from the local checkout (no longer open):** `generate_cot.py` reusable symbols (all confirmed present), `split_data.py` flags (`--input-dir/--output-dir/--heldout-user-frac/--grpo-frac/--seed`), `build_sft_jsonl.py` flags (`--input_parquet/--output_jsonl/--max_rows`, requires `ground_truth_reasoning`), `lora_sft.py --model` = `MODEL_MAP` key `qwen3-8b` (no `--config` flag).
+
+**Genuinely data-dependent confirmations (deferred to the cluster agent's first report, not downloadable to the Mac):** PRISM raw turns field name + `extra_info` key names + `split_metadata.json` keys (Task 2 helper/`EXPECTED_COUNTS`), and the heldout inference pickle's nesting (Task 13, produced by Task 11). The agent-comms first handoff asks the cluster to paste these back.
 
 **Type consistency:** `build_pairs → (df, meta)`; `cell_list`/`tp_for_size`/`SIZE_MAP`/`ANCHOR_CELL` shared by Tasks 14/16/21; `_build_reward_dump_row` key set matches the viewer contract and the Task-21 readers (`judge_finish_reason`, `rating_gt_first`, `randomized_order`, `judge_response`); `pair_id = user::post::idx` consistent across Tasks 13/15/21.
 
