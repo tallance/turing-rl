@@ -23,3 +23,18 @@ def test_disable_openrouter_extras(monkeypatch):
     monkeypatch.setenv("PERSONA_DISABLE_OPENROUTER_EXTRAS", "1")
     p = build_chat_payload(model="m", messages=[], max_completion_tokens=8192, reasoning=False)
     assert "provider" not in p and "reasoning" not in p
+
+
+from training.grpo.reward import _resolve_response_format
+
+
+def test_json_schema_on(monkeypatch):
+    monkeypatch.setenv("PERSONA_JUDGE_JSON_SCHEMA", "1")
+    rf = _resolve_response_format()
+    assert rf["type"] == "json_schema"
+    assert "rating" in rf["json_schema"]["schema"]["required"]
+
+
+def test_json_schema_off(monkeypatch):
+    monkeypatch.delenv("PERSONA_JUDGE_JSON_SCHEMA", raising=False)
+    assert _resolve_response_format() == {"type": "json_object"}

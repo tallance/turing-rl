@@ -327,6 +327,16 @@ def compute_turing_length_info(response: str, ground_truth: str) -> dict[str, fl
     }
 
 
+def _resolve_response_format() -> dict:
+    """json_object by default; strict json_schema (rating required) when PERSONA_JUDGE_JSON_SCHEMA=1."""
+    if os.environ.get("PERSONA_JUDGE_JSON_SCHEMA") == "1":
+        return {"type": "json_schema", "json_schema": {"name": "turing_rating", "schema": {
+            "type": "object",
+            "properties": {"rating": {"type": "integer", "minimum": 1, "maximum": 7}},
+            "required": ["rating"], "additionalProperties": True}}}
+    return {"type": "json_object"}
+
+
 async def _openai_chat(
     session: aiohttp.ClientSession,
     messages: list[dict],
@@ -507,7 +517,7 @@ async def _score_pairwise_likert_with_info(
                 session,
                 [{"role": "user", "content": prompt}],
                 api_key,
-                response_format={"type": "json_object"},
+                response_format=_resolve_response_format(),
             )
             data = _extract_json(text)
             if data is not None:
