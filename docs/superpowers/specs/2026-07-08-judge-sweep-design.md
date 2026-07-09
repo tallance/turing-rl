@@ -75,14 +75,16 @@ New file `tests/test_prism_split_verification.py`, standalone (no slurm), runs a
 6. **Heldout `ground_truth` matches PRISM raw text** — for a sample of 20 heldout rows, look up (user_id, thread, turn_idx) in raw HuggingFace `HannahRoseKirk/prism-alignment` and assert equality.
 7. **No cross-contamination via prompt content** — for 20 heldout rows, no substring of an SFT user's training-time target appears verbatim in the heldout prompt/ground_truth.
 
-### Additional check: byte-diff against upstream re-run
-Re-run upstream `data/prism/build.py` + `data/prism/split_data.py` from a clean checkout with same config. Byte-diff against current parquets. If bytes match, split is provably paper-faithful and we proceed. If not, we surface the diff and rebuild from the fresh upstream re-run.
+### Additional check: hash compare against fresh re-split
+Re-run upstream `data/prism/split_data.py` on the existing PRISM raw cache (no re-download, no rebuild). SHA-256 each output parquet and compare against the current split parquets. If hashes match, no tampering happened between the split-agent's run and now. If not, we surface the diff and rebuild.
+
+We skip a fresh `data/prism/build.py` re-run: it's the expensive step (network + processing), and the determinism test already covers "the pipeline is deterministic." What we're catching here is post-hoc parquet tampering, which the split re-run alone suffices for.
 
 ### Failure semantics
 Any assertion failure fails the whole test with a diagnostic including offending row indices. If tests 1–5 fail, stop and rebuild. If 6–7 fail on a sample, escalate to full-scan.
 
 ### Runtime
-~2 minutes end-to-end plus ~1h for the upstream re-run. Adds one test file (~150 lines), one PRISM-loader helper (~50 lines), no new dependencies.
+~2 minutes for the 7-check suite plus ~5 minutes for the re-split + hash compare. Adds one test file (~150 lines), one PRISM-loader helper (~50 lines), no new dependencies.
 
 ---
 
@@ -93,7 +95,7 @@ Any assertion failure fails the whole test with a diagnostic including offending
 - **Split parquets**: `/storage/home/lancewicki/projects/turing-rl/data/prism/full_s42_history_sft40_grpo60_test10/`, produced by upstream-unmodified `data/prism/build.py` + `data/prism/split_data.py`.
 
 ### Verification
-Per Section 2: byte-diff current parquets vs fresh upstream re-run, plus the 7-check verification suite.
+Per Section 2: the 7-check suite plus a re-run of `data/prism/split_data.py` against the cached PRISM raw data with SHA-256 hash compare against current parquets.
 
 ### Row schema
 Each row (verified against `data/sft/build_sft_jsonl.py:23`):
@@ -121,24 +123,28 @@ Every pair judged in both orderings:
 ### Sample-size sanity
 880 pairs → 80% accuracy Wilson 95% CI is ±2.6pp. Kappa agreement CIs ±0.05.
 
+**Generator-sampling caveat**: the CI above bounds judge-side sampling noise only. Every accuracy figure is measured against **one stochastic draw** of the generator (Step 4.4 uses 1 sample/row at T=0.6). A different generator seed would produce a different set of 880 responses and different judge accuracies. Practical implication: judge-vs-judge gaps <5pp should be treated as within generator sampling noise, not real quality differences. Multi-sampling the generator (k>1) was considered and dropped — it would ~3× the sweep cost for an incremental honesty improvement. This caveat is stated inline in `summary.md`.
+
 ---
 
 ## 4. Generator Pipeline
 
-### Step 4.1 — Full CoT generation (batched offline vLLM)
+### Step 4.1 — Full CoT generation (served 8-replica)
 
-**Server config** (8× A100 40GB, data-parallel):
-- 8 vLLM processes, each TP=1, split 3272 SFT rows 8 ways (~409 rows/process).
+**Server config** (8× A100 40GB, single node):
+- 8 vLLM server processes on the same node, one per GPU, each TP=1, ports 8000–8007.
 - Model: `Qwen/Qwen3-8B` (already cached at `/home/lancewicki/data/hf_cache/models--Qwen--Qwen3-8B`).
 - **No `--reasoning-parser qwen3`** — dropped since we're explicit thinking-off.
+- Same "N replicas on one node + round-robin client" pattern used by the judge sweep (Section 5.1), so the launcher and client code are shared between CoT gen and the sweep.
 
-**Client config**:
+**Client config** (existing `data/sft/generate_cot.py`, HTTP path):
 - `extra_body={"chat_template_kwargs": {"enable_thinking": False}}` forces thinking-off at chat-template level.
 - Drop `reasoning=True` from `build_chat_payload`.
 - Sampling: `T=0.7, top_p=0.8, top_k=20, min_p=0` (Qwen3 thinking-off model-card defaults).
 - `max_completion_tokens=4096` (matches `DEFAULT_MAX_COMPLETION_TOKENS` at `generate_cot.py:22`).
+- Round-robins requests across the 8 endpoints; concurrency 16 per endpoint.
 
-**Pipeline**: (a) generate all 3272; (b) leakage check via `reasoning_leaks_reply` at `data/sft/generate_cot.py:60`; (c) re-generate leaked subset up to 10 tries.
+**Pipeline**: (a) generate all 3272 via the HTTP client; (b) leakage check via `reasoning_leaks_reply` at `data/sft/generate_cot.py:60`; (c) re-generate leaked subset up to 10 tries.
 
 **Wall time**: ~15-20 min.
 **Output**: `data/sft/prism_full_s42_sft_cot.parquet` (3272 rows), plus `.cot_metadata.json`.
@@ -158,17 +164,9 @@ Every pair judged in both orderings:
 
 **Why**: the fidelity principle prefers eliminating the ambiguity entirely over a code-inherited default whose semantics we can't audit at OpenRouter's provider layer. The observed 138-row stored content already looks thinking-off-style, so this is the least-divergent option under uncertainty.
 
-### Step 4.1a — Batched-vs-served parity test (20 rows)
+### Step 4.1a — (dropped)
 
-Before committing to the full 3272-row batched run:
-- 20 rows sampled from the SFT parquet.
-- Run through: (a) served path with the corrected thinking-off config (drop `--reasoning-parser qwen3`, set `enable_thinking=False`, sampling `T=0.7, top_p=0.8, top_k=20`) on 1 GPU TP=1; (b) new batched offline path with same seed on same 1 GPU.
-- Assertions:
-  - All 20 produce non-empty leakage-passing reasoning.
-  - Length quartiles + first-word/perspective distributions statistically similar (chi-square on perspective, KS on length).
-  - Human eyeball on 5 samples for style match.
-- Wall time: <10 min.
-- **Gate**: full-scale batched run only starts after parity passes.
+Previous drafts of this spec proposed a batched-offline vLLM path alongside the served path, with a 20-row "batched-vs-served parity test" as a gate. Since Step 4.1 now uses served exclusively (matching the sweep's serving pattern), the parity test is no longer needed and this step is dropped.
 
 ### Step 4.2 — Build SFT JSONL
 `data/sft/build_sft_jsonl.py`, upstream-untouched. Output: `data/sft/prism_full_s42_sft_cot.jsonl` (chat-formatted with `<reasoning>t</reasoning>\n[HUMAN]: y⋆` in assistant target).
@@ -191,9 +189,8 @@ Before committing to the full 3272-row batched run:
   - If set to `auto`, glob `${output_dir}/checkpoint-*`, pick highest-step directory, pass to `trainer.train(resume_from_checkpoint=path)`.
   - If glob empty, start fresh.
   - ~20 lines patched, documented as PERSISTENT in `our_patches.md`.
-- Keep upstream `save_strategy="epoch"` (unchanged).
+- **Override upstream `save_strategy="epoch"`** with `save_strategy="steps", save_steps=10, save_total_limit=2` in the yaml. At ~26 steps/epoch (3272 rows / effective BS 128, 3 epochs → ~78 steps total), this yields ~8 checkpoints spaced ~110 min apart, bounded to 2 on disk (~32GB). Rationale: `save_strategy` is not a load-bearing hyperparameter — model weights, gradients, and optimizer state are byte-identical regardless of save frequency; the only cost is checkpoint I/O (~30s each, ~4 min total). Max wall-loss on failure drops from ~5h (epoch) to ~110 min.
 - New sbatch `scripts/slurm/sft_full.sh` always passes `--resume_from_checkpoint auto`.
-- **Max wall-loss on failure**: ≤5h (one in-flight epoch).
 
 ### Step 4.4 — Heldout inference
 
@@ -214,7 +211,7 @@ New thin script `scripts/build_judge_pairs.py`:
 - Sanity checks:
   - No residual `<reasoning>` tag in `generated`.
   - Every row present.
-  - No `human == generated` (would indicate degenerate output or leak).
+  - **Count-and-log** `human == generated` rows (do not assert). Exact matches on very short replies ("yes", "lol", "same") are possible and not necessarily degenerate. Flag investigation if the count exceeds 1% of rows; otherwise record in metadata and continue.
 - Output: `results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet` with columns `pair_id, user_id, post_id, target_idx, user_history, context, persona, human, generated`.
 - **Frozen artifact** all 5 judges × 2 thinking modes consume.
 
@@ -252,6 +249,7 @@ Before committing to full sweep:
 - Each calibration: 50 pairs (100 judge calls with both orderings), same right-sized TP + replica serving config we plan to use for the full cell, real prompts sampled from the 880-pair set, concurrency=16 per endpoint.
 - Reuses `scripts/benchmark_judge_throughput.py` with the pair-set path.
 - Output: `results/2026-07-08-judge-sweep/raw/calibration/calibration_results.jsonl` (per-call rows) + `calibration_metadata.json` (per-cell serving config + measured req/s). Derived report at `derived/calibration_report.md` — per-cell measured req/s + p50/p95 latency + extrapolated full-cell wall time (1760 calls).
+- **Precision caveat**: at 100 calls per cell (~6-7 waves at concurrency 16, with warmup noise in the first 2-3), extrapolated wall-time projections are rough (±30%). Sufficient for the >4h gate decision below, but do not treat as a precise ETA. This caveat is stated inline in `calibration_report.md`.
 - Wall time: **~1h upfront** (10 cells × ~5 min each, parallel across nodes).
 - **Gate**: if a cell's extrapolated wall time is >4h (i.e., <0.12 req/s), surface it and decide whether to reduce concurrency, drop the cell, or accept it before launching the real 1760-call cell.
 
@@ -299,7 +297,7 @@ The existing `scripts/dump_viewer.py` (FastAPI + Jinja) auto-detects reward vs H
 
 The viewer renders per-row: Human A/B badge, final rating, tabs for context / history / response / ground_truth / prompt / raw / reasoning / judge (parsed rubric) / metadata. HTTP tab set (prompt / response / parsed / reasoning / metadata) for wire-debugging rows.
 
-**Cross-cell comparison workflow**: point the viewer at `raw/sweep/` (parent of all cells) to browse the union. Filter chip in the sidebar segments by cell and mode.
+**Cross-cell comparison workflow**: the current viewer has no per-cell filter chip, so browse one cell at a time by pointing `--dumps` at `raw/sweep/{judge}/{thinking_mode}/`. Cross-cell comparison happens in `summary.md`, not in the viewer.
 
 **No modifications to `dump_viewer.py`** — the emitted rows match the shape it already consumes.
 
@@ -400,11 +398,11 @@ Step-by-step table:
 
 | # | Step | GPUs | Wall time | Blocks | Notes |
 |---|---|---|---|---|---|
-| 1 | PRISM split verification (byte-diff vs upstream re-run + 7-check suite) | 0 | 1h | — | Runs on login pod |
-| 2 | CoT batched-vs-served parity test (20 rows) | 1 | 15 min | 3 | Gate: must pass before step 3 |
-| 3 | Full CoT batched generation (3272 rows, 8-replica DP, thinking-off) | 8 | 15-20 min | 4 | + leakage-guard regen pass |
+| 1 | PRISM split verification (7-check suite + re-split hash compare) | 0 | 10 min | 3 | Runs on login pod |
+| 2 | _(dropped — batched-vs-served parity test no longer needed; Step 4.1 uses served exclusively)_ | — | — | — | — |
+| 3 | Full CoT served generation (3272 rows, 8-replica served, thinking-off) | 8 | 15-20 min | 4 | + leakage-guard regen pass |
 | 4 | Build SFT JSONL | 0 | 2 min | 5 | |
-| 5 | **SFT LoRA training** (3 epochs, effective BS=128, `max_seq_length=8192`) | 8 | **12-16h** | 11 | Paper Table 5 config; the long pole. Auto-resume patched. |
+| 5 | **SFT LoRA training** (3 epochs, effective BS=128, `max_seq_length=8192`) | 8 | **12-16h** | 11 | Paper Table 5 config; the long pole. Auto-resume patched, `save_steps=10 save_total_limit=2` (~110 min max loss on failure). |
 | 6 | Qwen3 vs Qwen3.5 4B family-selection smoke | 1-2 | 30 min | 7, 8, 13 | Parallel with SFT |
 | 7 | Step 5.0 per-cell throughput calibration (10 cells, 50 pairs each) | up to 24 | 1h | 13 | Parallel with SFT |
 | 8 | Family-decision doc written | 0 | 10 min | 13 | |
@@ -417,15 +415,16 @@ Step-by-step table:
 | 15 | Analysis pipeline run: aggregate metrics, plots, summary.md | 0 | 2-4h | 16 | May iterate |
 | 16 | Design-doc Results section appended + family-decision finalized + report writeup | 0 | 1-2h | — | |
 
-**Critical path**: 1 → 2 → 3 → 4 → 5 → 11 → 12 → 13 → 15 → 16 ≈ **20-33h of wall time**.
+**Critical path**: 1 → 3 → 4 → 5 → 11 → 12 → 13 → 15 → 16 ≈ **20-33h of active wall time** (SFT + sweep dominate).
 
 Non-critical work (steps 6, 7, 8, 9, 10, 14) fits in parallel windows during steps 5 and 13.
 
-**Realistic end-to-end**:
-- Best case (~1 day): everything right, SFT ~12h, sweep ~3h, no re-runs.
-- Nominal (~2 days): SFT ~14h, sweep ~5h, one analysis iteration.
-- With one failure cycle (~2-3 days): SFT job dies mid-training, auto-resumes from latest epoch checkpoint, ~3-4h added.
-- With two failure cycles (~3-5 days): SFT + judge-sweep tooling surprise + analysis rework.
+**Realistic end-to-end**: **2-3 days nominal.** The critical-path arithmetic (~20-33h) only holds with zero idle time between handoffs — no Slurm queue waits, no rerun of any step, active supervision at every transition. Realistically, expect:
+- Slurm queue latency between jobs (minutes to hours per handoff).
+- Overnight gaps between steps that need human decisions (family-decision doc, cell-drop gate, analysis iteration).
+- One SFT restart (~110 min lost, per the checkpointing patch) is likely enough that we should plan for it.
+
+A 1-day best case is only achievable with continuous supervision; more common is 2-3 days including a full night's sleep or two.
 
 ### 6.3 Risks and mitigations
 
@@ -438,9 +437,9 @@ Non-critical work (steps 6, 7, 8, 9, 10, 14) fits in parallel windows during ste
 
 - **R3 — Server-vs-batched offline throughput gap is huge and changes the story**. Flag in the report; bonus offline cell (Step 5.2) shows the raw ratio. Downstream question not addressed in this project.
 
-- **R4 — Split verification fails**. Byte-diff against fresh upstream re-run catches split-agent modifications. If it fails: rebuild from fresh upstream, discard current parquets, redo Section 4.
+- **R4 — Split verification fails**. The 7-check suite plus `split_data.py` re-run + hash compare catches post-hoc parquet tampering. If it fails: re-run `data/prism/split_data.py` from the current codebase against the cached PRISM raw data, replace the tampered parquets, redo any downstream artifact that consumed them.
 
-- **R5 — CoT batched-vs-served parity test shows divergence**. Unlikely with same model + sampling + prompt + seed. If it happens: fall back to served-mode CoT generation for the full 3272 rows (2 GPU-hours vs 15 min — acceptable cost).
+- **R5 — (dropped)** — The batched-vs-served parity risk no longer applies since Step 4.1 uses served exclusively.
 
 - **R6 — Qwen3 vs Qwen3.5 4B smoke inconclusive**. Default to Qwen3.5 (matches anchor family + quantization scheme).
 
@@ -460,6 +459,7 @@ Non-critical work (steps 6, 7, 8, 9, 10, 14) fits in parallel windows during ste
 
 New patches introduced by this project:
 1. **`training/sft/lora_sft.py`** — add `--resume_from_checkpoint auto` CLI arg. ~20 lines. PERSISTENT.
+2. **`training/sft/configs/qwen3_8b_lora.yaml`** — override `save_strategy` from `epoch` to `steps` with `save_steps=10, save_total_limit=2`. PERSISTENT. Yaml-only, no code change. Not a semantic model change — reduces max failure loss from ~5h to ~110 min at ~4 min total I/O cost.
 
 Existing patches leveraged (no new modifications):
 - **`training/grpo/reward.py`** — `PERSONA_JUDGE_JSON_SCHEMA=1` env flag (already in `our_patches.md`).
