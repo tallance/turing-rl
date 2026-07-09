@@ -76,6 +76,8 @@ def build_chat_payload(
     max_completion_tokens: int,
     response_format: dict | None = None,
     reasoning: bool,
+    sampling: dict | None = None,
+    chat_template_kwargs: dict | None = None,
 ) -> dict[str, Any]:
     """Build a chat-completions payload."""
     payload: dict[str, Any] = {
@@ -85,7 +87,12 @@ def build_chat_payload(
     }
     if response_format:
         payload["response_format"] = response_format
-    payload.update(openrouter_request_extras(reasoning=reasoning))
+    if sampling:
+        payload.update(sampling)  # T/top_p/top_k/min_p top-level (OpenAI-compat)
+    if chat_template_kwargs:
+        payload["chat_template_kwargs"] = chat_template_kwargs
+    if os.environ.get("PERSONA_DISABLE_OPENROUTER_EXTRAS") != "1":
+        payload.update(openrouter_request_extras(reasoning=reasoning))
     return payload
 
 

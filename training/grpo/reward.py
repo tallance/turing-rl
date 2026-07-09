@@ -341,12 +341,18 @@ async def _openai_chat(
         or _env_flag("PERSONA_LOCAL_JUDGE_DISABLE_RESPONSE_FORMAT", False)
     ):
         response_format = None
+    _s = os.environ.get("PERSONA_JUDGE_SAMPLING")
+    _sampling = json.loads(_s) if _s else None
+    _te = os.environ.get("PERSONA_JUDGE_ENABLE_THINKING")
+    _ctk = {"enable_thinking": _te == "1"} if _te in ("0", "1") else None
     payload = build_chat_payload(
         model=model or os.environ.get("JUDGE_MODEL", JUDGE_MODEL),
         messages=messages,
         max_completion_tokens=max_tokens or _get_judge_max_completion_tokens(),
         response_format=response_format,
         reasoning=False,
+        sampling=_sampling,
+        chat_template_kwargs=_ctk,
     )
     return await post_chat_async(session, payload, semaphore=_get_reward_judge_request_semaphore())
 
