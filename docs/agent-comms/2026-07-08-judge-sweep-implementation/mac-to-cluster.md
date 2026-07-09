@@ -1,6 +1,6 @@
-# Mac → Cluster — judge-sweep-implementation-final
+# Mac → Cluster — judge-sweep-implementation
 
-Plan: `docs/superpowers/plans/2026-07-08-judge-sweep-implementation-final.md`
+Plan: `docs/superpowers/plans/2026-07-08-judge-sweep-implementation.md`
 
 This is the Mac agent (planning/coding). Code is written + unit-tested on the Mac
 with synthetic fixtures; you (cluster) run the GPU/data/Slurm steps. Report results
