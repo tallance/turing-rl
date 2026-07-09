@@ -37,7 +37,7 @@ Model-card defaults, thinking-mode-dependent:
 The 397B anchor gets the same treatment. Previously it ran with vLLM defaults; the sweep run re-baselines it under model-card defaults so all comparisons are apples-to-apples.
 
 ### JSON schema mode (locked)
-**`PERSONA_JUDGE_JSON_SCHEMA=1` for every cell.** This is our patch, documented in `our_patches.md`. It forces the judge's JSON output to contain a `rating` field before the model can end its turn.
+**`PERSONA_JUDGE_JSON_SCHEMA=1` for every cell.** This patch does not exist on the current branch (evidence: no code references the env var; grpo_smoke_8b.sh sets it but nothing reads it) — the plan must add it as a new env-gated patch to `training/grpo/reward.py`. When on, it swaps `response_format={"type":"json_object"}` at `training/grpo/reward.py:504` for a strict `json_schema` with `required: ["rating"]`, forcing the judge's JSON output to contain a `rating` field before the model can end its turn.
 
 Rationale: this is how a small judge would actually be deployed for training-time reward use. The `rating` format-correctness metric becomes ~100% *when the model has budget to reach the rating field* — but budget-exhausted responses (`finish_reason=="length"`) can still truncate mid-JSON before `rating` is emitted, dropping presence below 100%. Full-rubric completeness (per-field presence for the other 27 fields) still varies and remains the meaningful signal. Budget hit-rate is reported separately so we can see when rating-presence-drop is caused by truncation.
 
@@ -189,7 +189,7 @@ Previous drafts of this spec proposed a batched-offline vLLM path alongside the 
   - If set to `auto`, glob `${output_dir}/checkpoint-*`, pick highest-step directory, pass to `trainer.train(resume_from_checkpoint=path)`.
   - If glob empty, start fresh.
   - ~20 lines patched, documented as PERSISTENT in `our_patches.md`.
-- **Override upstream `save_strategy="epoch"`** with `save_strategy="steps", save_steps=10, save_total_limit=2` in the yaml. At ~26 steps/epoch (3272 rows / effective BS 128, 3 epochs → ~78 steps total), this yields ~8 checkpoints spaced ~110 min apart, bounded to 2 on disk (~32GB). Rationale: `save_strategy` is not a load-bearing hyperparameter — model weights, gradients, and optimizer state are byte-identical regardless of save frequency; the only cost is checkpoint I/O (~30s each, ~4 min total). Max wall-loss on failure drops from ~5h (epoch) to ~110 min.
+- **Override upstream `save_strategy="epoch"`** with `save_strategy="steps", save_steps=10, save_total_limit=2`. This requires both a yaml addition AND a code change: `training/sft/lora_sft.py:376` currently hard-codes `save_strategy="epoch"` in `SFTConfig(...)`, ignoring yaml — the patch must make `save_strategy`, `save_steps`, `save_total_limit` yaml-configurable. At ~26 steps/epoch (3272 rows / effective BS 128, 3 epochs → ~78 steps total), this yields ~8 checkpoints spaced ~110 min apart, bounded to 2 on disk (~32GB). Rationale: `save_strategy` is not a load-bearing hyperparameter — model weights, gradients, and optimizer state are byte-identical regardless of save frequency; the only cost is checkpoint I/O (~30s each, ~4 min total). Max wall-loss on failure drops from ~5h (epoch) to ~110 min.
 - New sbatch `scripts/slurm/sft_full.sh` always passes `--resume_from_checkpoint auto`.
 
 ### Step 4.4 — Heldout inference
@@ -233,7 +233,7 @@ New thin script `scripts/build_judge_pairs.py`:
 - `max_completion_tokens=8192`.
 - Dumps: `PERSONA_JUDGE_DUMP_RATE=1.0` for every sweep run. Two dump types land per cell:
   - HTTP dumps: automatic via `shared/api_client.py:post_chat_async` → `results/2026-07-08-judge-sweep/raw/sweep/{judge}/{thinking_mode}/http/judge-<slurm>-<pid>.jsonl` (wire-level payload + response).
-  - Reward-layer dumps: manually emitted by the sweep client after each `_score_pairwise_likert_with_info` call, using upstream helpers `_build_reward_dump_row` + `_dump_reward_call` from `training/grpo/reward.py`. Land at `results/2026-07-08-judge-sweep/raw/sweep/{judge}/{thinking_mode}/reward/reward-<slurm>-<pid>.jsonl`. Row shape matches what `compute_score` produces in GRPO training, so the existing GUI viewer at `scripts/dump_viewer.py` renders sweep dumps without modification (Human A/B badge, ground-truth vs generator tabs, parsed rubric, penalty breakdown).
+  - Reward-layer dumps: `_build_reward_dump_row` + `_dump_reward_call` helpers **do not exist on the current branch** (evidence: `scripts/README_dump_viewer.md` describes them, but grep finds no such symbols in `training/grpo/reward.py`). The plan must add them: build the two helpers, wire them into `_score_pairwise_likert_with_info` so each judge call emits a row to `results/2026-07-08-judge-sweep/raw/sweep/{judge}/{thinking_mode}/reward/reward-<slurm>-<pid>.jsonl`. Row schema must match what the existing GUI viewer at `scripts/dump_viewer.py` expects (per its parser: `human_side`, `generated_is_b`, `rating`, parsed rubric, penalty breakdown, ground truth, generated response, context, latency, finish_reason).
 
 ### Sweep matrix
 **5 sizes (4 smaller judges + 1 anchor) × 2 thinking modes × 1760 calls = 17,600 total judge calls.** 10 cells total.
@@ -458,14 +458,14 @@ A 1-day best case is only achievable with continuous supervision; more common is
 ## Patches summary (updates to `our_patches.md`)
 
 New patches introduced by this project:
-1. **`training/sft/lora_sft.py`** — add `--resume_from_checkpoint auto` CLI arg. ~20 lines. PERSISTENT.
-2. **`training/sft/configs/qwen3_8b_lora.yaml`** — override `save_strategy` from `epoch` to `steps` with `save_steps=10, save_total_limit=2`. PERSISTENT. Yaml-only, no code change. Not a semantic model change — reduces max failure loss from ~5h to ~110 min at ~4 min total I/O cost.
+1. **`training/sft/lora_sft.py`** — add `--resume_from_checkpoint auto` CLI arg AND make `save_strategy`/`save_steps`/`save_total_limit` yaml-configurable (currently `save_strategy` is hard-coded to `"epoch"` at line 376, overriding yaml). ~30 lines. PERSISTENT.
+2. **`training/sft/configs/qwen3_8b_lora.yaml`** — set `save_strategy: steps, save_steps: 10, save_total_limit: 2`. PERSISTENT. Reduces max failure loss from ~5h to ~110 min at ~4 min total I/O cost.
+3. **`training/grpo/reward.py`** — new `PERSONA_JUDGE_JSON_SCHEMA=1` env flag that swaps the `json_object` response_format at line 504 for a strict `json_schema` with `required: ["rating"]`. Grep confirms the flag is set in `grpo_smoke_8b.sh:61` but read by nothing today. PERSISTENT.
+4. **`training/grpo/reward.py`** — new `_build_reward_dump_row` + `_dump_reward_call` helpers, wired into `_score_pairwise_likert_with_info` (line 446), env-gated on `PERSONA_JUDGE_DUMP_RATE` + `PERSONA_JUDGE_DUMP_DIR`. Row schema must match what `scripts/dump_viewer.py` expects (see viewer parser for the field set). Grep confirms these symbols do not exist today; `scripts/README_dump_viewer.md` describes them aspirationally. PERSISTENT.
 
 Existing patches leveraged (no new modifications):
-- **`training/grpo/reward.py`** — `PERSONA_JUDGE_JSON_SCHEMA=1` env flag (already in `our_patches.md`).
 - **`training/sft/configs/qwen3_8b_lora.yaml`** — `report_to: wandb` via sed-patch in launcher (already in `our_patches.md`).
-- **`shared/api_client.py`** — judge response dump hook (already in `our_patches.md`).
-- **`training/grpo/reward.py`** — semantic reward-layer dump (already in `our_patches.md`).
+- **`shared/api_client.py`** — HTTP-wire judge response dump hook (already in `our_patches.md`; different from patch #4 above — this one dumps the raw HTTP payload only).
 
 ---
 
