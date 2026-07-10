@@ -321,6 +321,13 @@ async def generate_cot_served(
         "endpoints": endpoints,
         "model": model,
         "sampling": sampling,
+        # No sampling is sent on the wire (sampling is None); vLLM applies the
+        # served model's generation_config.json defaults. Recorded explicitly for
+        # reproducibility (Qwen3-8B ships T=0.6/top_p=0.95/top_k=20/min_p=0).
+        "resolved_sampling": (
+            sampling if sampling
+            else "generation_config_defaults (no wire override)"
+        ),
         "thinking": "off",
         "max_regen_attempts": max_regen_attempts,
         "concurrency": concurrency,
