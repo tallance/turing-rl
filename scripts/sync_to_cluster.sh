@@ -9,6 +9,7 @@
 #
 # Usage:
 #   scripts/sync_to_cluster.sh                 # full sync of committed HEAD (default; requires clean tree)
+#   scripts/sync_to_cluster.sh --wip           # sync the WHOLE working tree incl. uncommitted edits, NO commit (iteration)
 #   scripts/sync_to_cluster.sh path/a.py b.sh  # quick DEBUG push of specific files (allows dirty; not authoritative)
 #
 # The full sync REFUSES a dirty tree so DEPLOYED_SHA is meaningful. The partial
@@ -41,6 +42,30 @@ verify_syntax() {  # $1 = space-separated file list piped via stdin; runs py_com
       esac
     done; exit \$fail"
 }
+
+# ============================ WIP MODE (--wip) ============================
+# Ship the whole current working tree (committed + uncommitted tracked edits) with
+# NO commit. Uses `git stash create` to snapshot the dirty tree into a throwaway
+# commit object (does not touch your working tree/index), so only tracked files
+# ship (gitignore honored). Brand-new UNTRACKED files are excluded — `git add`
+# them first if needed. Stamps DEPLOYED_SHA as "<sha>-wip" (not reproducible).
+if [ "${1:-}" = "--wip" ]; then
+  base="$(git rev-parse HEAD)"
+  wip_ref="$(git stash create || true)"   # empty when tree is clean
+  [ -n "$wip_ref" ] || wip_ref=HEAD
+  echo "[sync] WIP sync of current working tree (uncommitted tracked edits) -> $HOST:$REMOTE"
+  echo "       base=$base  (brand-new untracked files are NOT included — git add them first)"
+  if ! git archive --format=tar "$wip_ref" | ssh "${SSH_OPTS[@]}" "$HOST" "tar -xf - -C '$REMOTE'"; then
+    echo "ERROR: archive/extract failed" >&2; exit 4
+  fi
+  printf '%s-wip\n' "$base" | ssh "${SSH_OPTS[@]}" "$HOST" "cat > '$REMOTE/DEPLOYED_SHA'"
+  echo "[sync] wrote DEPLOYED_SHA=${base}-wip (iteration build — run a full sync before any kept run)"
+  git ls-files -- '*.py' '*.sh' | verify_syntax "wip"; vrc=$?
+  [ "$vrc" -eq 0 ] && echo "[verify] all tracked .py/.sh compile clean on cluster ✓" \
+                    || { echo "[verify] SYNTAX FAILURES above — fix before submitting jobs" >&2; }
+  echo "[sync] wip done @ ${base}-wip"
+  exit $vrc
+fi
 
 # ============================ PARTIAL DEBUG MODE ============================
 if [ "$#" -gt 0 ]; then
