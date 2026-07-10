@@ -1,4 +1,10 @@
-from scripts.run_judge_sweep_cell import cell_env, shard_indices, cell_output_dirs
+from scripts.calibration_report import extrapolate_wall_hours
+from scripts.run_judge_sweep_cell import (
+    _final_metadata,
+    cell_env,
+    cell_output_dirs,
+    shard_indices,
+)
 
 
 def test_cell_env_locks_config():
@@ -39,3 +45,25 @@ def test_shard():
 def test_output_dirs(tmp_path):
     d = cell_output_dirs(str(tmp_path), "qwen3-8b", "off")
     assert d["reward"].endswith("qwen3-8b/off/reward") and d["http"].endswith("qwen3-8b/off/http")
+
+
+def test_final_metadata_emits_consumer_keys():
+    # Producer must emit the keys calibration_report.py reads (n_pairs, wall_seconds).
+    base = {"cell_name": "qwen3-8b", "n_pairs_total": 100}
+    out = _final_metadata(base, n_pairs=50, wall_seconds=150.0, ended_ts=123.0, ok=48, err=2)
+    assert out["n_pairs"] == 50
+    assert out["wall_seconds"] == 150.0
+    assert out["ended_ts"] == 123.0
+    assert out["ok"] == 48 and out["err"] == 2
+    # Base fields are preserved.
+    assert out["cell_name"] == "qwen3-8b" and out["n_pairs_total"] == 100
+
+
+def test_final_metadata_roundtrip_gives_finite_projection():
+    # The bug: report saw n=0, wall=0 -> req/s=0 -> extrapolation inf -> every cell
+    # flagged >4h. With the producer emitting real values the round-trip is finite.
+    out = _final_metadata({}, n_pairs=100, wall_seconds=300.0, ended_ts=1.0, ok=100, err=0)
+    calls = out["n_pairs"] * 2  # calibration_report models 2 calls per pair
+    proj = extrapolate_wall_hours(calls, out["wall_seconds"])
+    assert proj != float("inf")
+    assert proj > 0

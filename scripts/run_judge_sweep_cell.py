@@ -98,6 +98,31 @@ def model_cell_name(model_id: str) -> str:
     return model_id.split("/")[-1].strip().lower()
 
 
+def _final_metadata(
+    base: dict,
+    *,
+    n_pairs: int,
+    wall_seconds: float,
+    ended_ts: float,
+    ok: int,
+    err: int,
+) -> dict:
+    """Merge post-scoring throughput fields onto the pre-scoring metadata base.
+
+    Emits the keys ``scripts/calibration_report.py`` consumes (``n_pairs`` and
+    ``wall_seconds``) so the throughput/>4h gate sees real numbers instead of
+    ``n=0, wall=0`` (which extrapolated to ``inf``).
+    """
+    return {
+        **base,
+        "n_pairs": n_pairs,
+        "wall_seconds": wall_seconds,
+        "ended_ts": ended_ts,
+        "ok": ok,
+        "err": err,
+    }
+
+
 def _parse_endpoints(raw: str) -> list[str]:
     endpoints = [e.strip().rstrip("/") for e in raw.split(",") if e.strip()]
     if not endpoints:
@@ -234,6 +259,25 @@ async def async_main() -> None:
         f"ok={counters['ok']} err={counters['err']} elapsed_s={elapsed:.1f}",
         flush=True,
     )
+
+    # Rank-0 re-loads the pre-scoring metadata and adds the throughput fields the
+    # calibration report reads (n_pairs / wall_seconds). Written after gather so
+    # the numbers reflect the run that actually completed.
+    if args.endpoint_index == 0:
+        meta_path = os.path.join(mode_dir, "run_metadata.json")
+        with open(meta_path, encoding="utf-8") as fh:
+            base_metadata = json.load(fh)
+        ended = time.time()
+        final_metadata = _final_metadata(
+            base_metadata,
+            n_pairs=len(my_pairs),
+            wall_seconds=elapsed,
+            ended_ts=ended,
+            ok=counters["ok"],
+            err=counters["err"],
+        )
+        with open(meta_path, "w", encoding="utf-8") as fh:
+            json.dump(final_metadata, fh, indent=2)
 
 
 def main() -> None:
