@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import time
 from typing import Any, Optional
 
 try:  # pragma: no cover - exercised in runtime envs
@@ -337,6 +338,33 @@ def _resolve_response_format() -> dict:
     return {"type": "json_object"}
 
 
+_REWARD_DUMP_KEYS = ("generated_is_b", "human_side", "rating_gt_first", "rating_gen_first",
+    "randomized_order", "response", "ground_truth", "context", "user_history", "judge_response",
+    "judge_prompt", "judge_raw_content", "judge_reasoning", "judge_latency_ms", "judge_finish_reason",
+    "judge_model", "judge_usage", "final_reward", "turing_judge_score_raw", "turing_judge_score_clipped",
+    "source_copy_penalty", "assistant_like_penalty", "wrong_target_or_role_penalty",
+    "unsupported_adversarial_reframing_penalty", "call_id", "user_id", "post_id", "target_idx",
+    "persona", "ts", "worker_pid")
+
+
+def _build_reward_dump_row(**f) -> dict:
+    """Reward-layer dump row matching scripts/dump_viewer.py. `rating` intentionally
+    omitted — the viewer derives it from rating_gt_first/rating_gen_first."""
+    return {k: f.get(k) for k in _REWARD_DUMP_KEYS}
+
+
+def _dump_reward_call(row: dict) -> None:
+    if float(os.environ.get("PERSONA_JUDGE_DUMP_RATE", "0") or "0") <= 0:
+        return
+    d = os.environ.get("PERSONA_REWARD_DUMP_DIR")
+    if not d:
+        return
+    os.makedirs(d, exist_ok=True)
+    job = os.environ.get("SLURM_JOB_ID", "local")
+    with open(os.path.join(d, f"reward-{job}-{os.getpid()}.jsonl"), "a") as fh:
+        fh.write(json.dumps(row, default=str) + "\n")
+
+
 async def _openai_chat(
     session: aiohttp.ClientSession,
     messages: list[dict],
@@ -626,6 +654,8 @@ async def _score_pairwise_likert_with_info(
             "reasoning": str(data.get("reasoning", "") or ""),
             "rating": rating,
             "parse_error": parse_error,
+            "judge_prompt": prompt,
+            "judge_raw_content": text,
         }
 
     generated_is_b = _stable_turing_generated_is_b(
@@ -699,6 +729,43 @@ async def _score_pairwise_likert_with_info(
         judge_gt_first = None
         judge_gen_first = result
         randomized_order = "gen_first"
+
+    # Reward-layer dump for the GUI viewer (scripts/dump_viewer.py). No-op unless
+    # PERSONA_JUDGE_DUMP_RATE>0 and PERSONA_REWARD_DUMP_DIR are set.
+    _dump_reward_call(_build_reward_dump_row(
+        generated_is_b=generated_is_b,
+        # human (ground_truth) sits on side A when the generated answer is B.
+        human_side="A" if generated_is_b else "B",
+        rating_gt_first=rating_gt_first,
+        rating_gen_first=rating_gen_first,
+        randomized_order=randomized_order,
+        response=response,
+        ground_truth=ground_truth,
+        context=context,
+        user_history=user_history,
+        judge_response=result,
+        judge_prompt=result.get("judge_prompt"),
+        judge_raw_content=result.get("judge_raw_content"),
+        judge_reasoning=result.get("reasoning"),
+        judge_latency_ms=None,
+        judge_finish_reason=None,
+        judge_model=os.environ.get("JUDGE_MODEL", JUDGE_MODEL),
+        judge_usage={},
+        final_reward=None,
+        turing_judge_score_raw=likert_score,
+        turing_judge_score_clipped=clip_turing_judge_score(likert_score),
+        source_copy_penalty=generated_source_copy_penalty,
+        assistant_like_penalty=generated_assistant_like_penalty,
+        wrong_target_or_role_penalty=generated_wrong_target_or_role_penalty,
+        unsupported_adversarial_reframing_penalty=generated_unsupported_adversarial_reframing_penalty,
+        call_id=None,
+        user_id=user_id,
+        post_id=post_id,
+        target_idx=target_idx,
+        persona=persona,
+        ts=time.time(),
+        worker_pid=os.getpid(),
+    ))
     return {
         "score": likert_score,
         "source_copy": generated_source_copy,
