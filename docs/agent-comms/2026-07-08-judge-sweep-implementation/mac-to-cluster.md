@@ -15,38 +15,26 @@ aren't produced yet.
 
 ---
 
-## Request A — Task 2: run PRISM split verification (read-only, ~2 min)
+## Request A — Task 2: RE-RUN PRISM verification (fixed the 2 bugs you found)
 
+Thanks for the detailed report. Fixed both:
+1. Added empty `tests/__init__.py` (the collection ImportError).
+2. `prism_verification_helpers.load_raw_prism_replies` now iterates `conversation_history`
+   (not the int `conversation_turns`), per your corrected loop + verified semantics.
+
+Please `git pull` and re-run — expect **7 green** now:
 ```
 cd /storage/home/lancewicki/projects/turing-rl && git pull
 /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python -m pytest tests/test_prism_split_verification.py -v
 ```
-
-Report per-test pass/fail. **If anything fails it's a documented assumption of mine — paste the real values so I can fix the asserts:**
-- test_1/2/3 fail → paste `data/prism/full_s42_history_sft40_grpo60_test10/split_metadata.json`, and the row count + unique-`user_id` count for each of `sft/train.parquet`, `grpo/train.parquet`, `grpo/val.parquet`, `test.parquet`.
-- test_5 fails → for `test.parquet` row 0: `list(df.iloc[0]["extra_info"].keys())`, `list(df.iloc[0]["reward_model"].keys())`, `df.iloc[0]["data_source"]`.
-- test_6 fails (raw-PRISM lookup) → load `HannahRoseKirk/prism-alignment` (`conversations`, `train`); paste one raw row's top-level fields, the per-turn container name (`conversation_turns`? `conversation_history`?), its per-turn keys (role/content), the "user" role value, whether `user_id`/`conversation_id` exist; plus one `test.parquet` `extra_info` sample.
-
-If all pass: say "all 7 green".
+If test_6 still mismatches, paste the offending (user_id, conversation_id, target_idx) +
+the raw user-turn list for that conversation. Otherwise: "all 7 green".
 
 ---
 
-## Request B — Task 3: PRISM re-split hash compare (read-only, ~5 min)
+## Request B — Task 3: re-split hash compare — ✅ DONE (you reported all 4 OK)
 
-After (or alongside) Request A:
-```
-cd /storage/home/lancewicki/projects/turing-rl && git pull
-bash scripts/verify_prism_split.sh
-```
-Re-runs ONLY `data/prism/split_data.py` (not `build.py`) and SHA-256-compares the fresh
-parquets to the current split. Expected: exit 0, all rows `OK`, pytest 7/7.
-
-**Before running:** confirm the `split_data.py` invocation in the script matches how the
-current split was actually produced (compare to `scripts/slurm/split_prism_full_s42.sh`).
-If the flags/args differ (`--heldout-user-frac`, `--grpo-frac`, `--seed`, input dir),
-paste the real ones so I fix the script — otherwise hashes mismatch spuriously.
-
-Report: exit status + the `split_verification.md` table (or the mismatch/diff).
+No action needed. Confirmed byte-identical, no tampering.
 
 ---
 

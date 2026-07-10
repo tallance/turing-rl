@@ -4,10 +4,12 @@ Loads the raw HuggingFace PRISM dataset (cached on the cluster at
 /home/lancewicki/data/hf_cache/datasets--HannahRoseKirk--prism-alignment) for
 split-verification test 6 (heldout ground_truth matches raw PRISM).
 
-NOTE (confirm on first cluster run): the raw per-turn field name is assumed to be
-`conversation_turns` with role=="user"; and `extra_info` is assumed to carry
-`user_id`/`post_id`/`target_idx` (with an optional `raw_user_id`). If the cluster
-run KeyErrors, inspect one raw row / one split row and adjust the two functions below.
+Raw PRISM schema (confirmed on cluster 2026-07-10): turns live in
+`conversation_history` (a list[dict]); `conversation_turns` is an INT turn-count,
+NOT a list. Per-turn keys include `role` ('user' / 'model') and `content`.
+`post_id` (extra_info) maps to `conversation_id` (raw). `extra_info` carries both
+`user_id` and `raw_user_id`, plus `target_idx`. End-to-end lookup verified against
+test.parquet[0] (user96/c529/target_idx=1 → 2nd user turn → matches ground_truth).
 """
 from __future__ import annotations
 
@@ -33,12 +35,13 @@ def load_raw_prism_replies() -> dict[tuple[str, str, int], str]:
     for row in ds:
         uid = str(row["user_id"])
         cid = str(row["conversation_id"])
-        turn_idx = 0
-        for turn in row.get("conversation_turns", []) or []:
+        user_turn_idx = 0
+        # Turns live in conversation_history (list[dict]); conversation_turns is an int count.
+        for turn in row.get("conversation_history") or []:
             if str(turn.get("role") or "").lower() != "user":
                 continue
-            out[(uid, cid, turn_idx)] = str(turn.get("content") or "")
-            turn_idx += 1
+            out[(uid, cid, user_turn_idx)] = str(turn.get("content") or "")
+            user_turn_idx += 1
     return out
 
 
