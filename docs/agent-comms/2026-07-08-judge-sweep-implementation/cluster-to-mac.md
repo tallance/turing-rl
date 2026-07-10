@@ -6,6 +6,49 @@ Latest report at top; prior reports below.
 
 ---
 
+## Report — 2026-07-10 — Request D partial: D0 + D1 done, **STOPPED before D2 — LoRA config divergence**
+
+### D0 done
+- Patched `data/sft/prism_full_s42_sft_cot.parquet.cot_metadata.json` with `resolved_sampling` field.
+- Deleted 3 smoke files (parquet + metadata + jsonl — also removed the .jsonl your instruction didn't mention).
+
+### D1 done — SFT JSONL built
+- `data/sft/prism_full_s42_sft_cot.jsonl`: **3272 lines** ✓
+- Row 0 assistant target has `<reasoning>...</reasoning>` envelope + `[HUMAN]:` ✓
+- Content structure: 3 messages (system + user + assistant); assistant `content_len=617`; reasoning is the third-person prose from CoT gen.
+
+### D2 — **NOT SUBMITTED. Blocking issue: yaml still at upstream defaults, not paper Table 5**
+
+Before sbatch'ing the 12-16h SFT run I inspected `training/sft/configs/qwen3_8b_lora.yaml` and found the file still holds:
+
+```yaml
+lora_r: 16          # paper Table 5: 64
+lora_alpha: 32      # paper Table 5: 128
+use_qlora: true     # paper Table 5: false (bfloat16, no quantization)
+```
+
+Task 7 in the plan added `save_strategy/save_steps/save_total_limit` (correctly) but did **not** include the LoRA rank / QLoRA fix. `scripts/slurm/sft_full.sh` also doesn't pass `--lora_r`/`--lora_alpha`/`--no_qlora` overrides (all three CLI flags exist in `lora_sft.py:212-232`). The script comment openly says "Uses QLoRA (default in qwen3_8b_lora.yaml)" — that's a paper divergence, not intentional.
+
+**Same issue was flagged in my earlier spec audit** — I called out "#5 — LoRA config unfixed"; the user's response was "make the minimal change to the spec then"; my minimal edit corrected the false `PERSONA_JUDGE_JSON_SCHEMA`/`_dump_reward_call`/`save_strategy yaml-only` claims but **left spec §4.3's claim "unchanged from paper Table 5: LoRA r=64, α=128, dropout=0.05, use_qlora=false, no quantization" intact**. So both the spec and the plan under-specify the fix.
+
+**Impact if we submit as-is:** 12-16h burn producing a checkpoint at r=16/α=32/QLoRA — 4× lower rank, 4× lower alpha, 4-bit quantized weights. Meaningfully weaker than paper Table 5 and undermines the "paper-faithful reproduction" premise the whole sweep rests on. Downstream analysis conclusions (judge-vs-judge accuracy at this-generator-quality) would be measured against a divergent generator.
+
+Per CLAUDE.md ("Report anomalies rather than deciding on them alone"), I did not touch the yaml.
+
+**Options:**
+
+1. **Fix yaml here, submit.** Change to `r: 64, alpha: 128, use_qlora: false, dropout: 0.05` (dropout already 0.05). Note this makes SFT ~2× the compute/memory (no 4-bit quantization + 4× rank means bigger LoRA delta matmuls, though still small vs the frozen base). May need `--gres=gpu:8` (already set) and could push mem envelope on 40GB A100s — worth watching.
+2. **Fix at the CLI level in `sft_full.sh`.** Add `--lora_r 64 --lora_alpha 128 --no_qlora` to the invocation instead of editing yaml. Same effect, more surgical (doesn't touch a config file other tasks read).
+3. **Accept the divergence** and proceed as-is — bfloat16 + r=64 was aspirational, QLoRA r=16 is the "actually reproducible on our hardware" path. Document deviation and move on. This trades faithfulness for cost/wall-time.
+
+I'd recommend **option 2** (CLI overrides in sft_full.sh) — surgical, mirrors what `--resume_from_checkpoint auto` already does, keeps the yaml as a low-friction default for smoke runs, and gives us the paper-Table-5 fidelity for the FULL run without a persistent yaml diff. Also update spec §4.3 to say the yaml holds upstream defaults + the full run overrides via CLI.
+
+**Please tell me which option, and whether to also update spec §4.3.** I'll make the fix and sbatch immediately upon reply.
+
+_(D3 blocked on D2 checkpoint; nothing to run in parallel meanwhile.)_
+
+---
+
 ## Report — 2026-07-10 — Task 8 (CoT gen): **complete, 3272/3272 rows, wall_s=223.7**
 
 Slurm job 9407 on `a100-137-189`. Total elapsed 5:03; server startup ~75s (all 8 healthy by then); client wall 223.7s (~3.7 min); shutdown clean via trap. Exit 0.
