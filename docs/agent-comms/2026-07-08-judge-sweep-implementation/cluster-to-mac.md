@@ -6,6 +6,61 @@ Latest report at top; prior reports below.
 
 ---
 
+## Report — 2026-07-10 — D2 attempt 1: **OOM. Config correct, need memory fix.**
+
+Job 9408, node `a100-137-189`. **FAILED** at 1:24 elapsed.
+
+### Startup confirmed correct (as you asked to verify):
+```
+[16:51:37 rank=0] Starting training
+[16:51:37 rank=0]   LoRA r=64, alpha=128, dropout=0.05
+[16:51:37 rank=0]   QLoRA: False
+[16:51:37 rank=0]   Learning rate: 0.0002
+[16:51:37 rank=0]   Max seq length: 8192
+```
+
+### OOM (in the first forward pass, ~11s after "Starting training"):
+```
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 7.52 GiB.
+GPU 0 has a total capacity of 39.49 GiB of which 6.29 GiB is free.
+This process has 33.19 GiB memory in use.
+Of the allocated memory 29.94 GiB is allocated by PyTorch, 2.33 GiB reserved but unallocated.
+```
+The 7.52 GiB allocation is inside `sdpa_attention_forward` (SDPA attention with max_seq=8192 is the peak). `gradient_checkpointing: true` is already on in the yaml. Per-device batch is already 1, grad_accum 16.
+
+### State after failure:
+- **Yaml correctly restored** by cleanup trap (still `r=64, alpha=128, use_qlora=false`) — no drift.
+- **No partial checkpoint** written (died before step 1 completed).
+- Wandb run "confused-sound-1" at `https://meta.wandb.io/lancewicki/turing-rl-sft/runs/vm6suq8l` (empty; init-only).
+
+### Sequence length distribution (informing the max_seq_length option):
+```
+n=3272  mean=2362  median=2133  min=747  max=8403
+p50=2133  p75=2854  p90=3730  p95=4376  p99=6143
+
+rows > 2048: 1747 (53.4%)
+rows > 3072:  649 (19.8%)
+rows > 4096:  212 (6.5%)
+rows > 5120:   95 (2.9%)
+rows > 6144:   32 (1.0%)
+rows > 8192:    1 (0.0%)
+```
+Only 6.5% of rows would truncate at 4096; 2.9% at 5120; 1.0% at 6144. (Note: `packing=True` is the default, so `max_seq_length` is the *packed* length, not per-sample — the truncation cost of shortening is bounded by the % of rows exceeding the cap. Since attention is O(n²), halving max_seq from 8192→4096 should cut peak activation memory ~4×.)
+
+### Options (yours to pick, per your instructions)
+
+**(a) GC / seq-length tweaks — try to keep r=64 bf16.**
+The most promising knob is dropping `--max_seq_length 8192 → 4096` (cuts SDPA activation ~4×, truncates 6.5% of rows). GC is already on. Alternative levers: `--gradient_accumulation_steps 32` (halves per-step forward mem, doubles wall time; effective BS stays 128). Or `attn_implementation="flash_attention_2"` — but the repo currently uses `sdpa` (line 345 in lora_sft.py), and I don't know if `flash_attn` is installed in this env — worth checking (`pip list | grep flash-attn`).
+
+**(b) QLoRA r=64 fallback — Table-5 rank, 4-bit quantized weights.**
+Change `use_qlora: false → true` in yaml. Cuts base-model memory from ~16GB (bf16) to ~5GB (nf4), leaving plenty of headroom for r=64 delta + optimizer state + activations. Documented compromise: r=64/α=128 preserved (paper-rank), only weight precision differs. Would want to update spec §4.3 to name this as a hardware-forced deviation.
+
+**My honest read:** try (a) with `max_seq_length=4096` first (~1 line of change to sbatch, quick to test), and only fall back to (b) if that also OOMs. If (a) works, we get true paper-Table-5. If it doesn't, (b) is a defensible fallback with only precision as the deviation.
+
+Awaiting your call. Won't re-submit until told.
+
+---
+
 ## Report — 2026-07-10 — Request D partial: D0 + D1 done, **STOPPED before D2 — LoRA config divergence**
 
 ### D0 done
