@@ -15,3 +15,6 @@ weight_decay: 0.01
 gradient_checkpointing: true
 logging_steps: 10
 report_to: none
+save_strategy: steps
+save_steps: 10
+save_total_limit: 2

@@ -1,16 +1,12 @@
 """SFT training with reasoning traces using TRL + LoRA."""
 
 import argparse
+import glob
 import os
 import time
 from typing import Any
 
-import torch
 import yaml
-from datasets import load_dataset
-from peft import LoraConfig, TaskType
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import SFTConfig, SFTTrainer
 
 from shared.prompt_utils import tokenize_with_prefix_boundary
 
@@ -47,6 +43,24 @@ def load_config(config_path: str) -> dict:
     """Load training config from YAML file."""
     with open(config_path) as f:
         return yaml.safe_load(f)
+
+
+def resolve_resume_checkpoint(arg: str | None, output_dir: str) -> str | None:
+    """Resolve --resume_from_checkpoint; 'auto' picks the highest checkpoint-N dir."""
+    if arg != "auto":
+        return arg or None
+    ck = glob.glob(os.path.join(output_dir, "checkpoint-*"))
+    return max(ck, key=lambda p: int(p.rsplit("-", 1)[-1])) if ck else None
+
+
+def save_kwargs_from_config(config: dict) -> dict:
+    """Build SFTConfig save-cadence kwargs from the training config."""
+    ss = config.get("save_strategy", "epoch")
+    out = {"save_strategy": ss}
+    if ss == "steps":
+        out["save_steps"] = config.get("save_steps", 10)
+        out["save_total_limit"] = config.get("save_total_limit", 2)
+    return out
 
 
 def strip_empty_think_prefill(prompt_text: str) -> tuple[str, str]:
@@ -242,10 +256,22 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exit successfully after SFTTrainer construction, before trainer.train()",
     )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Resume from a checkpoint dir, or 'auto' for the latest checkpoint-N in output_dir",
+    )
     return parser.parse_args()
 
 
 def main():
+    import torch
+    from datasets import load_dataset
+    from peft import LoraConfig, TaskType
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from trl import SFTConfig, SFTTrainer
+
     args = parse_args()
     rank = int(os.environ.get("RANK", "0"))
 
@@ -373,7 +399,7 @@ def main():
         weight_decay=config.get("weight_decay", 0.01),
         bf16=True,
         logging_steps=config.get("logging_steps", 10),
-        save_strategy="epoch",
+        **save_kwargs_from_config(config),
         max_length=args.max_seq_length,
         packing=not args.no_packing,
         gradient_checkpointing=config.get("gradient_checkpointing", True),
@@ -410,7 +436,11 @@ def main():
     log(f"  Learning rate: {training_args.learning_rate}")
     log(f"  Max seq length: {args.max_seq_length}")
 
-    trainer.train()
+    trainer.train(
+        resume_from_checkpoint=resolve_resume_checkpoint(
+            args.resume_from_checkpoint, output_dir
+        )
+    )
 
     trainer.save_model(os.path.join(output_dir, "final"))
     tokenizer.save_pretrained(os.path.join(output_dir, "final"))
