@@ -10,7 +10,8 @@ Additinal context is in `turing-rl/Adversarial-User-Simulation.md`
 - **Run cluster commands directly** over the SSH tunnel (see below) — no relay agent needed.
 
 ## Workflow
-- Edit → commit → push (so the cluster checkout has the code) → run on the cluster directly via the tunnel.
+- Edit → commit (→ `git push` for backup/history) → `scripts/sync_to_cluster.sh` deploys the committed tree to the cluster and stamps `DEPLOYED_SHA` → run on the cluster via the tunnel.
+- Mac is the SOLE author; the cluster is a compute mirror (never edited/committed there). The sync ships only the committed HEAD, so every run maps to a SHA (`cat DEPLOYED_SHA` on the cluster).
 - Always use the best model (latest Opus), both for yourself and sub-agents.
 
 ## Cluster access (direct via SSH tunnel — primary)
@@ -19,7 +20,7 @@ The Mac agent reaches the cluster directly; the old Mac↔cluster relay-agent ro
 - Run any command through it: `ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null lancewicki@localhost "<command>"` — squeue/sinfo/sbatch/scancel, `cat` remote files, tail logs, inspect checkpoints. Read remote files via SSH `cat`, NOT the Read tool.
 - Cluster paths/env: repo `/home/lancewicki/projects/turing-rl`; HF cache `/home/lancewicki/data/hf_cache`; conda envs `turing-rl-train` (vLLM/torch/trl) and `judge-vllm` (397B anchor). Slurm is on PATH; partition `a100`.
 - **Always run the `preflight-job-check` skill before any `sbatch`.** Don't exceed ~10 concurrent jobs; don't spam/loop Slurm commands. See the `rfai-cluster` skill for full details.
-- On the cluster, do `git pull` before running so it has the pushed code.
+- Deploy code with `scripts/sync_to_cluster.sh` (ships committed HEAD via `git archive|tar`, stamps `DEPLOYED_SHA`, verifies `.py`/`.sh` syntax on the cluster; never touches `checkpoints/ results/ logs/ wandb/`). Pass file paths for a quick dirty debug push. Cluster `git pull` is no longer needed.
 
 ## Cluster gotchas (V3)
 - **Unset stale V2 proxy env vars in every job**: `unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY` (V3 uses transparent TLS egress; HF/PyPI allowlisted). Our sbatch scripts already do this.
