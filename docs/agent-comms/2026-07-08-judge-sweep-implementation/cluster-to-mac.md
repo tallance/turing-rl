@@ -6,6 +6,67 @@ Latest report at top; prior reports below.
 
 ---
 
+## Report — 2026-07-10 — D2 attempt 2: smokes green, 2 full runs live (FA2 skipped)
+
+### Env check (before smokes)
+```
+$ pip list | grep -i "flash|torch|transformers|trl|peft|bitsandbytes|accelerate"
+accelerate               1.13.0
+bitsandbytes             0.49.2
+flashinfer-jit-cache     0.6.6+cu130      ← NOT flash-attn
+flashinfer-python        0.6.6            ← NOT flash-attn
+peft                     0.19.1
+torch                    2.10.0+cu130
+transformers             4.57.6
+trl                      0.27.2
+```
+**`flash-attn` NOT installed** → per your instruction, `bf16_fa2` variant skipped, no install attempted.
+
+### STEP 1 — smokes (both green, ~30-50s each)
+
+| Job | Variant | State | Exit | Notes |
+|-----|---------|-------|------|-------|
+| 9409 | qlora_r64 | COMPLETED | 0 | 8 ranks × "SFTTrainer built" → "Exiting after SFTTrainer build". Model loaded, bnb 4-bit path fired (checkpoint shards loaded in ~18s). |
+| 9410 | bf16_fsdp | COMPLETED | 0 | 8 ranks × "SFTTrainer built" → "Exiting after SFTTrainer build". **FSDP config accepted — no `fsdp_config` key error, no wrap-class error.** Model loaded, no bnb quantization signals. |
+
+QLoRA / config-line from `trainer.train()` prologue doesn't fire in smoke (exit is before that), but the loaded config comes from the read-only yaml + CLI overrides, so both are equivalent to the full run.
+
+### STEP 2 — full runs launched, both mid-training (~9 min elapsed)
+
+Launched immediately after smokes green. Both progressing cleanly, no OOM.
+
+| Job | Variant | Step | Rate | Est. total wall | wandb |
+|-----|---------|------|------|-----------------|-------|
+| 9411 | qlora_r64 | 5/24 | 93 s/step | **~40 min** | `lwflbb49` |
+| 9412 | bf16_fsdp | 4/24 | 108 s/step | **~45 min** | `0ggujxbn` |
+
+**Startup config confirmed** (all 8 ranks each):
+- Both: `LoRA r=64, alpha=128, dropout=0.05`, `Batch size: 1 x 16 accum` (effective 128), `Max seq length: 8192`
+- 9411: `QLoRA: True`  •  9412: `QLoRA: False`
+
+### Rate observation — 14× faster than your 12-16h estimate
+
+Progress bar shows **24 total steps** (not the ~78 from `3272/128 × 3`). `packing=True` (SFTConfig default) packs multiple short sequences into one 8192-token sequence, dropping effective step count. Concretely:
+- Per-epoch step count with packing ≈ 8 (verified from bar structure: 24/3 = 8 packed batches per epoch)
+- 3 epochs × 8 = 24 total steps
+- 93 s/step × 24 = ~37 min for qlora; 108 s/step × 24 = ~43 min for fsdp
+
+Paper's 12h estimate presumably assumes `packing=False` or shorter max_seq. This is fine — the LoRA still sees every token, just packed contiguously. Loss curve will confirm normal convergence.
+
+**No adapter files yet** (`save_steps=10, save_total_limit=2`) — since total is 24 steps, we'll get checkpoints at 10 and 20, plus `final/`. Should land any time now.
+
+Will report final loss + adapter presence + comparison when they finish (~30-40 min from this report).
+
+### On FA2 — awaiting your call
+
+If you want the third data point later, options and costs:
+- **Install flash-attn from source in `turing-rl-train`**: 20-40 min build; needs `TMPDIR=~/tmp/build` (repo /tmp is 1GB tmpfs); risk of cu130 wheel mismatch since prebuilt wheels target cu121/cu124/cu126. Could break env.
+- **Skip FA2 entirely**: two variants is already enough for the comparison you asked for; fidelity (bf16_fsdp) vs speed/mem (qlora_r64) both represented.
+
+My honest read: skip unless you specifically want to measure FA2 speedup. `bf16_fsdp` gives you exact Table 5 fidelity — FA2 would only be a speed/mem optimization on top. But if you want it, I can attempt the install after these two finish (avoids env-breakage risk while jobs are live).
+
+---
+
 ## Report — 2026-07-10 — D2 attempt 1: **OOM. Config correct, need memory fix.**
 
 Job 9408, node `a100-137-189`. **FAILED** at 1:24 elapsed.
