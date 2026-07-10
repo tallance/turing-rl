@@ -354,15 +354,24 @@ def _build_reward_dump_row(**f) -> dict:
 
 
 def _dump_reward_call(row: dict) -> None:
-    if float(os.environ.get("PERSONA_JUDGE_DUMP_RATE", "0") or "0") <= 0:
-        return
-    d = os.environ.get("PERSONA_REWARD_DUMP_DIR")
-    if not d:
-        return
-    os.makedirs(d, exist_ok=True)
-    job = os.environ.get("SLURM_JOB_ID", "local")
-    with open(os.path.join(d, f"reward-{job}-{os.getpid()}.jsonl"), "a") as fh:
-        fh.write(json.dumps(row, default=str) + "\n")
+    # Best-effort telemetry: a dump failure (bad env value, disk full, permission)
+    # must never break a judge call / crash a sweep, so the whole body is guarded.
+    try:
+        try:
+            rate = float(os.environ.get("PERSONA_JUDGE_DUMP_RATE", "0") or "0")
+        except (TypeError, ValueError):
+            return
+        if rate <= 0:
+            return
+        d = os.environ.get("PERSONA_REWARD_DUMP_DIR")
+        if not d:
+            return
+        os.makedirs(d, exist_ok=True)
+        job = os.environ.get("SLURM_JOB_ID", "local")
+        with open(os.path.join(d, f"reward-{job}-{os.getpid()}.jsonl"), "a") as fh:
+            fh.write(json.dumps(row, default=str) + "\n")
+    except Exception as exc:  # noqa: BLE001 - never let dumping break scoring
+        print(f"[reward-dump] skipped (non-fatal): {type(exc).__name__}: {exc}", flush=True)
 
 
 async def _openai_chat(
