@@ -10,6 +10,8 @@
 #SBATCH --partition=a100
 #SBATCH --account=rfai
 
+# DEPRECATED: single-process launch (single GPU, OOMs on 40GB for bf16 8192-seq). Use sft_variant.sh (torchrun, 8-GPU).
+
 # Full 8-GPU SFT on the PRISM full CoT-annotated slice.
 # Paper Table 5 LoRA config (r=64, alpha=128, bfloat16 / no QLoRA) from
 # qwen3_8b_lora.yaml, with step-checkpointing + auto-resume.

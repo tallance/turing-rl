@@ -63,6 +63,34 @@ def save_kwargs_from_config(config: dict) -> dict:
     return out
 
 
+def resolve_use_qlora(config: dict, *, force_qlora: bool, no_qlora: bool) -> bool:
+    """Force-on wins over the yaml default; --no_qlora always wins (force-off)."""
+    if no_qlora:
+        return False
+    if force_qlora:
+        return True
+    return bool(config.get("use_qlora", True))
+
+
+def build_fsdp_kwargs(fsdp: str, transformer_layer_cls: str | None) -> dict:
+    """SFTConfig kwargs for FSDP. Empty fsdp -> {} (FSDP off, unchanged behavior).
+
+    When on, returns fsdp=<str> + a fsdp_config tuned for PEFT/LoRA.
+    """
+    if not fsdp:
+        return {}
+    fsdp_config = {
+        "use_orig_params": True,  # required for LoRA (mixed frozen/trainable params)
+        "sync_module_states": True,
+        "cpu_ram_efficient_loading": True,  # rank0 loads, broadcasts — avoids 8x CPU model copies
+        "backward_prefetch": "backward_pre",
+        "limit_all_gathers": True,
+    }
+    if transformer_layer_cls:
+        fsdp_config["transformer_layer_cls_to_wrap"] = [transformer_layer_cls]
+    return {"fsdp": fsdp, "fsdp_config": fsdp_config}
+
+
 def strip_empty_think_prefill(prompt_text: str) -> tuple[str, str]:
     """Strip a tokenizer-injected empty Qwen think block from the assistant prompt."""
     for prefill in QWEN_EMPTY_THINK_PREFILLS:
@@ -262,6 +290,35 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Resume from a checkpoint dir, or 'auto' for the latest checkpoint-N in output_dir",
     )
+    parser.add_argument(
+        "--attn_implementation",
+        type=str,
+        default="sdpa",
+        help="sdpa | flash_attention_2 | eager",
+    )
+    parser.add_argument(
+        "--report_to",
+        type=str,
+        default=None,
+        help="override yaml report_to, e.g. wandb",
+    )
+    parser.add_argument(
+        "--force_qlora",
+        action="store_true",
+        help="force 4-bit QLoRA on even if yaml use_qlora:false",
+    )
+    parser.add_argument(
+        "--fsdp",
+        type=str,
+        default="",
+        help='HF FSDP mode string, e.g. "full_shard auto_wrap"; empty = off',
+    )
+    parser.add_argument(
+        "--fsdp_transformer_layer_cls",
+        type=str,
+        default=None,
+        help="transformer layer class to auto-wrap, e.g. Qwen3DecoderLayer",
+    )
     return parser.parse_args()
 
 
@@ -347,7 +404,7 @@ def main():
         target_modules=get_lora_targets(args.model),
     )
 
-    use_qlora = config.get("use_qlora", True) and not args.no_qlora
+    use_qlora = resolve_use_qlora(config, force_qlora=args.force_qlora, no_qlora=args.no_qlora)
     bnb_config = None
     model_kwargs = {}
     if use_qlora:
@@ -368,7 +425,8 @@ def main():
         quantization_config=bnb_config,
         dtype=torch.bfloat16,
         trust_remote_code=True,
-        attn_implementation="sdpa",
+        attn_implementation=args.attn_implementation,
+        low_cpu_mem_usage=True,
         **model_kwargs,
     )
     log("Model loaded")
@@ -404,11 +462,12 @@ def main():
         packing=not args.no_packing,
         gradient_checkpointing=config.get("gradient_checkpointing", True),
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        report_to=config.get("report_to", "none"),
+        report_to=args.report_to or config.get("report_to", "none"),
         completion_only_loss=True,
         ddp_find_unused_parameters=False,
         seed=42,
         torch_compile=not args.no_torch_compile,
+        **build_fsdp_kwargs(args.fsdp, args.fsdp_transformer_layer_cls),
     )
 
     log("Building SFTTrainer")
