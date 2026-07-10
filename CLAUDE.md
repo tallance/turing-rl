@@ -1,19 +1,32 @@
-# Turing-RL — repro of MIT's user-simulator paper
+Building on top of "Learning User Simulators with Turing Rewards" (arXiv:2606.19336). Repo: `~/projects/turing-rl`.
 
-Reproducing "Learning User Simulators with Turing Rewards" (arXiv:2606.19336). Repo: `~/projects/turing-rl`.
+Long-term goal: co-train a GRPO user-simulator generator with a trainable discriminator to produce turns indistinguishable from real humans (adversarial extension of Turing-RL's frozen judge).
+Additinal context is in `turing-rl/Adversarial-User-Simulation.md`
 
-## Environment
-- **Conda env for vLLM judge**: `judge-vllm` (vllm 0.23.0, transformers 5.12.1, torch 2.11.0+cu130).
-- **For Bash tool calls, prefer direct binary paths over `conda activate`** (e.g., `/home/lancewicki/miniconda3/envs/judge-vllm/bin/python`).
-- Slurm: partition `a100` (8× A100-SXM4-**40GB** per node, driver 580.126.09 / CUDA 13.0). Login pod has no GPU — run `sbatch`/`srun`.
-- Storage: FSx-NFS at `~`, **43TB free**, no enforced quota. `/tmp` is a 1GB tmpfs — for pip/heavy builds set `TMPDIR=~/tmp/build` and `PIP_CACHE_DIR=~/tmp/pip-cache`.
-- HF cache: `~/data/hf_cache` (228GB used; judge model `Qwen3.5-397B-A17B-GPTQ-Int4` already cached, 220GB).
-
-## Critical
-- **V3 cluster requires unsetting stale V2 proxy env vars in every job**: `unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY`. V3 uses transparent TTLS for egress (HuggingFace/PyPI/etc are allowlisted).
-- A100s are **40GB**, not 80GB. Turing-RL repo's default `max_model_len=13524` + LoRA r=64 + vLLM rollout will likely OOM. Plan to reduce `max_model_len` or raise `gpu_memory_utilization`.
-- Slurm buffers stdout — logs may lag; don't assume failure from an empty log.
+## Where you are
+- **Mac working copy.** Edit code, write specs/plans, implement changes. No GPUs, no Slurm locally.
+- Cluster checkout at `/storage/home/lancewicki/projects/turing-rl` on V3 AWS (8× A100-40GB per node) runs everything.
+- Sync CODE via git: commit + push to `mine/lancewicki/main` (fork: `tallance/turing-rl`); the cluster checkout pulls.
+- **Run cluster commands directly** over the SSH tunnel (see below) — no relay agent needed.
 
 ## Workflow
-- Submit: `sbatch scripts/slurm/<job>.sh`; monitor: `squeue --me` and `tail -f` the log.
-- Always use the best model (latest Opus), both for yourself as well as for sub-agents.
+- Edit → commit → push (so the cluster checkout has the code) → run on the cluster directly via the tunnel.
+- Always use the best model (latest Opus), both for yourself and sub-agents.
+
+## Cluster access (direct via SSH tunnel — primary)
+The Mac agent reaches the cluster directly; the old Mac↔cluster relay-agent roundtrip is no longer required.
+- The user keeps a tunnel open in a separate terminal: `ssh -L 2223:localhost:22 rfai-research-aws-use2-1 -N` (prompts 2FA; login pod has a 7-day TTL — refresh with `cloud_corp hpc login rfai-research-aws-use2-1` if it refuses).
+- Run any command through it: `ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null lancewicki@localhost "<command>"` — squeue/sinfo/sbatch/scancel, `cat` remote files, tail logs, inspect checkpoints. Read remote files via SSH `cat`, NOT the Read tool.
+- Cluster paths/env: repo `/home/lancewicki/projects/turing-rl`; HF cache `/home/lancewicki/data/hf_cache`; conda envs `turing-rl-train` (vLLM/torch/trl) and `judge-vllm` (397B anchor). Slurm is on PATH; partition `a100`.
+- **Always run the `preflight-job-check` skill before any `sbatch`.** Don't exceed ~10 concurrent jobs; don't spam/loop Slurm commands. See the `rfai-cluster` skill for full details.
+- On the cluster, do `git pull` before running so it has the pushed code.
+
+## Cluster gotchas (V3)
+- **Unset stale V2 proxy env vars in every job**: `unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY` (V3 uses transparent TLS egress; HF/PyPI allowlisted). Our sbatch scripts already do this.
+- **A100s are 40GB, not 80GB.** bf16 8B + long-seq/LoRA can OOM — shard (FSDP) or quantize (QLoRA), and launch multi-GPU via `torch.distributed.run --nproc_per_node=8`, not plain `python` (plain python = single-GPU → wastes 7 GPUs and OOMs).
+- **`/tmp` is a 1GB tmpfs** — for pip/heavy builds set `TMPDIR=~/tmp/build` and `PIP_CACHE_DIR=~/tmp/pip-cache`.
+- **Slurm buffers stdout** — logs may lag; don't infer failure from an empty/short log.
+- Prefer direct binary paths over `conda activate` in one-off commands (e.g. `/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python`).
+
+## Fallback: agent comms (only if the tunnel is down)
+If direct access isn't available, use the git relay: write instructions to `docs/agent-comms/<plan-name>/mac-to-cluster.md` (one subfolder per plan; `<plan-name>` = plan filename without `.md`), commit + push; the cluster agent runs it and replies in `cluster-to-mac.md` (don't edit that file). Pure local work (editing, planning, non-GPU code, local tests) skips any roundtrip.
