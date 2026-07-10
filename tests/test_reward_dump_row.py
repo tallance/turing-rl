@@ -28,3 +28,32 @@ def test_generated_is_b_present_when_false():
 
 def test_rating_not_stored():
     assert "rating" not in _build_reward_dump_row(**KW)  # viewer derives it
+
+
+def test_judge_call_meta_contextvar_roundtrip():
+    # Fix 2: post_chat_async stashes telemetry on a contextvar; callers read it back
+    # via get_judge_call_meta(). Exercise the round-trip without a server.
+    from shared.api_client import get_judge_call_meta, judge_call_meta
+
+    sample = {"latency_ms": 12.5, "finish_reason": "length", "usage": {"completion_tokens": 8192}}
+    token = judge_call_meta.set(sample)
+    try:
+        got = get_judge_call_meta()
+        assert got == sample
+        assert got["finish_reason"] == "length"
+        assert got["usage"]["completion_tokens"] == 8192
+    finally:
+        judge_call_meta.reset(token)
+
+
+def test_dump_row_carries_finish_reason_from_result_meta():
+    # A result-style dict carrying the contextvar meta must surface non-None
+    # finish_reason / usage on the reward dump row (was hard-coded None/{}).
+    result = {"rating": 3, "judge_finish_reason": "length", "judge_usage": {"completion_tokens": 42}}
+    row = _build_reward_dump_row(**{
+        **KW,
+        "judge_finish_reason": result.get("judge_finish_reason"),
+        "judge_usage": result.get("judge_usage") or {},
+    })
+    assert row["judge_finish_reason"] == "length"
+    assert row["judge_usage"]["completion_tokens"] == 42

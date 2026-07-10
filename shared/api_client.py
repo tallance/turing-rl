@@ -9,6 +9,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from contextvars import ContextVar
 from typing import Any
 
 try:  # pragma: no cover - exercised in runtime envs
@@ -19,6 +20,19 @@ except ImportError:  # pragma: no cover
 from shared.load_env import get_openai_api_base, get_openai_api_key
 
 _OPENAI_MAX_RETRIES_CAP = 3
+
+# Side-channel for per-call judge telemetry (finish_reason / usage / latency).
+# post_chat_async stashes the metadata of its successful call here so callers can
+# read it back WITHOUT changing post_chat_async's widely-used ``-> str`` signature.
+# Concurrency-safe: asyncio.gather runs each top-level coroutine as its own Task
+# with a copied context, so a ``.set()`` inside an awaited callee is visible only
+# up that Task's own await-chain.
+judge_call_meta: ContextVar = ContextVar("judge_call_meta", default=None)
+
+
+def get_judge_call_meta() -> dict | None:
+    """Return the telemetry stashed by the most recent ``post_chat_async`` call."""
+    return judge_call_meta.get()
 
 
 def get_openai_max_retries(
@@ -216,10 +230,27 @@ async def post_chat_async(
                         resp.raise_for_status()
                         data = await resp.json()
                         content = _extract_chat_content(data)
-                        if _should_dump_judge(payload):
-                            _dump_judge_response(
-                                payload, data, latency_ms=(time.monotonic() - t0) * 1000.0
+                        latency_ms = (time.monotonic() - t0) * 1000.0
+                        # Stash per-call telemetry on the contextvar side-channel.
+                        # Defensive: telemetry must never raise inside the HTTP path.
+                        try:
+                            choices = data.get("choices") if isinstance(data, dict) else None
+                            first_choice = choices[0] if isinstance(choices, list) and choices else {}
+                            finish_reason = (
+                                first_choice.get("finish_reason")
+                                if isinstance(first_choice, dict)
+                                else None
                             )
+                            usage = data.get("usage") if isinstance(data, dict) else None
+                            judge_call_meta.set({
+                                "latency_ms": latency_ms,
+                                "finish_reason": finish_reason,
+                                "usage": usage or {},
+                            })
+                        except Exception:  # noqa: BLE001 - telemetry never breaks the call
+                            pass
+                        if _should_dump_judge(payload):
+                            _dump_judge_response(payload, data, latency_ms=latency_ms)
                         return content
             if retry_after is not None:
                 await asyncio.sleep(retry_after)

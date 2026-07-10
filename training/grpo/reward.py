@@ -25,6 +25,7 @@ from shared.prompt_utils import (
 )
 from shared.api_client import (
     build_chat_payload,
+    get_judge_call_meta,
     get_openai_max_retries,
     post_chat_async,
     resolve_judge_api_key,
@@ -403,8 +404,6 @@ async def _openai_chat(
     )
     return await post_chat_async(session, payload, semaphore=_get_reward_judge_request_semaphore())
 
-    raise RuntimeError(f"OpenAI API call failed after {max_retries} retries")
-
 
 def _get_judge_max_completion_tokens() -> int:
     return int(os.environ.get("PERSONA_JUDGE_MAX_COMPLETION_TOKENS", "8192"))
@@ -549,6 +548,7 @@ async def _score_pairwise_likert_with_info(
         )
         parse_attempts = get_openai_max_retries()
         data = None
+        judge_meta: dict = {}
         for parse_attempt in range(parse_attempts):
             text = await _openai_chat(
                 session,
@@ -556,6 +556,10 @@ async def _score_pairwise_likert_with_info(
                 api_key,
                 response_format=_resolve_response_format(),
             )
+            # Read the telemetry stashed by post_chat_async for THIS call. If the
+            # parse-retry loop runs again, this is overwritten by the next call's
+            # meta, so the value kept matches the ``text`` we ultimately return.
+            judge_meta = get_judge_call_meta() or {}
             data = _extract_json(text)
             if data is not None:
                 break
@@ -665,6 +669,9 @@ async def _score_pairwise_likert_with_info(
             "parse_error": parse_error,
             "judge_prompt": prompt,
             "judge_raw_content": text,
+            "judge_latency_ms": judge_meta.get("latency_ms"),
+            "judge_finish_reason": judge_meta.get("finish_reason"),
+            "judge_usage": judge_meta.get("usage") or {},
         }
 
     generated_is_b = _stable_turing_generated_is_b(
@@ -756,10 +763,10 @@ async def _score_pairwise_likert_with_info(
         judge_prompt=result.get("judge_prompt"),
         judge_raw_content=result.get("judge_raw_content"),
         judge_reasoning=result.get("reasoning"),
-        judge_latency_ms=None,
-        judge_finish_reason=None,
+        judge_latency_ms=result.get("judge_latency_ms"),
+        judge_finish_reason=result.get("judge_finish_reason"),
         judge_model=os.environ.get("JUDGE_MODEL", JUDGE_MODEL),
-        judge_usage={},
+        judge_usage=result.get("judge_usage") or {},
         final_reward=None,
         turing_judge_score_raw=likert_score,
         turing_judge_score_clipped=clip_turing_judge_score(likert_score),
