@@ -44,6 +44,12 @@ DATA=$REPO/data/sft/prism_full_s42_sft_cot.jsonl
 
 VARIANT=${VARIANT:?set VARIANT=qlora_r64|bf16_fsdp|bf16_fa2}
 SMOKE=${SMOKE:-0}
+# NOPACK=1 disables trl sequence packing. Under sdpa, packing=True leaks attention
+# across packed conversations (trl delegates isolation to FlashAttention varlen, which
+# sdpa lacks). --no_packing gives clean per-conversation attention. Writes to a distinct
+# "_nopack" output dir so it never resumes a packed run. DELIBERATE deviation from
+# upstream (which packs) — documented in our_patches.md.
+NOPACK=${NOPACK:-0}
 
 case "$VARIANT" in
   qlora_r64)
@@ -62,6 +68,11 @@ case "$VARIANT" in
     echo "bad VARIANT=$VARIANT (expected qlora_r64|bf16_fsdp|bf16_fa2)"; exit 2 ;;
 esac
 
+if [ "$NOPACK" = "1" ]; then
+  OUT="${OUT}_nopack"
+  export WANDB_NAME="${WANDB_NAME}-nopack"
+fi
+
 # Build the arg list as an array so the quoted multi-word FSDP value survives intact.
 ARGS=(--model qwen3-8b --data_path "$DATA" --output_dir "$OUT" --max_seq_length 8192
       --resume_from_checkpoint auto --report_to wandb --no_torch_compile)
@@ -75,6 +86,7 @@ case "$VARIANT" in
 esac
 
 [ "$SMOKE" = "1" ] && ARGS+=(--exit_after_trainer_build --max_train_examples 64)
+[ "$NOPACK" = "1" ] && ARGS+=(--no_packing)
 
 mkdir -p "$OUT"
 [ -f "$DATA" ] || { echo "ERROR: missing $DATA"; exit 2; }
@@ -87,6 +99,7 @@ echo "Host:    $(hostname)"
 echo "VARIANT: $VARIANT"
 echo "Output:  $OUT"
 echo "Smoke:   $SMOKE"
+echo "NoPack:  $NOPACK"
 nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader | head -1
 echo "============================================"
 
