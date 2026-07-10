@@ -113,17 +113,24 @@ def load_endpoints(path: str | Path) -> list[str]:
 
 async def _post(
     session: "aiohttp.ClientSession",
-    endpoint: str,
+    endpoints: list[str],
     payload: dict,
     *,
     api_key: str,
+    base_index: int = 0,
     max_retries: int = 3,
     retry_sleep_seconds: float = 5.0,
 ) -> str:
-    """POST one chat completion to <endpoint>/chat/completions and return content."""
-    url = f"{endpoint.rstrip('/')}/chat/completions"
+    """POST one chat completion and return content.
+
+    Retries rotate across ``endpoints`` (failover): attempt ``a`` targets
+    ``pick_endpoint(endpoints, base_index + a)`` so a dead replica does not get
+    re-hit on every retry.
+    """
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     for attempt in range(max_retries):
+        endpoint = pick_endpoint(endpoints, base_index + attempt)
+        url = f"{endpoint.rstrip('/')}/chat/completions"
         try:
             async with session.post(url, headers=headers, json=payload) as resp:
                 if resp.status >= 400:
@@ -145,14 +152,32 @@ async def _post(
             if attempt == max_retries - 1:
                 raise
             await asyncio.sleep(retry_sleep_seconds)
-    raise RuntimeError(f"CoT request to {endpoint} failed after {max_retries} retries")
+    raise RuntimeError(f"CoT request failed after {max_retries} retries across {endpoints}")
+
+
+def _failed_trace(model: str, attempts: int) -> dict[str, Any]:
+    """Trace recorded when a row's requests are exhausted / raise permanently.
+
+    Empty reasoning + failed leakage guard so the row is visibly not-good; the
+    ``_row_failed`` marker is internal (popped before it reaches ``extra_info``)
+    so the on-disk ``extra_info`` keys stay identical to a successful trace.
+    """
+    return {
+        "ground_truth_reasoning": "",
+        "thinking_trace_source": THINKING_TRACE_SOURCE,
+        "thinking_trace_model": model,
+        "thinking_trace_num_regen_attempts": attempts,
+        "thinking_trace_failed_leakage_guard": True,
+        "_row_failed": True,
+    }
 
 
 async def _annotate_row(
     session: "aiohttp.ClientSession",
     row: dict[str, Any],
     *,
-    endpoint: str,
+    endpoints: list[str],
+    base_index: int,
     model: str,
     max_completion_tokens: int,
     max_regen_attempts: int,
@@ -162,7 +187,9 @@ async def _annotate_row(
     """Generate one reasoning trace with the leakage-guard regen loop.
 
     Mirrors generate_reasoning_for_row but async + thinking-off. Returns the
-    trace dict (upstream keys) or None if the row has no ground truth.
+    trace dict (upstream keys) or None if the row has no ground truth. A row
+    whose requests are exhausted or raise is recorded as a failed trace rather
+    than propagating the exception out of the fan-out (which would abort the run).
     """
     extra_info = dict(row.get("extra_info") or {})
     reward_model = dict(row.get("reward_model") or {})
@@ -173,18 +200,28 @@ async def _annotate_row(
     reasoning = ""
     attempts = 0
     leaked = True
-    for attempt in range(1, max(1, max_regen_attempts) + 1):
-        attempts = attempt
-        messages = _build_messages(extra_info, ground_truth, regen=attempt > 1)
-        payload = build_cot_payload(
-            model, messages, max_completion_tokens=max_completion_tokens
+    try:
+        for attempt in range(1, max(1, max_regen_attempts) + 1):
+            attempts = attempt
+            messages = _build_messages(extra_info, ground_truth, regen=attempt > 1)
+            payload = build_cot_payload(
+                model, messages, max_completion_tokens=max_completion_tokens
+            )
+            async with semaphore:
+                content = await _post(
+                    session, endpoints, payload, api_key=api_key, base_index=base_index
+                )
+            reasoning = (content or "").strip()
+            leaked = reasoning_leaks_reply(reasoning, ground_truth)
+            if reasoning and not leaked:
+                break
+    except Exception as exc:  # noqa: BLE001 - one row must never kill the batch
+        print(
+            f"[cot_served] row {base_index} failed permanently: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
         )
-        async with semaphore:
-            content = await _post(session, endpoint, payload, api_key=api_key)
-        reasoning = (content or "").strip()
-        leaked = reasoning_leaks_reply(reasoning, ground_truth)
-        if reasoning and not leaked:
-            break
+        return _failed_trace(model, attempts)
 
     return {
         "ground_truth_reasoning": reasoning,
@@ -225,12 +262,12 @@ async def generate_cot_served(
     async with aiohttp.ClientSession(timeout=timeout) as session:
         tasks = []
         for i, row in enumerate(rows):
-            endpoint = pick_endpoint(endpoints, i)
             tasks.append(
                 _annotate_row(
                     session,
                     row,
-                    endpoint=endpoint,
+                    endpoints=endpoints,
+                    base_index=i,
                     model=model,
                     max_completion_tokens=max_completion_tokens,
                     max_regen_attempts=max_regen_attempts,
@@ -238,21 +275,35 @@ async def generate_cot_served(
                     semaphore=semaphore,
                 )
             )
-        traces = await asyncio.gather(*tasks)
+        # return_exceptions=True is belt-and-suspenders: _annotate_row already
+        # swallows per-row failures, but this guarantees no stray exception can
+        # abort the gather and lose every in-memory trace.
+        traces = await asyncio.gather(*tasks, return_exceptions=True)
     wall_s = time.monotonic() - t0
 
     written = 0
     failed_guard = 0
+    rows_failed = 0
     skipped = 0
     leak_regen_counts: dict[str, int] = {}
-    for row, trace in zip(rows, traces):
+    for i, (row, trace) in enumerate(zip(rows, traces)):
+        if isinstance(trace, BaseException):
+            print(
+                f"[cot_served] row {i} raised out of fan-out: "
+                f"{type(trace).__name__}: {trace}",
+                flush=True,
+            )
+            trace = _failed_trace(model, 0)
         if trace is None:
             skipped += 1
             continue
+        row_failed = bool(trace.pop("_row_failed", False))
         extra_info = dict(row.get("extra_info") or {})
         extra_info.update(trace)
         row["extra_info"] = extra_info
         written += 1
+        if row_failed:
+            rows_failed += 1
         if trace["thinking_trace_failed_leakage_guard"]:
             failed_guard += 1
         key = str(trace["thinking_trace_num_regen_attempts"])
@@ -264,6 +315,7 @@ async def generate_cot_served(
     metadata = {
         "n_rows": len(rows),
         "rows_written": written,
+        "rows_failed": rows_failed,
         "rows_failed_leakage_guard": failed_guard,
         "rows_skipped": skipped,
         "endpoints": endpoints,
