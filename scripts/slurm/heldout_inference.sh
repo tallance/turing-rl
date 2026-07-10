@@ -14,7 +14,9 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache PYTHONUNBUFFERED=1
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 REPO=/home/lancewicki/projects/turing-rl
-CKPT=$REPO/checkpoints/sft/qwen3_8b_prism_full_s42
+# Chosen generator: bf16_fsdp variant (full Table-5 fidelity; best loss/acc). --checkpoint_dir
+# resolves to its final/ adapter via resolve_adapter_path.
+CKPT=$REPO/checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp
 TEST=$REPO/data/prism/full_s42_history_sft40_grpo60_test10/test.parquet
 OUT_DIR=$REPO/results/2026-07-08-judge-sweep/raw/generator
 OUT=$OUT_DIR/heldout_inference.pkl
