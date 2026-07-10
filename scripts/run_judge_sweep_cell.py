@@ -127,6 +127,14 @@ async def async_main() -> None:
         raise SystemExit(
             f"endpoint_index {args.endpoint_index} >= number of endpoints {len(endpoints)}"
         )
+    # Guard against silent pair loss: shards are pairs[i::num_endpoints], so if
+    # num_endpoints > len(endpoints) the shards with index >= len(endpoints) never
+    # run and their pairs vanish from the cell. Require an exact match.
+    if args.num_endpoints != len(endpoints):
+        raise SystemExit(
+            f"num_endpoints ({args.num_endpoints}) must equal the number of "
+            f"endpoints ({len(endpoints)}) so every shard is executed"
+        )
     my_endpoint = endpoints[args.endpoint_index]
     cell_name = args.cell_name or model_cell_name(args.model)
 
