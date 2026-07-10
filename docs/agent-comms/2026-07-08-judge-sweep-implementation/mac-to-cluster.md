@@ -12,41 +12,68 @@ below; do NOT run steps whose upstream deps aren't produced yet.
 - **Task-1 generation_config scan** — sampling frozen to T=0.6/top_p=0.95/top_k=20/min_p=0.
 - **Task 2 — PRISM verification: all 7 green** (after the tests/__init__.py + conversation_history fixes).
 - **Task 3 — re-split hash compare: all 4 parquets byte-identical.** PRISM split verified paper-faithful end-to-end.
+- **Task 8 — CoT generation: 3272/3272 rows, 0 failures, 0 `<think>` tags, 86 leak-guard kept-with-flag** (job 9407). `data/sft/prism_full_s42_sft_cot.parquet` produced. **This unblocks SFT below.**
 
 ---
 
-## Request C — Task 8: CoT generation (served, thinking-off) — LONG POLE
+## Request D — Task 10 + Task 11: build SFT JSONL → SFT train → heldout inference
 
-Now unblocked (split verified). This produces the SFT training data; SFT (next step)
-depends on it. Runs Qwen3-8B thinking-off over the 3272-row sft/train split.
+CoT output is confirmed, so the whole SFT chain is unblocked. Do the two small cleanups
+first, then run the chain. `git pull` first (new commits: heldout launcher, CoT metadata field, review fixes).
 
 ```
 cd /storage/home/lancewicki/projects/turing-rl && git pull
-sbatch scripts/slurm/cot_serve.sh      # 8× Qwen3-8B TP=1 (ports 8000-8007) + runs the client
 ```
-`cot_serve.sh` brings up 8 replicas, waits for /health, then runs
-`scripts/generate_cot_served.py` over `data/prism/full_s42_history_sft40_grpo60_test10/sft/train.parquet`
-→ writes `data/sft/prism_full_s42_sft_cot.parquet` (+ `.cot_metadata.json`).
 
-**Suggested de-risking (optional but cheap):** once the 8 servers are healthy, before/instead of the
-full run you can point the client at a 20-row head slice to sanity-check the served path:
+### D0 — Cleanups (cheap, do first)
+
+1. **Record resolved sampling in the existing CoT metadata** (the run wrote `sampling: null`;
+   the generator now emits a `resolved_sampling` field, but the frozen sidecar predates it).
+   Patch it in place so the frozen artifact is self-documenting:
+   ```
+   /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python -c "import json,pathlib; p=pathlib.Path('data/sft/prism_full_s42_sft_cot.parquet.cot_metadata.json'); m=json.loads(p.read_text()); m.setdefault('resolved_sampling','generation_config_defaults (no wire override): Qwen3-8B T=0.6/top_p=0.95/top_k=20/min_p=0'); p.write_text(json.dumps(m,indent=2)+'\n'); print('patched', p)"
+   ```
+2. **Discard the 138-row smoke parquet** (Task-8 Step 6):
+   ```
+   rm -f data/sft/qwen3-8b_prism_smoke_sft_cot.parquet data/sft/qwen3-8b_prism_smoke_sft_cot.parquet.cot_metadata.json
+   ```
+
+### D1 — Task 10: build SFT JSONL
+
 ```
-python -c "import pandas as pd; df=pd.read_parquet('data/prism/full_s42_history_sft40_grpo60_test10/sft/train.parquet').head(20); df.to_parquet('/tmp/cot_smoke20.parquet')"
-/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python scripts/generate_cot_served.py \
-    --endpoints <endpoints_file> --input /tmp/cot_smoke20.parquet --out /tmp/cot_smoke20_out.parquet
+/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python -m data.sft.build_sft_jsonl \
+    --input_parquet data/sft/prism_full_s42_sft_cot.parquet \
+    --output_jsonl  data/sft/prism_full_s42_sft_cot.jsonl
 ```
-Check a couple of `extra_info.ground_truth_reasoning` values: non-empty, thinking-off style
-(first/third-person prose, NO `<think>` tags). Then run the full 3272.
+This requires `ground_truth_reasoning` in each row's `extra_info` (Task 8 wrote it). Rows are
+`{"messages": [...]}` with the assistant turn from `format_sft_assistant_content(ground_truth, ground_truth_reasoning)`.
+**Gate:** `wc -l data/sft/prism_full_s42_sft_cot.jsonl` == 3272; paste one line whose assistant
+target contains the reasoning envelope + `[HUMAN]:`. (Data output — no commit.)
 
-**Gate / report back:**
-- row count == 3272 in the output parquet;
-- from `.cot_metadata.json`: `rows_failed` (should be ~0 — the client has failover + partial-result
-  survival, so a replica hiccup won't lose everything) and the leak/regen counts;
-- 3–5 spot-checked `ground_truth_reasoning` values are non-empty + thinking-off style (no `<think>`).
-- If servers fail to come up or output is degenerate, paste the vLLM server log tail + the client stderr.
+### D2 — Task 11 Step 1: SFT training
 
-**Note:** thinking-off is enforced by the client (`chat_template_kwargs.enable_thinking=False`),
-and `cot_serve.sh` runs NO `--reasoning-parser`. No sampling is sent on the wire — vLLM applies
-Qwen3-8B's generation_config defaults (T=0.6/top_p=0.95/top_k=20), matching the frozen policy.
+```
+sbatch scripts/slurm/sft_full.sh    # reads data/sft/prism_full_s42_sft_cot.jsonl, Qwen3-8B LoRA
+```
+~78 steps, ~8 checkpoints (save_steps=10, save_total_limit=2). On crash, resubmit — `--resume_from_checkpoint auto`
+picks up the latest checkpoint automatically. Writes to `checkpoints/sft/qwen3_8b_prism_full_s42/`.
+**Gate:** `checkpoints/sft/qwen3_8b_prism_full_s42/final/` has adapter `.safetensors`; paste the
+wandb loss curve (or final loss) + confirm it trended down.
 
-_(Next after this: build SFT JSONL → SFT training. Added here once CoT output is confirmed.)_
+### D3 — Task 11 Step 2: heldout inference
+
+Only after the checkpoint exists:
+```
+sbatch scripts/slurm/heldout_inference.sh    # new launcher; loads the adapter, runs eval.generate_trained
+```
+Runs the trained generator over `test.parquet` (880 rows / 128 heldout users), `gen_num 1`,
+`conditioning_mode history`, TP=1. Sampling is domain-inferred (prism → T=0.6, top_p=1.0, top_k=-1,
+pres_pen=0.5, max_tokens=2048; paper Table 4). Writes
+`results/2026-07-08-judge-sweep/raw/generator/heldout_inference.pkl` + `heldout_inference_metadata.json`.
+**Gate:** 880 generations across 128 users. **IMPORTANT — report the pickle's actual nesting**
+(per-user dict → `test_results`/`test_targets` → `generations`/`outputs`, and whether each
+generation is a dict-with-`text` or a bare string) so Task 13's `build_pairs` flattener can be
+aligned/confirmed against the real structure before it runs on it.
+
+**Next after this (I'll queue once D3 lands):** Task 13 Step 5 (build the frozen 880-pair set from
+the pickle) → Task 17 (4B family smoke) → then the config/analyzer/sweep tasks unblock.
