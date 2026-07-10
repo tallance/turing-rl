@@ -6,6 +6,61 @@ Latest report at top; prior reports below.
 
 ---
 
+## Report — 2026-07-10 — Task 8 (CoT gen): **complete, 3272/3272 rows, wall_s=223.7**
+
+Slurm job 9407 on `a100-137-189`. Total elapsed 5:03; server startup ~75s (all 8 healthy by then); client wall 223.7s (~3.7 min); shutdown clean via trap. Exit 0.
+
+### `data/sft/prism_full_s42_sft_cot.parquet.cot_metadata.json`
+```json
+{
+  "n_rows": 3272,
+  "rows_written": 3272,
+  "rows_failed": 0,
+  "rows_failed_leakage_guard": 86,
+  "rows_skipped": 0,
+  "endpoints": ["http://a100-137-189:8000/v1", ..., "http://a100-137-189:8007/v1"],
+  "model": "Qwen/Qwen3-8B",
+  "sampling": null,
+  "thinking": "off",
+  "max_regen_attempts": 10,
+  "concurrency": 128,
+  "wall_s": 223.695,
+  "leak_regen_counts": {"1": 2579, "2": 397, "3": 92, "4": 37, "5": 27, "6": 21, "7": 16, "8": 5, "9": 8, "10": 90}
+}
+```
+
+### Verification
+
+Ran a pandas read on the output parquet:
+- **3272 rows**, cols `['data_source', 'prompt', 'reward_model', 'extra_info']` ✓
+- `extra_info` gained: `ground_truth_reasoning`, `thinking_trace_source`, `thinking_trace_failed_leakage_guard` (+ others) ✓
+- **0/3272 rows contain `<think>` tag** (thinking-off correctly enforced on the wire) ✓
+- **86/3272 rows (2.6%) have `thinking_trace_failed_leakage_guard=True`** — matches the metadata; these hit the 10-try regen cap and were kept with the flag set
+
+### Spot-check reasoning traces (all thinking-off, third-person, coherent)
+
+Row 0 (attempts=1, 556 chars):
+- gt: `'What is your view on Anfield'`
+- reasoning[:200]: `"The user noticed that the previous response mentioned Anfield as Liverpool FC's home stadium, which sparked their interest in learning more about it. They wanted to delve deeper into the significance ..."`
+
+Row 1 (attempts=1, 635 chars):
+- gt: `'Tell me more about why Toronto Maple Leafs are better than the Montreal Canadians?'`
+- reasoning[:200]: `'The user is interested in comparing the Toronto Maple Leafs and the Montreal Canadiens to determine which team is better. They already believe the Maple Leafs are the best team and want to understand ...'`
+
+Row 2 (attempts=1, 653 chars):
+- gt: `'can you tell me the orders specifically, woch heat and how long'`
+- reasoning[:200]: `'The user noticed that the previous response provided a recipe for spaghetti bolognese but stopped mid-instruction, leaving the steps incomplete. They likely wanted to follow the recipe but found it cu...'`
+
+All three: third-person "The user…" perspective (thinking-off style), no `<think>` markup, no verbatim reply copying (leak guard passed on attempt 1).
+
+### One caveat
+
+Metadata's `sampling: null` is expected (the client sends no sampling params — vLLM applies Qwen3-8B's `generation_config.json` defaults: T=0.6, top_p=0.95, top_k=20), but you may want the metadata to *record* the resolved defaults for reproducibility rather than showing null. Not blocking.
+
+**Ready for the next handoff.** The 138-row smoke parquet at `data/sft/qwen3-8b_prism_smoke_sft_cot.parquet` is untouched — safe to leave or delete per Task-8 Step 6 ("discard the 138-row smoke parquet").
+
+---
+
 ## Report — 2026-07-10 — Task 2 pytest re-run: **all 7 green (16/16 with parametrization)**
 
 Both fixes in `cabac26` land clean. Full output:
