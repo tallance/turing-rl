@@ -52,45 +52,60 @@ target contains the reasoning envelope + `[HUMAN]:`. (Data output — no commit.
 
 ### D2 — Task 11 Step 1: SFT training — **LoRA config divergence RESOLVED, unblocked**
 
-Decision (user): **fix to paper Table 5** by editing the yaml (your option 1). Done this side —
-`git pull` and `training/sft/configs/qwen3_8b_lora.yaml` now holds **`lora_r: 64, lora_alpha: 128,
-use_qlora: false`** (dropout 0.05 unchanged; bfloat16, no 4-bit quantization). `sft_full.sh` passes
-no `--lora_r/--lora_alpha/--no_qlora`, so the yaml is the source of truth — no CLI overrides needed.
-`max_seq_length 8192` is already passed by the sbatch. Spec §4.3 corrected + will be logged in
-our_patches.md (Task 22). Good to submit:
+**ROOT CAUSE of the OOM (found after your report): the launch was single-GPU.** `sft_full.sh` ran
+plain `python -m training.sft.lora_sft` → WORLD_SIZE=1 → the whole 16GB bf16 model + 8192-seq
+activations landed on ONE 40GB GPU (GPUs 1-7 idle). DDP alone wouldn't fix it (it replicates the full
+model per GPU). So the fix is a **distributed launch + a memory strategy**.
 
+**Decision (user): run all THREE strategies in parallel (one per node, up to 3 nodes) and compare.**
+New launcher `scripts/slurm/sft_variant.sh` launches `torch.distributed.run --nproc_per_node=8`
+(all 8 GPUs) with per-variant CLI flags; the committed yaml stays read-only Table-5 (bf16, r=64/α=128),
+so there's NO shared-yaml `sed` race across the 3 jobs. `sft_full.sh` is DEPRECATED (leave it).
+
+`git pull` first (new: sft_variant.sh, CLI flags in lora_sft.py). Then:
+
+**STEP 1 — cheap config smoke for EACH variant first (~seconds; builds the SFTTrainer then exits).**
+This catches FSDP/FA2 misconfig without burning a node-day. Run all three:
 ```
 cd /storage/home/lancewicki/projects/turing-rl && git pull
-sbatch scripts/slurm/sft_full.sh    # reads data/sft/prism_full_s42_sft_cot.jsonl, Qwen3-8B LoRA r=64/α=128 bf16
+SMOKE=1 VARIANT=qlora_r64 sbatch scripts/slurm/sft_variant.sh
+SMOKE=1 VARIANT=bf16_fsdp sbatch scripts/slurm/sft_variant.sh
+SMOKE=1 VARIANT=bf16_fa2  sbatch scripts/slurm/sft_variant.sh
 ```
-~78 steps, ~8 checkpoints (save_steps=10, save_total_limit=2). On crash, resubmit — `--resume_from_checkpoint auto`
-picks up the latest checkpoint automatically. Writes to `checkpoints/sft/qwen3_8b_prism_full_s42/`.
+Each smoke prints `LoRA r=64, alpha=128`, `QLoRA: <True|False>`, then exits 0 after "SFTTrainer built".
+**Before the FA2 smoke**, check the env: `/home/lancewicki/miniconda3/envs/turing-rl-train/bin/pip list | grep -i flash` — if `flash-attn` is NOT installed, `bf16_fa2` will hard-fail at model load; **do not install blindly, just report** and run the other two.
+Report each smoke's exit + the QLoRA line. If `bf16_fsdp` smoke errors on an `fsdp_config` key or
+wrap class, paste the traceback — that's the one config I couldn't validate on the Mac (no GPU).
 
-**⚠️ Memory watch (you flagged this):** dropping QLoRA (bf16 base + r=64) roughly doubles memory vs
-the old 4-bit r=16. On 40GB A100s an 8B LoRA in bf16 across 8 GPUs should fit, but **watch the first
-few steps** (`nvidia-smi` / the startup mem print already in the sbatch). If it OOMs, DON'T silently
-fall back — report the OOM (and the per-GPU mem line) and I'll decide whether to (a) enable
-gradient-checkpointing tweaks / lower `max_seq_length`, or (b) fall back to QLoRA r=64 (still Table-5
-rank, just quantized) as a documented compromise. Do not revert to r=16.
-
-**Gate:** `checkpoints/sft/qwen3_8b_prism_full_s42/final/` has adapter `.safetensors`; confirm the
-startup log prints `LoRA r=64, alpha=128` and `QLoRA: False`; paste the wandb loss curve (or final
-loss) + confirm it trended down.
-
-### D3 — Task 11 Step 2: heldout inference
-
-Only after the checkpoint exists:
+**STEP 2 — launch the full runs for every variant whose smoke passed (in parallel, one node each):**
 ```
-sbatch scripts/slurm/heldout_inference.sh    # new launcher; loads the adapter, runs eval.generate_trained
+VARIANT=qlora_r64 sbatch scripts/slurm/sft_variant.sh   # 4-bit base, r=64 (footprint fix)
+VARIANT=bf16_fsdp sbatch scripts/slurm/sft_variant.sh   # bf16, model sharded across 8 GPUs (full Table 5)
+VARIANT=bf16_fa2  sbatch scripts/slurm/sft_variant.sh   # bf16 + FlashAttention-2 (full Table 5), if flash-attn present
 ```
-Runs the trained generator over `test.parquet` (880 rows / 128 heldout users), `gen_num 1`,
-`conditioning_mode history`, TP=1. Sampling is domain-inferred (prism → T=0.6, top_p=1.0, top_k=-1,
-pres_pen=0.5, max_tokens=2048; paper Table 4). Writes
-`results/2026-07-08-judge-sweep/raw/generator/heldout_inference.pkl` + `heldout_inference_metadata.json`.
-**Gate:** 880 generations across 128 users. **IMPORTANT — report the pickle's actual nesting**
-(per-user dict → `test_results`/`test_targets` → `generations`/`outputs`, and whether each
-generation is a dict-with-`text` or a bare string) so Task 13's `build_pairs` flattener can be
-aligned/confirmed against the real structure before it runs on it.
+Outputs (distinct, no collision): `checkpoints/sft/qwen3_8b_prism_full_s42_{qlora_r64,bf16_fsdp,bf16_fa2}/`.
+Each: ~78 steps, save_steps=10/save_total_limit=2, `--resume_from_checkpoint auto` (resubmit on crash).
+wandb project `turing-rl-sft`, group `sft-variants`, run names `sft-{qlora-r64,bf16-fsdp,bf16-fa2}`.
 
-**Next after this (I'll queue once D3 lands):** Task 13 Step 5 (build the frozen 880-pair set from
-the pickle) → Task 17 (4B family smoke) → then the config/analyzer/sweep tasks unblock.
+**Gate / compare — report per variant:**
+- did it OOM? peak per-GPU mem (`nvidia-smi` during step 1-2); which variants fit on 40GB;
+- wall-clock to `final/` and whether `final/adapter_model.safetensors` exists;
+- final training loss + the loss curve (so we can compare convergence across the 3 recipes);
+- the `QLoRA:` line from each (qlora_r64 → True; the two bf16 → False).
+
+We'll pick the best generator (fidelity vs mem/wall) from the survivors, then run D3 heldout inference
+on the chosen one (possibly on all survivors, to compare generator quality downstream).
+
+### D3 — Task 11 Step 2: heldout inference (after variants land)
+
+Once we've picked a checkpoint (I'll confirm which after the compare), the launcher currently points at
+`checkpoints/sft/qwen3_8b_prism_full_s42` — I'll update it to the chosen variant's dir before D3, OR
+you run it per-variant. It runs `eval.generate_trained` over `test.parquet` (880 rows / 128 users),
+`gen_num 1`, `conditioning_mode history`, TP=1, sampling domain-inferred (prism → T=0.6, top_p=1.0,
+top_k=-1, pres_pen=0.5, max_tokens=2048; paper Table 4) →
+`results/2026-07-08-judge-sweep/raw/generator/heldout_inference.pkl` + metadata.
+**Gate:** 880 generations / 128 users, and **report the pickle's actual nesting** (per-user dict →
+`test_results`/`test_targets` → `generations`/`outputs`; each generation a dict-with-`text` or a bare
+string) so Task 13's `build_pairs` flattener is confirmed against the real structure before it runs.
+
+**Next after D3:** Task 13 Step 5 (frozen 880-pair set) → Task 17 (4B family smoke) → config/analyzer/sweep unblock.
