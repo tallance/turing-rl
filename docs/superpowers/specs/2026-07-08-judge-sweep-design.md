@@ -173,8 +173,10 @@ Previous drafts of this spec proposed a batched-offline vLLM path alongside the 
 
 ### Step 4.3 — LoRA SFT training
 
-**Config** — `training/sft/configs/qwen3_8b_lora.yaml`, unchanged from paper Table 5:
-- LoRA r=64, α=128, dropout=0.05
+**Config** — `training/sft/configs/qwen3_8b_lora.yaml`, set to paper Table 5. NOTE: the
+upstream yaml shipped divergent defaults (r=16, α=32, `use_qlora=true`); we corrected them
+to Table 5 (documented deviation, logged in `our_patches.md`):
+- LoRA r=64, α=128, dropout=0.05, `use_qlora=false` (bfloat16, no 4-bit quantization)
 - LR 2e-4 cosine, warmup 0.05, weight decay 0.01
 - 3 epochs, per-device BS=1, grad_accum=16, 8 GPUs → effective BS=128
 - `max_seq_length=8192` (paper Table 5; smoke validated at this value)

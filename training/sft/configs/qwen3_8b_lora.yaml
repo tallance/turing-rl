@@ -1,8 +1,11 @@
 # Qwen3-8B LoRA SFT config
-lora_r: 16
-lora_alpha: 32
+# LoRA hyperparameters set to paper Table 5 (corrected from upstream defaults
+# r=16/alpha=32/use_qlora=true, which diverged from the paper). bfloat16, no
+# 4-bit quantization. See spec Step 4.3 / our_patches.md.
+lora_r: 64
+lora_alpha: 128
 lora_dropout: 0.05
-use_qlora: true
+use_qlora: false
 
 num_epochs: 3
 batch_size: 1

@@ -50,15 +50,32 @@ This requires `ground_truth_reasoning` in each row's `extra_info` (Task 8 wrote 
 **Gate:** `wc -l data/sft/prism_full_s42_sft_cot.jsonl` == 3272; paste one line whose assistant
 target contains the reasoning envelope + `[HUMAN]:`. (Data output — no commit.)
 
-### D2 — Task 11 Step 1: SFT training
+### D2 — Task 11 Step 1: SFT training — **LoRA config divergence RESOLVED, unblocked**
+
+Decision (user): **fix to paper Table 5** by editing the yaml (your option 1). Done this side —
+`git pull` and `training/sft/configs/qwen3_8b_lora.yaml` now holds **`lora_r: 64, lora_alpha: 128,
+use_qlora: false`** (dropout 0.05 unchanged; bfloat16, no 4-bit quantization). `sft_full.sh` passes
+no `--lora_r/--lora_alpha/--no_qlora`, so the yaml is the source of truth — no CLI overrides needed.
+`max_seq_length 8192` is already passed by the sbatch. Spec §4.3 corrected + will be logged in
+our_patches.md (Task 22). Good to submit:
 
 ```
-sbatch scripts/slurm/sft_full.sh    # reads data/sft/prism_full_s42_sft_cot.jsonl, Qwen3-8B LoRA
+cd /storage/home/lancewicki/projects/turing-rl && git pull
+sbatch scripts/slurm/sft_full.sh    # reads data/sft/prism_full_s42_sft_cot.jsonl, Qwen3-8B LoRA r=64/α=128 bf16
 ```
 ~78 steps, ~8 checkpoints (save_steps=10, save_total_limit=2). On crash, resubmit — `--resume_from_checkpoint auto`
 picks up the latest checkpoint automatically. Writes to `checkpoints/sft/qwen3_8b_prism_full_s42/`.
-**Gate:** `checkpoints/sft/qwen3_8b_prism_full_s42/final/` has adapter `.safetensors`; paste the
-wandb loss curve (or final loss) + confirm it trended down.
+
+**⚠️ Memory watch (you flagged this):** dropping QLoRA (bf16 base + r=64) roughly doubles memory vs
+the old 4-bit r=16. On 40GB A100s an 8B LoRA in bf16 across 8 GPUs should fit, but **watch the first
+few steps** (`nvidia-smi` / the startup mem print already in the sbatch). If it OOMs, DON'T silently
+fall back — report the OOM (and the per-GPU mem line) and I'll decide whether to (a) enable
+gradient-checkpointing tweaks / lower `max_seq_length`, or (b) fall back to QLoRA r=64 (still Table-5
+rank, just quantized) as a documented compromise. Do not revert to r=16.
+
+**Gate:** `checkpoints/sft/qwen3_8b_prism_full_s42/final/` has adapter `.safetensors`; confirm the
+startup log prints `LoRA r=64, alpha=128` and `QLoRA: False`; paste the wandb loss curve (or final
+loss) + confirm it trended down.
 
 ### D3 — Task 11 Step 2: heldout inference
 

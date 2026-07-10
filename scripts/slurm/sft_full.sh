@@ -11,7 +11,8 @@
 #SBATCH --account=rfai
 
 # Full 8-GPU SFT on the PRISM full CoT-annotated slice.
-# Uses QLoRA (default in qwen3_8b_lora.yaml) with step-checkpointing + auto-resume.
+# Paper Table 5 LoRA config (r=64, alpha=128, bfloat16 / no QLoRA) from
+# qwen3_8b_lora.yaml, with step-checkpointing + auto-resume.
 # Output: checkpoints/sft/qwen3_8b_prism_full_s42/
 
 set -uo pipefail
