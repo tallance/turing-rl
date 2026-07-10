@@ -68,8 +68,10 @@ ARGS=(--model qwen3-8b --data_path "$DATA" --output_dir "$OUT" --max_seq_length 
 
 case "$VARIANT" in
   qlora_r64) ARGS+=(--force_qlora --attn_implementation sdpa) ;;
-  bf16_fsdp) ARGS+=(--attn_implementation sdpa --fsdp "full_shard auto_wrap" --fsdp_transformer_layer_cls Qwen3DecoderLayer) ;;
-  bf16_fa2)  ARGS+=(--attn_implementation flash_attention_2) ;;
+  # bf16 variants pass --no_qlora explicitly so the recipe is self-describing and
+  # robust to yaml drift (4-bit bnb + FSDP full_shard is a broken combo).
+  bf16_fsdp) ARGS+=(--no_qlora --attn_implementation sdpa --fsdp "full_shard auto_wrap" --fsdp_transformer_layer_cls Qwen3DecoderLayer) ;;
+  bf16_fa2)  ARGS+=(--no_qlora --attn_implementation flash_attention_2) ;;
 esac
 
 [ "$SMOKE" = "1" ] && ARGS+=(--exit_after_trainer_build --max_train_examples 64)
