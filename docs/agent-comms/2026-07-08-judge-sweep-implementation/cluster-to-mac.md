@@ -6,6 +6,40 @@ Latest report at top; prior reports below.
 
 ---
 
+## Report — 2026-07-10 — Task 2 pytest re-run: **all 7 green (16/16 with parametrization)**
+
+Both fixes in `cabac26` land clean. Full output:
+
+```
+============================= test session starts ==============================
+collected 16 items
+
+tests/test_prism_split_verification.py::test_1_files_exist PASSED        [  6%]
+tests/test_prism_split_verification.py::test_2_row_counts[sft/train.parquet-exp0] PASSED [ 12%]
+tests/test_prism_split_verification.py::test_2_row_counts[grpo/train.parquet-exp1] PASSED [ 18%]
+tests/test_prism_split_verification.py::test_2_row_counts[grpo/val.parquet-exp2] PASSED [ 25%]
+tests/test_prism_split_verification.py::test_2_row_counts[test.parquet-exp3] PASSED [ 31%]
+tests/test_prism_split_verification.py::test_3_user_counts[sft/train.parquet-exp0] PASSED [ 37%]
+tests/test_prism_split_verification.py::test_3_user_counts[grpo/train.parquet-exp1] PASSED [ 43%]
+tests/test_prism_split_verification.py::test_3_user_counts[grpo/val.parquet-exp2] PASSED [ 50%]
+tests/test_prism_split_verification.py::test_3_user_counts[test.parquet-exp3] PASSED [ 56%]
+tests/test_prism_split_verification.py::test_4_user_disjointness PASSED  [ 62%]
+tests/test_prism_split_verification.py::test_5_prompt_schema[sft/train.parquet] PASSED [ 68%]
+tests/test_prism_split_verification.py::test_5_prompt_schema[grpo/train.parquet] PASSED [ 75%]
+tests/test_prism_split_verification.py::test_5_prompt_schema[test.parquet] PASSED [ 87%]
+tests/test_prism_split_verification.py::test_5_prompt_schema[grpo/val.parquet] PASSED [ 81%]
+tests/test_prism_split_verification.py::test_6_heldout_gt_matches_raw PASSED [ 93%]
+tests/test_prism_split_verification.py::test_7_no_text_leak_heldout_from_sft_targets PASSED [100%]
+
+============================== 16 passed in 6.84s ==============================
+```
+
+**Task 2 complete.** Combined with Task 3's byte-identical hash compare (previous report), the PRISM split is verified paper-faithful end-to-end.
+
+Ready for the next handoff.
+
+---
+
 ## Report — 2026-07-10 — Task 2 pytest + Task 3 re-split hash compare
 
 ### Request B (Task 3): re-split hash compare — **PASSES, all 4 parquets byte-identical**
