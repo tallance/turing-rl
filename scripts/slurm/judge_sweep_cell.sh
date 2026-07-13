@@ -25,7 +25,11 @@ for v in MODEL TP REPLICAS THINKING_MODE CELL_NAME; do
   [ -z "${!v:-}" ] && { echo "ERROR: $v unset" >&2; exit 2; }
 done
 case "$THINKING_MODE" in on|off) ;; *) echo "ERROR: THINKING_MODE must be on|off" >&2; exit 2 ;; esac
-PORT_BASE=${PORT_BASE:-8130}
+# Unique per-job default port base: this cluster does NOT isolate the network
+# namespace per Slurm job, so co-scheduled gpu:1 cells on one node would collide
+# on a fixed port (a client would then hit a co-tenant's wrong-model server and
+# get a 404 "model does not exist"). Derive from SLURM_JOB_ID so each job differs.
+PORT_BASE=${PORT_BASE:-$((8130 + ${SLURM_JOB_ID:-0} % 800))}
 MAX_PAIRS=${MAX_PAIRS:-}
 [ $((REPLICAS*TP)) -gt 8 ] && { echo "ERROR: REPLICAS*TP>8 (asked $((REPLICAS*TP)))" >&2; exit 2; }
 
@@ -75,15 +79,18 @@ done
 cleanup() { for p in "${PIDS[@]}"; do kill $p 2>/dev/null || true; done; }
 trap cleanup EXIT
 
-# Wait for every replica's /v1/models (up to ~30 min each).
+# Wait for every replica's /v1/models AND verify it serves OUR model (guards
+# against a false-positive ready when a co-scheduled job's server holds the port).
 for i in $(seq 0 $((REPLICAS-1))); do
   port=$((PORT_BASE+i)); ok=0
   for t in $(seq 1 900); do
-    curl -sf -m 2 http://localhost:$port/v1/models >/dev/null 2>&1 && { ok=1; break; }
+    if curl -sf -m 2 http://localhost:$port/v1/models 2>/dev/null | grep -qF "\"$MODEL\""; then
+      ok=1; break
+    fi
     sleep 2
   done
-  [ $ok -eq 1 ] || { echo "TIMEOUT waiting on replica $i (port $port)" >&2; exit 3; }
-  echo "replica $i ready (port $port)"
+  [ $ok -eq 1 ] || { echo "TIMEOUT waiting on replica $i (port $port) serving $MODEL" >&2; exit 3; }
+  echo "replica $i ready (port $port, model $MODEL)"
 done
 
 ENDPOINTS=$(IFS=,; echo "${URLS[*]}")
