@@ -80,6 +80,13 @@ RP=()
 AR=()
 [ "$TP" -gt 1 ] && AR=(--disable-custom-all-reduce)
 
+# Optional quantization override. Empty = let vLLM auto-detect from the checkpoint
+# (bf16 weights, or GPTQ/AWQ from config.json). Set QUANT=fp8 to dynamically
+# quantize a bf16 checkpoint to fp8 at load (W8A16 on Ampere via Marlin) so a
+# too-big-for-bf16 model fits (e.g. 122B: 234GB bf16 -> ~122GB fp8).
+QZ=()
+[ -n "${QUANT:-}" ] && QZ=(--quantization "$QUANT")
+
 PIDS=(); URLS=()
 for i in $(seq 0 $((REPLICAS-1))); do
   gpus=$(seq -s, $((i*TP)) $((i*TP+TP-1)))
@@ -87,7 +94,7 @@ for i in $(seq 0 $((REPLICAS-1))); do
   CUDA_VISIBLE_DEVICES=$gpus $PY_SERVER -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" --download-dir "$HF_HOME" --tensor-parallel-size "$TP" \
     --max-model-len 32768 --gpu-memory-utilization 0.85 --dtype bfloat16 \
-    "${RP[@]}" "${AR[@]}" --host 0.0.0.0 --port $port \
+    "${RP[@]}" "${AR[@]}" "${QZ[@]}" --host 0.0.0.0 --port $port \
     > "$MODE_DIR/vllm_server/replica_$i.log" 2>&1 &
   PIDS+=($!)
   URLS+=("http://localhost:$port/v1")
