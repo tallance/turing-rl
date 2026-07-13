@@ -15,25 +15,24 @@ FAMILY=${FAMILY:?set FAMILY (qwen3 or qwen3.5)}
 CALIBRATION=${CALIBRATION:-0}
 cd "$REPO"
 
-CELLS=$($PY -c "import json; from configs.judge_sweep_cells import cell_list; print(json.dumps(cell_list('$FAMILY')))")
+# One "cell_name model_id tp replicas" line per cell (incl. the 397B anchor).
+CELLS=$($PY -c "
+from configs.judge_sweep_cells import cell_list
+for c in cell_list('$FAMILY'):
+    print(c['cell_name'], c['model_id'], c['tp'], c['replicas'])
+")
 
-echo "$CELLS" | CALIBRATION="$CALIBRATION" $PY -c '
-import json, sys, os, subprocess
-cells = json.load(sys.stdin)
-calib = os.environ.get("CALIBRATION") == "1"
-for c in cells:
-    for mode in ("off", "on"):
-        exp = (f"MODEL={c[\"model_id\"]},TP={c[\"tp\"]},REPLICAS={c[\"replicas\"]},"
-               f"THINKING_MODE={mode},CELL_NAME={c[\"cell_name\"]}")
-        if calib:
-            exp += ",MAX_PAIRS=50"
-        subprocess.run(
-            ["sbatch", "--parsable",
-             f"--gres=gpu:{c[\"tp\"] * c[\"replicas\"]}",
-             f"--job-name=sw_{c[\"cell_name\"]}_{mode}",
-             "--export=ALL," + exp,
-             "scripts/slurm/judge_sweep_cell.sh"],
-            check=True,
-        )
-        print("submitted", c["cell_name"], mode, flush=True)
-'
+EXTRA=""
+[ "$CALIBRATION" = "1" ] && EXTRA=",MAX_PAIRS=50"
+
+while read -r cell_name model_id tp replicas; do
+  [ -z "$cell_name" ] && continue
+  gpus=$((tp * replicas))
+  for mode in off on; do
+    jid=$(sbatch --parsable --gres=gpu:$gpus \
+      --job-name=sw_${cell_name}_${mode} \
+      --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,THINKING_MODE=$mode,CELL_NAME=$cell_name$EXTRA \
+      scripts/slurm/judge_sweep_cell.sh)
+    echo "submitted $cell_name $mode -> job $jid (gpu:$gpus)"
+  done
+done <<< "$CELLS"
