@@ -6,6 +6,42 @@ Links: plan task #, commit SHAs, Slurm job ids.
 
 ---
 
+## D11 — 35B judge switched to NON-quantized bf16 (all judges full-precision; only the anchor stays Int4)
+**Context.** Plan Task 14 specified the 35B judge cell as `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4`
+(4-bit), while 4B/9B/27B were bf16 — so the judge size-axis had a precision step at 35B.
+Quantization was originally applied only where bf16 is impractical (35B bf16 ≈ 70GB, 397B bf16
+≈ 800GB). During Task 18 we learned bf16 large models *are* servable on 40GB once multi-GPU TP
+works (see enabling fix below), which reopened the choice.
+
+**Decision (user).** Serve the 35B judge **non-quantized**: `Qwen/Qwen3.5-35B-A3B` (bf16), so
+**every judge is full-precision bf16** (4B/9B/27B/35B) and only the **397B anchor** remains Int4
+(unavoidable — bf16 won't fit even at TP=8). This is a **documented deviation** from the plan's
+Int4-35B.
+
+**Rationale.** Removes the quantization confound from the judge size-axis (precision now constant
+across all judges), so Task 21's size→agreement trend isn't contaminated by a bf16→Int4 step at
+35B. bf16 35B ≈ 70GB → whole node (TP=8, 1 replica, ~8.75GB/GPU). Cost: 35B now serves on 1
+endpoint (slower) vs Int4's 8 replicas — acceptable, it's not the anchor. The Int4 anchor stays as
+the one forced-quantization deviation (spec §1 caveat).
+
+**Enabling fix (commit `754bca0`).** Non-quantized large models require TP>1, which had been
+failing: the Qwen3.5-27B bf16 cell crashed at every TP (2/4/8) — the real root cause was **not
+OOM** but vLLM's **custom all-reduce kernel** (`custom_all_reduce.cuh:455 'invalid argument'`) on
+A100 (capability 8.0). Fixed by `--disable-custom-all-reduce` (NCCL fallback) for any TP>1 cell in
+`scripts/slurm/judge_sweep_cell.sh`. Verified: 27B bf16 at TP=8 then served + scored cleanly.
+
+**Config change (commit `da8f5bb`).** `configs/judge_sweep_cells.py`: 35B entry → non-quantized
+id; `tp_for_size` reworked to be **footprint-based** (`size_b × 0.5 Int4 | 2.0 bf16`; ≤30GB/GPU →
+TP1/8-replicas, else TP8/1-replica) instead of the `is_moe` proxy that conflated MoE with
+"Int4-small". Cells now carry a `quantized` flag. Tests updated (`tests/test_sweep_cell_config.py`,
+4/4 green). Non-quantized 35B (~70GB) re-downloaded to the HF cache.
+
+**Impact.** Judge cells: 4B/9B/27B/35B all bf16; anchor Int4. → **log in `our_patches.md`
+(Task 22)** alongside the disable-custom-all-reduce, footprint-`tp_for_size`, HF-offline, and
+unique-port serving patches.
+
+---
+
 ## D10 — Generator repetition degeneration (~9%) is faithful to the paper → keep as-is
 **Context.** Side-by-side spot-check showed 2/3 generated turns were repetition loops. A scan found
 **~9% (80/880) clearly repetition-degenerate** and **30% (266/880) hit the 2048 token cap**
