@@ -44,13 +44,15 @@ def tp_for_size(size_b: int, is_moe: bool) -> tuple[int, int]:
     including MoE-Int4 (which fits on a single GPU despite large total params),
     runs TP=1 -> 8 replicas. ``tp*replicas == 8`` in both cases (full node).
 
-    TP=4 (not 2) for dense >=20B: on 40GB A100s, 27B/32B bf16 at TP=2 leaves only
-    ~27GB/GPU for weights, and KV + CUDA-graph capture then OOMs (observed: 27B
-    TP=2 failed in `profile_cudagraph_memory`, 669 MiB free). TP=4 halves the
-    per-GPU weight footprint to ~13.5GB and fits comfortably with graphs on.
+    TP=8/1-replica for dense >=20B: on 40GB A100s the Qwen3-Next 27B hybrid died
+    at the KV-cache memory-profiling stage at BOTH TP=2 (CUDA OOM) and TP=4/2-rep
+    (a TP worker crashed -> shm_broadcast timeout; the two co-located TP groups
+    also strain shared-memory/semaphores). TP=8 single-replica gives ~6.75GB/GPU
+    for weights (ample headroom) with no co-located groups -- the same topology
+    the 397B anchor serves on successfully.
     """
     if not is_moe and size_b >= 20:
-        return (4, 2)
+        return (8, 1)
     return (1, 8)
 
 

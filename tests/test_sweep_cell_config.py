@@ -4,10 +4,11 @@ from configs.judge_sweep_cells import tp_for_size, cell_list, SIZE_MAP, ANCHOR_C
 def test_tp_lookup():
     assert tp_for_size(4, False) == (1, 8)
     assert tp_for_size(14, False) == (1, 8)
-    # Dense >=20B: TP=4 (not 2) — 27B/32B bf16 OOM at TP=2 on 40GB A100s during
-    # CUDA-graph capture; TP=4 halves per-GPU weights and fits.
-    assert tp_for_size(27, False) == (4, 2)
-    assert tp_for_size(32, False) == (4, 2)
+    # Dense >=20B: TP=8/1-replica — 27B/32B bf16 (unquantized, ~2 bytes/param)
+    # crashed at KV-profiling at both TP=2 (OOM) and TP=4/2-rep (worker died); TP=8
+    # single-group fits (~6.75GB/GPU for 27B) with no co-located replicas.
+    assert tp_for_size(27, False) == (8, 1)
+    assert tp_for_size(32, False) == (8, 1)
     assert tp_for_size(35, True) == (1, 8)  # MoE-Int4
 
 
