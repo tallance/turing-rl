@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import pickle
+import re
 import sys
 from typing import Any
 
@@ -67,6 +68,21 @@ def _extract_raw_text(generation: Any) -> str:
                 return value
         return ""
     return ""
+
+
+# parse_reasoning_and_response() splits on the FIRST <reasoning>...</reasoning> block.
+# A small fraction of generations emit a stray trailing </reasoning> (or a second block)
+# AFTER the response, which the primary parse leaves in the text. These are malformed
+# model artifacts, not part of the user turn, and must not leak into the judged pair.
+_REASONING_BLOCK_RE = re.compile(r"<reasoning>.*?</reasoning>", re.DOTALL)
+_REASONING_TAG_RE = re.compile(r"</?reasoning>")
+
+
+def _strip_reasoning_residue(text: str) -> str:
+    """Remove any residual reasoning blocks/stray tags left after the primary parse."""
+    text = _REASONING_BLOCK_RE.sub("", text)  # drop any complete stray block first
+    text = _REASONING_TAG_RE.sub("", text)    # then any lone/unmatched tag
+    return text
 
 
 def _first_present(container: dict, keys: tuple[str, ...]) -> Any:
@@ -121,6 +137,7 @@ def build_pairs(
 
     rows: list[dict[str, Any]] = []
     missing: list[tuple[str, str, str]] = []
+    residue_stripped = 0
     for record in test_df.to_dict("records"):
         extra_info = record.get("extra_info") or {}
         reward_model = record.get("reward_model") or {}
@@ -132,7 +149,10 @@ def build_pairs(
             missing.append(key)
             continue
         raw = flat[key]
-        generated = parse_reasoning_and_response(raw)[1].strip()
+        generated_raw = parse_reasoning_and_response(raw)[1]
+        if _REASONING_TAG_RE.search(generated_raw):
+            residue_stripped += 1
+        generated = _strip_reasoning_residue(generated_raw).strip()
         human = reward_model.get("ground_truth", "")
         rows.append(
             {
@@ -155,11 +175,17 @@ def build_pairs(
 
     df = pd.DataFrame(rows, columns=COLUMNS)
 
-    # No residual reasoning tags should survive parsing.
+    # Post-strip sanity: no residual reasoning tags should survive (see _strip_reasoning_residue).
     residual = df["generated"].str.contains("<reasoning>|</reasoning>", regex=True, na=False)
     assert not residual.any(), (
-        f"{int(residual.sum())} generated rows still contain <reasoning> tags"
+        f"{int(residual.sum())} generated rows still contain <reasoning> tags after stripping"
     )
+    if residue_stripped:
+        print(
+            f"NOTE: stripped residual reasoning tags/blocks from {residue_stripped}/{len(rows)} "
+            "generation(s) (malformed model artifacts, e.g. a stray trailing </reasoning>).",
+            flush=True,
+        )
 
     n_pairs = len(df)
     exact_match_count = int((df["human"] == df["generated"]).sum())
@@ -176,6 +202,7 @@ def build_pairs(
         "n_pairs": n_pairs,
         "exact_match_count": exact_match_count,
         "exact_match_frac": exact_match_frac,
+        "reasoning_residue_stripped": residue_stripped,
         "inference_pkl": os.path.abspath(inference_pkl_path),
         "test_parquet": os.path.abspath(test_parquet_path),
     }
