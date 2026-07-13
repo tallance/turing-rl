@@ -6,6 +6,28 @@ Links: plan task #, commit SHAs, Slurm job ids.
 
 ---
 
+## D9 — Pair-set builder: 2/880 generations had malformed reasoning tags → robust strip
+**Context.** Task 13 `build_pairs` parses each generation with
+`parse_reasoning_and_response(raw)[1]` and hard-asserted no residual `<reasoning>` tags.
+
+**Finding.** The clean heldout run had **2/880 generations** where the model appended a **stray
+trailing `</reasoning>`** after an otherwise-complete user turn (e.g. *"…What is your view on
+this?</reasoning>"*). The primary parse (splits on the first block) leaves that tag attached, so
+the hard assert failed the whole build. The generation's own `response` field is byte-identical to
+the re-parse (so switching fields doesn't help — malformed at source). The actual user text is
+complete and recoverable.
+
+**Decision.** Strip residual reasoning **blocks then lone tags** in `build_pairs`
+(`_strip_reasoning_residue`) rather than drop rows (dropping breaks the 880 completeness contract)
+or hard-fail. Count how many were stripped → `meta.reasoning_residue_stripped`. Keep the assert as
+a post-strip sanity check. Commit `539465d`; unit tests cover stray-trailing-tag + leaked-second-block.
+
+**Impact.** Frozen pair-set `raw/pairs/prism_heldout_880.parquet`: **880 pairs**,
+`exact_match_count=0` (generator doesn't copy the human turn — good Turing signal),
+`reasoning_residue_stripped=2`.
+
+---
+
 ## D8 — SFT packing caused cross-document attention contamination → retrain unpacked
 **Context.** SFT uses `trl` `packing=True` (the `SFTConfig` default, inherited from the original
 repo, first commit `6aaecfb`) under `attn_implementation="sdpa"`. trl's padding-free packing
