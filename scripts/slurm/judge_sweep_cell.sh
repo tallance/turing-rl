@@ -35,6 +35,11 @@ MAX_PAIRS=${MAX_PAIRS:-}
 
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1 VLLM_LOGGING_LEVEL=INFO
+# All cell models are pre-cached, so serve OFFLINE. Without this, every replica
+# hits the HF hub API at startup (config/tokenizer resolution) even for cached
+# weights; N replicas x several cells starting at once -> HF 429 Too Many Requests
+# -> "Engine core initialization failed". Offline uses the local snapshot only.
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 REPO=/home/lancewicki/projects/turing-rl
 
 # 397B GPTQ anchor serves from the pinned judge-vllm env; smaller/newer judges
