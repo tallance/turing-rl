@@ -31,6 +31,9 @@ case "$THINKING_MODE" in on|off) ;; *) echo "ERROR: THINKING_MODE must be on|off
 # get a 404 "model does not exist"). Derive from SLURM_JOB_ID so each job differs.
 PORT_BASE=${PORT_BASE:-$((8130 + ${SLURM_JOB_ID:-0} % 800))}
 MAX_PAIRS=${MAX_PAIRS:-}
+# In-flight requests per endpoint. Pure throughput knob (no effect on verdicts;
+# vLLM queues if KV is tight). 32 keeps the single-endpoint anchor busy.
+CONCURRENCY=${CONCURRENCY:-32}
 [ $((REPLICAS*TP)) -gt 8 ] && { echo "ERROR: REPLICAS*TP>8 (asked $((REPLICAS*TP)))" >&2; exit 2; }
 
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
@@ -110,7 +113,7 @@ for i in $(seq 0 $((REPLICAS-1))); do
     --pairs "$PAIRS" --endpoints "$ENDPOINTS" \
     --model "$MODEL" --thinking_mode "$THINKING_MODE" \
     --out_dir "$SWEEP_ROOT" --cell_name "$CELL_NAME" \
-    --concurrency_per_endpoint 16 \
+    --concurrency_per_endpoint "$CONCURRENCY" \
     --endpoint_index $i --num_endpoints $REPLICAS "${EXTRA[@]}" &
   CLIENT_PIDS+=($!)
 done
