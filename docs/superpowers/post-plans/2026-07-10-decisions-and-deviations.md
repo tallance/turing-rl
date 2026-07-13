@@ -6,6 +6,27 @@ Links: plan task #, commit SHAs, Slurm job ids.
 
 ---
 
+## D10 — Generator repetition degeneration (~9%) is faithful to the paper → keep as-is
+**Context.** Side-by-side spot-check showed 2/3 generated turns were repetition loops. A scan found
+**~9% (80/880) clearly repetition-degenerate** and **30% (266/880) hit the 2048 token cap**
+(`finish_reason=="length"`).
+
+**Finding.** Root cause is the heldout generation decoding in `eval/generate_trained.py` (unchanged
+from upstream `6aaecfb`): `top_p=1.0, top_k=-1, repetition_penalty=1.0 (off), presence_penalty=0.5,
+temp=0.6 (prism), max_tokens=2048` — no tail truncation, so low-temp loops occur. **The paper audit
+(2026-07-13, arXiv 2606.19336 Table 4) confirms these are byte-for-byte the paper's decoding params.**
+
+**Decision.** **Keep the faithful generator** (no regeneration). The degeneration is inherent to the
+paper's own recipe, not our deviation; and the judge sweep measures small-judge-vs-397B agreement on
+the *same* pairs, so a shared degenerate tail doesn't bias that comparison. Revisit sampling only if
+the downstream adversarial GRPO phase needs a cleaner generator (that would be a documented deviation).
+
+**Impact.** Frozen pair-set stands. See the full paper-vs-code table:
+`docs/superpowers/post-plans/2026-07-13-paper-vs-code-methodology-audit.md` (all 8 points match the
+paper or are unspecified — no conflicts).
+
+---
+
 ## D9 — Pair-set builder: 2/880 generations had malformed reasoning tags → robust strip
 **Context.** Task 13 `build_pairs` parses each generation with
 `parse_reasoning_and_response(raw)[1]` and hard-asserted no residual `<reasoning>` tags.

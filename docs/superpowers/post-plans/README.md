@@ -24,3 +24,4 @@ after compaction) needs to understand why the code/config looks the way it does.
 
 ## Index
 - [2026-07-10 — judge-sweep execution decisions & deviations](2026-07-10-decisions-and-deviations.md)
+- [2026-07-13 — paper vs. code methodology audit](2026-07-13-paper-vs-code-methodology-audit.md) — 8-point table (arXiv 2606.19336); all points match the paper or are unspecified, no conflicts.
