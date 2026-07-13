@@ -17,6 +17,7 @@ ANCHOR = {
     "replicas": 1,
     "size_b": 17,  # active params (MoE)
     "is_moe": True,
+    "quantized": True,  # bf16 397B (~800GB) can't fit; Int4 is the forced deviation
 }
 
 # (cell_name, model_id, size_b, is_moe) — size_b is total params for dense,
@@ -32,35 +33,46 @@ _FAMILIES = {
         ("qwen35-4b", "Qwen/Qwen3.5-4B", 4, False),
         ("qwen35-9b", "Qwen/Qwen3.5-9B", 9, False),
         ("qwen35-27b", "Qwen/Qwen3.5-27B", 27, False),
-        ("qwen35-35b-a3b", "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4", 35, True),
+        # Non-quantized (bf16) so every judge is full-precision; only the 397B
+        # anchor is forced to Int4 (bf16 397B won't fit). ~70GB -> whole node.
+        ("qwen35-35b-a3b", "Qwen/Qwen3.5-35B-A3B", 35, True),
     ],
 }
 
+# Usable weight budget per 40GB A100 after KV cache + CUDA-graph headroom.
+_PER_GPU_BUDGET_GB = 30.0
 
-def tp_for_size(size_b: int, is_moe: bool) -> tuple[int, int]:
-    """Serving shape (tensor_parallel, replicas) for one judge on an 8-GPU node.
 
-    Dense models >=20B need TP=4 (4 GPUs each -> 2 replicas); everything else,
-    including MoE-Int4 (which fits on a single GPU despite large total params),
-    runs TP=1 -> 8 replicas. ``tp*replicas == 8`` in both cases (full node).
+def _is_quantized(model_id: str) -> bool:
+    return "Int4" in model_id or "Int8" in model_id or "GPTQ" in model_id or "AWQ" in model_id
 
-    TP=8/1-replica for dense >=20B: on 40GB A100s the Qwen3-Next 27B hybrid died
-    at the KV-cache memory-profiling stage at BOTH TP=2 (CUDA OOM) and TP=4/2-rep
-    (a TP worker crashed -> shm_broadcast timeout; the two co-located TP groups
-    also strain shared-memory/semaphores). TP=8 single-replica gives ~6.75GB/GPU
-    for weights (ample headroom) with no co-located groups -- the same topology
-    the 397B anchor serves on successfully.
+
+def tp_for_size(size_b: int, quantized: bool) -> tuple[int, int]:
+    """Serving shape (tensor_parallel, replicas) chosen by MEMORY FOOTPRINT.
+
+    footprint_gb = params * bytes/param (2.0 bf16, 0.5 Int4). If it fits one GPU
+    with KV/CUDA-graph headroom (<= ~30GB) -> TP=1, 8 replicas (max throughput);
+    otherwise the model spans the whole node -> TP=8, 1 replica. ``tp*replicas==8``.
+
+    Footprint, not param count, is what matters on 40GB A100s: e.g. 35B-A3B is
+    ~70GB in bf16 (whole node) but ~18GB in Int4 (one GPU); 27B bf16 is ~54GB
+    (whole node). This also avoids the earlier TP=2/4 failures for the 27B hybrid
+    (custom-all-reduce error at TP>1, since fixed with NCCL fallback), keeping the
+    large-dense cells on the single-group TP=8 topology the 397B anchor proved.
     """
-    if not is_moe and size_b >= 20:
-        return (8, 1)
-    return (1, 8)
+    bytes_per_param = 0.5 if quantized else 2.0
+    footprint_gb = size_b * bytes_per_param
+    if footprint_gb <= _PER_GPU_BUDGET_GB:
+        return (1, 8)
+    return (8, 1)
 
 
 def cell_list(family: str) -> list[dict]:
     """Return the judge cells for ``family`` plus the fixed 397B anchor."""
     out = []
     for name, mid, size_b, is_moe in _FAMILIES[family]:
-        tp, rep = tp_for_size(size_b, is_moe)
+        quantized = _is_quantized(mid)
+        tp, rep = tp_for_size(size_b, quantized)
         out.append(
             {
                 "cell_name": name,
@@ -69,6 +81,7 @@ def cell_list(family: str) -> list[dict]:
                 "replicas": rep,
                 "size_b": size_b,
                 "is_moe": is_moe,
+                "quantized": quantized,
             }
         )
     out.append(dict(ANCHOR))

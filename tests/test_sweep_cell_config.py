@@ -2,14 +2,15 @@ from configs.judge_sweep_cells import tp_for_size, cell_list, SIZE_MAP, ANCHOR_C
 
 
 def test_tp_lookup():
-    assert tp_for_size(4, False) == (1, 8)
-    assert tp_for_size(14, False) == (1, 8)
-    # Dense >=20B: TP=8/1-replica — 27B/32B bf16 (unquantized, ~2 bytes/param)
-    # crashed at KV-profiling at both TP=2 (OOM) and TP=4/2-rep (worker died); TP=8
-    # single-group fits (~6.75GB/GPU for 27B) with no co-located replicas.
-    assert tp_for_size(27, False) == (8, 1)
-    assert tp_for_size(32, False) == (8, 1)
-    assert tp_for_size(35, True) == (1, 8)  # MoE-Int4
+    # 2nd arg is `quantized`; shape is chosen by footprint = size * (0.5 Int4 | 2.0 bf16),
+    # threshold ~30GB/GPU -> fits one GPU (1,8) else whole node (8,1).
+    assert tp_for_size(4, False) == (1, 8)    # 8GB bf16
+    assert tp_for_size(14, False) == (1, 8)   # 28GB bf16 (just fits)
+    assert tp_for_size(27, False) == (8, 1)   # 54GB bf16 -> whole node
+    assert tp_for_size(32, False) == (8, 1)   # 64GB bf16 -> whole node
+    assert tp_for_size(35, False) == (8, 1)   # 70GB bf16 (non-quantized 35B) -> whole node
+    assert tp_for_size(35, True) == (1, 8)    # 17.5GB Int4 -> one GPU
+    assert tp_for_size(397, True) == (8, 1)   # 200GB Int4 anchor -> whole node
 
 
 def test_cell_list_qwen35():
