@@ -40,6 +40,8 @@ export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1 VLLM_LOGGING_LEVEL=INFO
 # weights; N replicas x several cells starting at once -> HF 429 Too Many Requests
 # -> "Engine core initialization failed". Offline uses the local snapshot only.
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+# Reduce CUDA allocator fragmentation (helps the memory-tight dense cells fit).
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 REPO=/home/lancewicki/projects/turing-rl
 
 # 397B GPTQ anchor serves from the pinned judge-vllm env; smaller/newer judges

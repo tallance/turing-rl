@@ -40,12 +40,17 @@ _FAMILIES = {
 def tp_for_size(size_b: int, is_moe: bool) -> tuple[int, int]:
     """Serving shape (tensor_parallel, replicas) for one judge on an 8-GPU node.
 
-    Dense models >=20B need TP=2 (2 GPUs each -> 4 replicas); everything else,
+    Dense models >=20B need TP=4 (4 GPUs each -> 2 replicas); everything else,
     including MoE-Int4 (which fits on a single GPU despite large total params),
     runs TP=1 -> 8 replicas. ``tp*replicas == 8`` in both cases (full node).
+
+    TP=4 (not 2) for dense >=20B: on 40GB A100s, 27B/32B bf16 at TP=2 leaves only
+    ~27GB/GPU for weights, and KV + CUDA-graph capture then OOMs (observed: 27B
+    TP=2 failed in `profile_cudagraph_memory`, 669 MiB free). TP=4 halves the
+    per-GPU weight footprint to ~13.5GB and fits comfortably with graphs on.
     """
     if not is_moe and size_b >= 20:
-        return (2, 4)
+        return (4, 2)
     return (1, 8)
 
 
