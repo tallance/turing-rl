@@ -30,7 +30,7 @@ PLOT_METRICS = [
     ("kappa_vs_anchor", "Cohen's kappa vs 397B anchor", (0.0, 0.7), None),
     ("tie_rate", "tie rate (rating==4)", None, None),
     ("budget_hit_rate", "budget-hit rate (finish=length)", None, None),
-    ("format_ok_rate", "format-ok rate (parsed JSON)", (0.0, 1.05), None),
+    ("parse_error_rate", "parse-error rate (no valid 1-7 rating recovered)", None, None),
     ("position_bias_delta", "position bias |acc(humanA)-acc(humanB)|", None, None),
     ("position_bias_signed", "fraction A - fraction B", (-0.3, 0.3), 0.0),
 ]
@@ -70,6 +70,11 @@ def per_call_features(row: dict) -> dict:
         rating = _parse_rating_from_text(row.get("judge_raw_content") or "")
         from_text = rating is not None
     rating = int(rating) if isinstance(rating, (int, float)) and rating is not None else None
+    # parse error = no valid 1-7 rating recovered. rating==0 is the reward's parse-failure
+    # sentinel (empty judge content, esp. thinking-on); None = nothing recoverable. rating==4
+    # is a valid tie, NOT an error.
+    valid_rating = rating is not None and 1 <= rating <= 7
+    parse_error = not valid_rating
 
     generated_is_b = bool(row.get("generated_is_b"))
     # human_side and generated_is_b are complementary: human is A iff generator is B.
@@ -90,6 +95,7 @@ def per_call_features(row: dict) -> dict:
         "randomized_order": row.get("randomized_order"),
         "rating": rating,
         "format_ok": rating is not None,
+        "parse_error": parse_error,
         "rating_recovered_from_text": from_text,
         "picked_human": picked_human,
         "budget_hit": (row.get("judge_finish_reason") or "") == "length",
@@ -127,6 +133,7 @@ def aggregate_cell(cell: str, mode: str, calls: list[dict]):
     summ = {
         "cell": cell, "mode": mode, "n_calls": len(df),
         "format_ok_rate": float(df["format_ok"].mean()),
+        "parse_error_rate": float(df["parse_error"].mean()),
         "rating_recovery_rate": float(df["rating_recovered_from_text"].mean()),
         "budget_hit_rate": float(df["budget_hit"].mean()),
         "tie_rate": float((df["rating"] == 4).mean()),
@@ -179,7 +186,7 @@ def compute_kappa_vs_anchor(pair_dfs, anchor_cell):
 
 def write_summary(rows, kappas, out_md, out_pq):
     s = [{"cell": r["cell"], "mode": r["mode"], "n_calls": r["n_calls"],
-          "n_scored": r.get("n_scored"), "format_ok": r.get("format_ok_rate"),
+          "n_scored": r.get("n_scored"), "parse_error": r.get("parse_error_rate"),
           "tie_rate": r.get("tie_rate"), "budget_hit": r.get("budget_hit_rate"),
           "accuracy": r.get("accuracy"), "pos_bias": r.get("position_bias_delta"),
           "rating_mean": r.get("rating_mean"),
