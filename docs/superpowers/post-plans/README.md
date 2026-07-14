@@ -23,5 +23,10 @@ after compaction) needs to understand why the code/config looks the way it does.
   "why", there for the "what changed".
 
 ## Index
-- [2026-07-10 — judge-sweep execution decisions & deviations](2026-07-10-decisions-and-deviations.md)
-- [2026-07-13 — paper vs. code methodology audit](2026-07-13-paper-vs-code-methodology-audit.md) — 8-point table (arXiv 2606.19336); all points match the paper or are unspecified, no conflicts.
+
+Post-plans for the judge-sweep plan (`plans/2026-07-08-judge-sweep-implementation.md`) live
+in the [`2026-07-08-judge-sweep/`](2026-07-08-judge-sweep/) subfolder:
+- [2026-07-10 — judge-sweep execution decisions & deviations](2026-07-08-judge-sweep/2026-07-10-decisions-and-deviations.md)
+- [2026-07-13 — paper vs. code methodology audit](2026-07-08-judge-sweep/2026-07-13-paper-vs-code-methodology-audit.md) — 8-point table (arXiv 2606.19336); all points match the paper or are unspecified, no conflicts.
+- [2026-07-14 — reward computation decision tree](2026-07-08-judge-sweep/2026-07-14-reward-decision-tree.md)
+- [2026-07-14 — thinking-ON CoT parse-failure diagnostic + 397B speed follow-up](2026-07-08-judge-sweep/2026-07-14-cot-failure-diagnostic.md)

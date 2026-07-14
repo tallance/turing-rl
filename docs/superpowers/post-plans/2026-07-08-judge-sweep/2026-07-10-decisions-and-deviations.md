@@ -58,7 +58,7 @@ the *same* pairs, so a shared degenerate tail doesn't bias that comparison. Revi
 the downstream adversarial GRPO phase needs a cleaner generator (that would be a documented deviation).
 
 **Impact.** Frozen pair-set stands. See the full paper-vs-code table:
-`docs/superpowers/post-plans/2026-07-13-paper-vs-code-methodology-audit.md` (all 8 points match the
+`docs/superpowers/post-plans/2026-07-08-judge-sweep/2026-07-13-paper-vs-code-methodology-audit.md` (all 8 points match the
 paper or are unspecified — no conflicts).
 
 ---

@@ -24,14 +24,17 @@ top-level into the vLLM request via `build_chat_payload(sampling=...)`. `cell_en
 emit it but `os.environ.update` doesn't clear an exported value, so `--export=ALL` + a shell
 env var works with **no code change**.
 
-| cell_name             | change                                   | hypothesis / purpose |
-|-----------------------|------------------------------------------|----------------------|
-| `qwen35-397b-diag`    | replay 98 failing + 102 control, 1800s   | capture timed-out pairs' raw CoT (loop?) |
-| `qwen35-9b-diag`      | replay 44 failing + 156 control, 1800s   | cheap proxy |
-| `qwen35-397b-t07`     | `{"temperature":0.7}` (model-card)        | does model-card temp change fail rate / accuracy? |
-| `qwen35-397b-reppen`  | `{"repetition_penalty":1.1}`              | if failures are loops, penalty should cut runaway/empty answers |
+| job  | cell_name             | change                                   | hypothesis / purpose |
+|------|-----------------------|------------------------------------------|----------------------|
+| 9804 | `qwen35-397b-diag`    | replay 98 failing + 102 control, 1800s   | capture timed-out pairs' raw CoT (loop?) |
+| 9805 | `qwen35-9b-diag`      | replay 44 failing + 156 control, 1800s   | cheap proxy (COMPLETED, 200/200) |
+| 9824 | `qwen35-397b-t07`     | `{"temperature":0.7}` (model-card)        | does model-card temp change fail rate / accuracy? |
+| 9825 | `qwen35-397b-reppen`  | `{"repetition_penalty":1.1}`              | if failures are loops, penalty should cut runaway/empty answers |
+| 9826 | `qwen35-397b-specdec` | ngram speculative decoding (see below)    | speed follow-up (unrelated to parse failures) |
 
-Baseline for comparison = existing `qwen35-397b/on` dumps.
+Baseline for comparison = existing `qwen35-397b/on` dumps. All 397B cells: full 880,
+thinking ON, CONCURRENCY=8, timeout 1800s. Early signal: `reppen` scores noticeably faster
+than `t07`, consistent with the penalty shortening runaway generations.
 
 ## Speed follow-up: speculative decoding (UNRELATED to the parse-failure issue)
 Goal: quantify how much a server-side speculative-decoding config speeds up the 397B judge
@@ -41,7 +44,7 @@ pattern). vLLM 0.23 (judge-vllm) supports ngram speculative decoding — **no dr
 and it helps most exactly when the output repeats or copies the prompt (this judge does
 both: it echoes the rubric structure and, on failures, loops).
 
-- Run: `CELL_NAME=qwen35-397b-specdec`,
+- Run (job 9826): `CELL_NAME=qwen35-397b-specdec`,
   `SPEC_DECODE={"method":"ngram","num_speculative_tokens":5,"prompt_lookup_max":4,"prompt_lookup_min":2}`,
   full 880, thinking ON, same CONCURRENCY/timeout as baseline.
 - **Time saved:** compare per-call `judge_latency_ms` / `completion_tokens` (tok/s) from the
