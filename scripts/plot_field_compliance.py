@@ -85,6 +85,7 @@ def main() -> None:
             if not mdir.is_dir():
                 continue
             v6 = vr = n = 0
+            cf = {f: [0, 0] for f in FIELD_ORDER}  # per-(cell,mode) per-field valid/total
             for jl in sorted(mdir.glob("*.jsonl")):
                 for line in jl.read_text().splitlines():
                     line = line.strip()
@@ -94,14 +95,16 @@ def main() -> None:
                     d = parse_json(json.loads(line).get("judge_raw_content") or "")
                     for f in FIELD_ORDER:
                         pooled[f][1] += 1
+                        cf[f][1] += 1
                         if field_valid(d, f):
                             pooled[f][0] += 1
+                            cf[f][0] += 1
                     if all(field_valid(d, f"{dd}_{s}") for dd in DIM for s in ("a", "b")):
                         v6 += 1
                     if field_valid(d, "rating"):
                         vr += 1
             if n:
-                per_cell[(cell, mode)] = {"n": n, "all6": v6 / n, "rating": vr / n}
+                per_cell[(cell, mode)] = {"n": n, "all6": v6 / n, "rating": vr / n, "cf": cf}
 
     import matplotlib
     matplotlib.use("Agg")
@@ -137,7 +140,36 @@ def main() -> None:
     ax.set_title("Rubric (6 scores) vs rating validity by model (strict raw parse; lower bound)")
     ax.legend(fontsize=8, ncol=2); ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout(); fig.savefig(args.out_dir / "rubric_complete_by_model.png", dpi=130); plt.close(fig)
-    print("wrote field_compliance.png + rubric_complete_by_model.png")
+
+    # Figure 3: one subplot per field, each a grouped bar (model on x, off vs on)
+    fields = [f for f in FIELD_ORDER if pooled[f][1]]
+    ncol = 4; nrow = (len(fields) + ncol - 1) // ncol
+    fig, axes = plt.subplots(nrow, ncol, figsize=(3.6 * ncol, 2.6 * nrow), sharex=True, sharey=True)
+    axes = np.atleast_1d(axes).flatten()
+    xb = np.arange(len(cells)); wb = 0.38
+
+    def _rate(cell, mode, field):
+        cf = per_cell.get((cell, mode), {}).get("cf")
+        if not cf or cf[field][1] == 0:
+            return np.nan
+        return 100 * cf[field][0] / cf[field][1]
+
+    for i, f in enumerate(fields):
+        ax = axes[i]
+        off = [_rate(c, "off", f) for c in cells]
+        on = [_rate(c, "on", f) for c in cells]
+        ax.bar(xb - wb / 2, off, wb, color="#4C78A8", label="off")
+        ax.bar(xb + wb / 2, on, wb, color="#F58518", label="on")
+        ax.set_title(f, fontsize=8)
+        ax.set_ylim(0, 105); ax.grid(True, axis="y", alpha=0.3)
+        ax.set_xticks(xb); ax.set_xticklabels([LABELS.get(c, c) for c in cells], rotation=90, fontsize=6)
+    for j in range(len(fields), len(axes)):
+        axes[j].axis("off")
+    axes[0].legend(fontsize=7)
+    fig.suptitle("Per-field valid-format rate by model — thinking off vs on (strict raw parse; lower bound)")
+    fig.supylabel("valid-format rate (%)")
+    fig.tight_layout(); fig.savefig(args.out_dir / "field_compliance_by_model.png", dpi=130); plt.close(fig)
+    print("wrote field_compliance.png + rubric_complete_by_model.png + field_compliance_by_model.png")
 
 
 if __name__ == "__main__":
