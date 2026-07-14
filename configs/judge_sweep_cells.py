@@ -36,6 +36,10 @@ _FAMILIES = {
         # Non-quantized (bf16) so every judge is full-precision; only the 397B
         # anchor is forced to Int4 (bf16 397B won't fit). ~70GB -> whole node.
         ("qwen35-35b-a3b", "Qwen/Qwen3.5-35B-A3B", 35, True),
+        # 122B is Int4: bf16 (234GB) needs 2 nodes, and fp8 fails on A100 (Marlin
+        # tile constraint at the forced TP=8). Int4 (~61GB) fits at TP=8 and
+        # matches the anchor's quantization; the one mid-axis quantized judge.
+        ("qwen35-122b", "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4", 122, True),
     ],
 }
 
@@ -98,6 +102,7 @@ SIZE_MAP = {
     "qwen35-9b": 9,
     "qwen35-27b": 27,
     "qwen35-35b-a3b": 3,
+    "qwen35-122b": 10,  # A10B: 10B active
     "qwen35-397b": 17,
 }
 

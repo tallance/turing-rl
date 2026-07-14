@@ -15,7 +15,7 @@ def test_tp_lookup():
 
 def test_cell_list_qwen35():
     cells = cell_list("qwen3.5")
-    assert len(cells) == 5  # 4 judges + anchor (modes handled by launcher)
+    assert len(cells) == 6  # 5 judges (4b/9b/27b/35b/122b) + anchor
     assert any(c["model_id"].endswith("397B-A17B-GPTQ-Int4") for c in cells)
 
 
