@@ -32,6 +32,7 @@ PLOT_METRICS = [
     ("budget_hit_rate", "budget-hit rate (finish=length)", None, None),
     ("format_ok_rate", "format-ok rate (parsed JSON)", (0.0, 1.05), None),
     ("position_bias_delta", "position bias |acc(humanA)-acc(humanB)|", None, None),
+    ("position_bias_signed", "position bias (pickA - 0.5;  + = first/A,  - = second/B)", (-0.15, 0.15), 0.0),
 ]
 
 
@@ -117,6 +118,11 @@ def aggregate_cell(cell: str, mode: str, calls: list[dict]):
     acc_a = _acc_subset(df[df["human_side"] == "A"])
     acc_b = _acc_subset(df[df["human_side"] == "B"])
     pos_bias = abs(acc_a - acc_b) if (acc_a is not None and acc_b is not None) else float("nan")
+    # Directional position bias: P(judge picks position A) among non-tie calls. Human is
+    # ~50/50 A/B, so pick_a_rate>0.5 = leans first/A, <0.5 = leans second/B.
+    nontie = df[df["rating"].notna() & (df["rating"] != 4)]
+    pick_a_rate = float((nontie["rating"].astype(int) < 4).mean()) if len(nontie) else float("nan")
+    position_bias_signed = pick_a_rate - 0.5 if not np.isnan(pick_a_rate) else float("nan")
     summ = {
         "cell": cell, "mode": mode, "n_calls": len(df),
         "format_ok_rate": float(df["format_ok"].mean()),
@@ -126,6 +132,8 @@ def aggregate_cell(cell: str, mode: str, calls: list[dict]):
         "n_scored": int(df["picked_human"].notna().sum()),
         "accuracy": acc if acc is not None else 0.0,
         "position_bias_delta": pos_bias,
+        "pick_a_rate": pick_a_rate,
+        "position_bias_signed": position_bias_signed,
         "rating_mean": float(np.mean(ratings)) if ratings else 0.0,
         "rating_mode": int(max(hist, key=lambda k: hist[k])) if ratings else 0,
         "rating_histogram": hist,
@@ -227,6 +235,40 @@ def write_plots(rows, out_dir):
         fig.tight_layout(); fig.savefig(out_dir / f"{metric}.png", dpi=130); plt.close(fig)
 
 
+def write_rating_dist(rows, out_dir):
+    """Small-multiples: rating (1-7) distribution per model, thinking off vs on, one figure."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    out_dir.mkdir(parents=True, exist_ok=True)
+    by = {(r["cell"], r["mode"]): r for r in rows if r["n_calls"]}
+    cells = [c for c in PLOT_ORDER if any(k[0] == c for k in by)]
+    if not cells:
+        return
+    ratings = list(range(1, 8)); xr = np.arange(7); w = 0.38
+    ncol = 4; nrow = (len(cells) + ncol - 1) // ncol
+    fig, axes = plt.subplots(nrow, ncol, figsize=(3.4 * ncol, 2.8 * nrow), sharex=True, sharey=True)
+    axes = np.atleast_1d(axes).flatten()
+    for i, c in enumerate(cells):
+        ax = axes[i]
+        for mode, off, color in (("off", -w / 2, "#4C78A8"), ("on", w / 2, "#F58518")):
+            r = by.get((c, mode))
+            if not r:
+                continue
+            h = r.get("rating_histogram", {}) or {}
+            tot = sum(h.values()) or 1
+            frac = [h.get(str(k), 0) / tot for k in ratings]
+            ax.bar(xr + off, frac, w, color=color, label=f"thinking {mode}")
+        ax.set_title(PLOT_LABELS.get(c, c), fontsize=9)
+        ax.set_xticks(xr); ax.set_xticklabels(ratings); ax.grid(True, axis="y", alpha=0.3)
+    for j in range(len(cells), len(axes)):
+        axes[j].axis("off")
+    axes[0].legend(fontsize=8)
+    fig.suptitle("Rating distribution (1-7) by model — thinking off vs on")
+    fig.supxlabel("rating  (1=strongly A ... 4=tie ... 7=strongly B)"); fig.supylabel("fraction of calls")
+    fig.tight_layout(); fig.savefig(out_dir / "rating_distribution.png", dpi=130); plt.close(fig)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     base = REPO_ROOT / "results" / "2026-07-08-judge-sweep"
@@ -257,6 +299,7 @@ def main() -> None:
     (pd.concat(nonempty, ignore_index=True) if nonempty else pd.DataFrame()).to_parquet(
         args.derived_root / "per_pair_metrics.parquet", index=False)
     write_plots(summaries, args.derived_root / "plots")
+    write_rating_dist(summaries, args.derived_root / "plots")
     print("[analyzer] done", flush=True)
 
 
