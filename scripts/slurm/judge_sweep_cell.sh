@@ -55,7 +55,9 @@ case "$MODEL" in
 esac
 PY_CLIENT=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 
-PAIRS=$REPO/results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet
+# Default full 880 pair-set; override with PAIRS=<parquet> (e.g. a missing-pairs
+# subset for a targeted re-run of timed-out pairs).
+PAIRS=${PAIRS:-$REPO/results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet}
 [ -f "$PAIRS" ] || { echo "ERROR: pair-set not found: $PAIRS" >&2; exit 2; }
 
 # The client appends $CELL_NAME/$THINKING_MODE to --out_dir, so pass the sweep ROOT.
