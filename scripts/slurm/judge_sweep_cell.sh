@@ -89,6 +89,14 @@ AR=()
 QZ=()
 [ -n "${QUANT:-}" ] && QZ=(--quantization "$QUANT")
 
+# Optional speculative decoding (server-side THROUGHPUT experiment; unrelated to the
+# parse-failure investigation -- see post-plan 2026-07-14-cot-failure-diagnostic.md).
+# SPEC_DECODE = a vLLM --speculative-config JSON, e.g. ngram (no draft model needed,
+# helps most when output repeats/copies the prompt, which this judge does):
+#   {"method":"ngram","num_speculative_tokens":5,"prompt_lookup_max":4,"prompt_lookup_min":2}
+SD=()
+[ -n "${SPEC_DECODE:-}" ] && SD=(--speculative-config "$SPEC_DECODE")
+
 PIDS=(); URLS=()
 for i in $(seq 0 $((REPLICAS-1))); do
   gpus=$(seq -s, $((i*TP)) $((i*TP+TP-1)))
@@ -96,7 +104,7 @@ for i in $(seq 0 $((REPLICAS-1))); do
   CUDA_VISIBLE_DEVICES=$gpus $PY_SERVER -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" --download-dir "$HF_HOME" --tensor-parallel-size "$TP" \
     --max-model-len 32768 --gpu-memory-utilization 0.85 --dtype bfloat16 \
-    "${RP[@]}" "${AR[@]}" "${QZ[@]}" --host 0.0.0.0 --port $port \
+    "${RP[@]}" "${AR[@]}" "${QZ[@]}" "${SD[@]}" --host 0.0.0.0 --port $port \
     > "$MODE_DIR/vllm_server/replica_$i.log" 2>&1 &
   PIDS+=($!)
   URLS+=("http://localhost:$port/v1")
