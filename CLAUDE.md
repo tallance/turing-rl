@@ -20,6 +20,7 @@ The Mac agent reaches the cluster directly; the old Mac↔cluster relay-agent ro
 - Run any command through it: `ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null lancewicki@localhost "<command>"` — squeue/sinfo/sbatch/scancel, `cat` remote files, tail logs, inspect checkpoints. Read remote files via SSH `cat`, NOT the Read tool.
 - Cluster paths/env: repo `/home/lancewicki/projects/turing-rl`; HF cache `/home/lancewicki/data/hf_cache`; conda envs `turing-rl-train` (vLLM/torch/trl) and `judge-vllm` (397B anchor). Slurm is on PATH; partition `a100`.
 - **Always run the `preflight-job-check` skill before any `sbatch`.** Don't exceed ~10 concurrent jobs; don't spam/loop Slurm commands. See the `rfai-cluster` skill for full details.
+- **Never `scancel` a job you did not submit yourself in this session without explicit user approval** - I work with multiple agents so it is normal for a stray/unexpected job to appear - if it is a real blocker, ask me if I want to priortize your job and cancel the other one.
 - Deploy code with `scripts/sync_to_cluster.sh` (ships committed HEAD via `git archive|tar`, stamps `DEPLOYED_SHA`, verifies `.py`/`.sh` syntax on the cluster; never touches `checkpoints/ results/ logs/ wandb/`). Pass file paths for a quick dirty debug push. Cluster `git pull` is no longer needed.
 
 ## Cluster gotchas (V3)
