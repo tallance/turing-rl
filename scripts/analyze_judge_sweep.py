@@ -32,7 +32,7 @@ PLOT_METRICS = [
     ("budget_hit_rate", "budget-hit rate (finish=length)", None, None),
     ("format_ok_rate", "format-ok rate (parsed JSON)", (0.0, 1.05), None),
     ("position_bias_delta", "position bias |acc(humanA)-acc(humanB)|", None, None),
-    ("position_bias_signed", "position bias (pickA - 0.5;  + = first/A,  - = second/B)", (-0.15, 0.15), 0.0),
+    ("position_bias_signed", "position bias (frac picks A - frac picks B;  + = first/A,  - = second/B)", (-0.3, 0.3), 0.0),
 ]
 
 
@@ -122,7 +122,8 @@ def aggregate_cell(cell: str, mode: str, calls: list[dict]):
     # ~50/50 A/B, so pick_a_rate>0.5 = leans first/A, <0.5 = leans second/B.
     nontie = df[df["rating"].notna() & (df["rating"] != 4)]
     pick_a_rate = float((nontie["rating"].astype(int) < 4).mean()) if len(nontie) else float("nan")
-    position_bias_signed = pick_a_rate - 0.5 if not np.isnan(pick_a_rate) else float("nan")
+    # fraction picks A - fraction picks B  (= 2*pick_a_rate - 1); + = leans first/A.
+    position_bias_signed = (2 * pick_a_rate - 1) if not np.isnan(pick_a_rate) else float("nan")
     summ = {
         "cell": cell, "mode": mode, "n_calls": len(df),
         "format_ok_rate": float(df["format_ok"].mean()),
