@@ -26,7 +26,8 @@ PLOT_LABELS = {"qwen35-4b": "3.5-4B", "qwen35-9b": "3.5-9B", "qwen35-27b": "3.5-
                "qwen35-397b": "3.5-397B(Int4)", "qwen3-8b": "qwen3-8B"}
 # (metric key, y-label, optional (ymin,ymax), optional reference line)
 PLOT_METRICS = [
-    ("accuracy", "accuracy (picks true human, ties excl.)", (0.45, 0.85), 0.5),
+    ("accuracy", "accuracy | parse ok (picks true human)", (0.45, 0.85), 0.5),
+    ("accuracy_penalized", "accuracy (parse-fail counted wrong)", (0.45, 0.85), 0.5),
     ("kappa_vs_anchor", "Cohen's kappa vs 397B anchor", (0.0, 0.7), None),
     ("tie_rate", "tie rate (rating==4)", None, None),
     ("budget_hit_rate", "budget-hit rate (finish=length)", None, None),
@@ -80,12 +81,14 @@ def per_call_features(row: dict) -> dict:
     # human_side and generated_is_b are complementary: human is A iff generator is B.
     human_side = row.get("human_side") or ("A" if generated_is_b else "B")
 
-    # judge's order-invariant choice: rating<4 -> picks A, >4 -> picks B, ==4 -> tie
-    if rating is None or rating == 4:
-        picked_human = None  # abstain / unparseable -> excluded from acc & kappa
-    else:
+    # judge's order-invariant choice: rating<4 -> picks A, >4 -> picks B, ==4 -> tie.
+    # Only a VALID 1-7, non-tie rating is a real pick; rating==0 sentinel / None -> abstain
+    # (previously rating==0 leaked in as "picks A" since 0<4 — fixed here).
+    if valid_rating and rating != 4:
         pick = "A" if rating < 4 else "B"
         picked_human = int(pick == human_side)
+    else:
+        picked_human = None
 
     return {
         "pair_id": row.get("pair_id") or f'{row.get("user_id")}::{row.get("post_id")}::{row.get("target_idx")}',
@@ -126,10 +129,20 @@ def aggregate_cell(cell: str, mode: str, calls: list[dict]):
     pos_bias = abs(acc_a - acc_b) if (acc_a is not None and acc_b is not None) else float("nan")
     # Directional position bias: P(judge picks position A) among non-tie calls. Human is
     # ~50/50 A/B, so pick_a_rate>0.5 = leans first/A, <0.5 = leans second/B.
-    nontie = df[df["rating"].notna() & (df["rating"] != 4)]
-    pick_a_rate = float((nontie["rating"].astype(int) < 4).mean()) if len(nontie) else float("nan")
+    # valid, non-tie calls only (rating 1-7, !=4); rating==0 sentinel excluded.
+    valid_nontie = df[df["rating"].notna() & df["rating"].between(1, 7) & (df["rating"] != 4)]
+    pick_a_rate = float((valid_nontie["rating"].astype(int) < 4).mean()) if len(valid_nontie) else float("nan")
     # fraction picks A - fraction picks B  (= 2*pick_a_rate - 1); + = leans first/A.
     position_bias_signed = (2 * pick_a_rate - 1) if not np.isnan(pick_a_rate) else float("nan")
+    # Two accuracy definitions (user request):
+    #   accuracy            = accuracy | parse ok  (denominator = valid non-tie calls)
+    #   accuracy_penalized  = parse failures counted WRONG (denominator adds parse-error calls)
+    # Ties (rating==4) are legitimate abstentions, excluded from both.
+    n_correct = int(df["picked_human"].sum()) if df["picked_human"].notna().any() else 0
+    n_scored = int(df["picked_human"].notna().sum())        # valid, non-tie
+    n_parse_error = int(df["parse_error"].sum())
+    acc_parse_ok = (n_correct / n_scored) if n_scored else 0.0
+    acc_penalized = (n_correct / (n_scored + n_parse_error)) if (n_scored + n_parse_error) else 0.0
     summ = {
         "cell": cell, "mode": mode, "n_calls": len(df),
         "format_ok_rate": float(df["format_ok"].mean()),
@@ -137,8 +150,10 @@ def aggregate_cell(cell: str, mode: str, calls: list[dict]):
         "rating_recovery_rate": float(df["rating_recovered_from_text"].mean()),
         "budget_hit_rate": float(df["budget_hit"].mean()),
         "tie_rate": float((df["rating"] == 4).mean()),
-        "n_scored": int(df["picked_human"].notna().sum()),
-        "accuracy": acc if acc is not None else 0.0,
+        "n_scored": n_scored,
+        "n_parse_error": n_parse_error,
+        "accuracy": acc_parse_ok,
+        "accuracy_penalized": acc_penalized,
         "position_bias_delta": pos_bias,
         "pick_a_rate": pick_a_rate,
         "position_bias_signed": position_bias_signed,
@@ -188,16 +203,18 @@ def write_summary(rows, kappas, out_md, out_pq):
     s = [{"cell": r["cell"], "mode": r["mode"], "n_calls": r["n_calls"],
           "n_scored": r.get("n_scored"), "parse_error": r.get("parse_error_rate"),
           "tie_rate": r.get("tie_rate"), "budget_hit": r.get("budget_hit_rate"),
-          "accuracy": r.get("accuracy"), "pos_bias": r.get("position_bias_delta"),
-          "rating_mean": r.get("rating_mean"),
+          "acc_parse_ok": r.get("accuracy"), "acc_penalized": r.get("accuracy_penalized"),
+          "pos_bias": r.get("position_bias_delta"), "rating_mean": r.get("rating_mean"),
           "kappa_vs_anchor": kappas.get((r["cell"], r["mode"]), float("nan"))}
          for r in rows if r["n_calls"]]
     df = pd.DataFrame(s).sort_values(["mode", "cell"])
     df.to_parquet(out_pq, index=False)
     with out_md.open("w") as f:
         f.write("# Judge sweep summary\n\n")
-        f.write("_accuracy = judge picks the true human (ties excluded); kappa_vs_anchor = "
-                "Cohen's kappa on picked_human vs the 397B anchor, same thinking-mode, shared pairs._\n\n")
+        f.write("_acc_parse_ok = judge picks the true human among valid non-tie calls (ties & parse "
+                "failures excluded); acc_penalized = same but parse failures (rating=0/none) counted "
+                "WRONG. kappa_vs_anchor = Cohen's kappa on picked_human vs the 397B anchor, same "
+                "thinking-mode, shared pairs._\n\n")
         f.write("_Caveat: accuracies are vs ONE stochastic generator draw (1 sample/row, T=0.6). "
                 "Judge-vs-judge gaps <5pp are within generator sampling noise._\n\n")
         f.write(df.to_markdown(index=False)); f.write("\n")
