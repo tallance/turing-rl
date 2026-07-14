@@ -32,7 +32,7 @@ PLOT_METRICS = [
     ("budget_hit_rate", "budget-hit rate (finish=length)", None, None),
     ("format_ok_rate", "format-ok rate (parsed JSON)", (0.0, 1.05), None),
     ("position_bias_delta", "position bias |acc(humanA)-acc(humanB)|", None, None),
-    ("position_bias_signed", "position bias (frac picks A - frac picks B;  + = first/A,  - = second/B)", (-0.3, 0.3), 0.0),
+    ("position_bias_signed", "fraction A - fraction B", (-0.3, 0.3), 0.0),
 ]
 
 
