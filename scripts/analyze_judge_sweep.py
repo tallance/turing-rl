@@ -17,7 +17,22 @@ import numpy as np, pandas as pd
 from configs.judge_sweep_cells import SIZE_MAP, ANCHOR_CELL   # single source of truth
 
 RATING_RE = re.compile(r'"rating"\s*:\s*(\d+)')
-METRICS_FOR_PLOT = ("accuracy", "format_ok_rate", "budget_hit_rate", "position_bias_delta")
+
+# Plot order (qwen3.5 dense by size, then MoE by size, then cross-family bonus) + labels.
+PLOT_ORDER = ["qwen35-4b", "qwen35-9b", "qwen35-27b", "qwen35-35b-a3b",
+              "qwen35-122b", "qwen35-397b", "qwen3-8b"]
+PLOT_LABELS = {"qwen35-4b": "3.5-4B", "qwen35-9b": "3.5-9B", "qwen35-27b": "3.5-27B",
+               "qwen35-35b-a3b": "3.5-35B-A3B", "qwen35-122b": "3.5-122B(Int4)",
+               "qwen35-397b": "3.5-397B(Int4)", "qwen3-8b": "qwen3-8B"}
+# (metric key, y-label, optional (ymin,ymax), optional reference line)
+PLOT_METRICS = [
+    ("accuracy", "accuracy (picks true human, ties excl.)", (0.45, 0.85), 0.5),
+    ("kappa_vs_anchor", "Cohen's kappa vs 397B anchor", (0.0, 0.7), None),
+    ("tie_rate", "tie rate (rating==4)", None, None),
+    ("budget_hit_rate", "budget-hit rate (finish=length)", None, None),
+    ("format_ok_rate", "format-ok rate (parsed JSON)", (0.0, 1.05), None),
+    ("position_bias_delta", "position bias |acc(humanA)-acc(humanB)|", None, None),
+]
 
 
 def _parse_rating_from_text(text: str) -> int | None:
@@ -173,22 +188,43 @@ def write_summary(rows, kappas, out_md, out_pq):
 
 
 def write_plots(rows, out_dir):
+    """One grouped bar chart per metric: model on x, thinking off vs on side by side.
+    All models treated equally (anchor is just another bar)."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     out_dir.mkdir(parents=True, exist_ok=True)
-    for metric in METRICS_FOR_PLOT:
-        fig, ax = plt.subplots(figsize=(6, 4))
-        for mode, mk in (("off", "o"), ("on", "s")):
-            pts = sorted(((SIZE_MAP[r["cell"]], r[metric]) for r in rows
-                          if r["mode"] == mode and r["n_calls"] and r["cell"] in SIZE_MAP
-                          and isinstance(r.get(metric), (int, float)) and not np.isnan(r[metric])),
-                         key=lambda t: t[0])
-            if pts:
-                ax.plot([p[0] for p in pts], [p[1] for p in pts], marker=mk, label=f"thinking={mode}")
-        ax.set_xscale("log"); ax.set_xlabel("judge size (B; active-params for MoE)")
-        ax.set_ylabel(metric); ax.set_title(f"{metric} vs size"); ax.legend(); ax.grid(True, alpha=0.3)
-        fig.tight_layout(); fig.savefig(out_dir / f"{metric}.png"); plt.close(fig)
+    by = {(r["cell"], r["mode"]): r for r in rows if r["n_calls"]}
+    cells = [c for c in PLOT_ORDER if any(k[0] == c for k in by)]
+    if not cells:
+        return
+
+    def _val(cell, mode, metric):
+        r = by.get((cell, mode))
+        v = r.get(metric) if r else None
+        return v if isinstance(v, (int, float)) and not (isinstance(v, float) and np.isnan(v)) else np.nan
+
+    x = np.arange(len(cells)); w = 0.38
+    for metric, ylabel, ylim, ref in PLOT_METRICS:
+        off = [_val(c, "off", metric) for c in cells]
+        on = [_val(c, "on", metric) for c in cells]
+        fig, ax = plt.subplots(figsize=(11, 5.5))
+        b1 = ax.bar(x - w / 2, off, w, label="thinking off", color="#4C78A8")
+        b2 = ax.bar(x + w / 2, on, w, label="thinking on", color="#F58518")
+        for bars in (b1, b2):
+            for r in bars:
+                h = r.get_height()
+                if not np.isnan(h):
+                    ax.text(r.get_x() + r.get_width() / 2, h, f"{h:.2f}",
+                            ha="center", va="bottom", fontsize=8)
+        if ref is not None:
+            ax.axhline(ref, ls="--", c="gray", lw=1, alpha=0.7)
+        ax.set_xticks(x); ax.set_xticklabels([PLOT_LABELS.get(c, c) for c in cells], rotation=20, ha="right")
+        ax.set_ylabel(ylabel); ax.set_title(f"{metric} by model — thinking off vs on")
+        if ylim:
+            ax.set_ylim(*ylim)
+        ax.legend(); ax.grid(True, axis="y", alpha=0.3)
+        fig.tight_layout(); fig.savefig(out_dir / f"{metric}.png", dpi=130); plt.close(fig)
 
 
 def main() -> None:
@@ -214,6 +250,8 @@ def main() -> None:
             print(f"[analyzer] {cell_dir.name}/{mode_dir.name}: n={summ['n_calls']} "
                   f"acc={summ.get('accuracy', 0):.3f} ties={summ.get('tie_rate', 0):.2f}", flush=True)
     kappas = compute_kappa_vs_anchor(pair_dfs, ANCHOR_CELL)
+    for r in summaries:  # fold kappa into rows so the bar plots can use it
+        r["kappa_vs_anchor"] = kappas.get((r["cell"], r["mode"]), float("nan"))
     write_summary(summaries, kappas, args.derived_root / "summary.md", args.derived_root / "summary.parquet")
     nonempty = [d for d in pair_dfs.values() if not d.empty]
     (pd.concat(nonempty, ignore_index=True) if nonempty else pd.DataFrame()).to_parquet(
