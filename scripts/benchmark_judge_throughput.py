@@ -78,10 +78,10 @@ def load_prompts(dump_path: Path, n: int) -> list[str]:
     return out
 
 
-def build_body(prompt: str) -> dict:
+def build_body(prompt: str, model: str = "Qwen/Qwen3-8B") -> dict:
     """Production-matching payload with schema fix."""
     return {
-        "model": "Qwen/Qwen3-8B",
+        "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "max_completion_tokens": 8192,
         "reasoning": {"enabled": True},
@@ -117,8 +117,10 @@ async def one_call(
     sem: asyncio.Semaphore,
     call_idx: int,
     prompt: str,
+    model: str = "Qwen/Qwen3-8B",
+    timeout_s: float = 1200.0,
 ) -> CallResult:
-    body = build_body(prompt)
+    body = build_body(prompt, model=model)
     async with sem:
         t0 = time.time()
         try:
@@ -126,7 +128,7 @@ async def one_call(
                 endpoint_url,
                 json=body,
                 headers={"Authorization": "Bearer dummy", "Content-Type": "application/json"},
-                timeout=aiohttp.ClientTimeout(total=1200),
+                timeout=aiohttp.ClientTimeout(total=timeout_s),
             ) as resp:
                 status = resp.status
                 data = await resp.json()
@@ -168,12 +170,14 @@ async def measure(
     endpoint_url: str,
     concurrency: int,
     prompts: list[str],
+    model: str = "Qwen/Qwen3-8B",
+    timeout_s: float = 1200.0,
 ) -> tuple[float, list[CallResult]]:
     """Fire len(prompts) calls at the given concurrency. Return (wall_seconds, results)."""
     sem = asyncio.Semaphore(concurrency)
     t0 = time.time()
     coros = [
-        one_call(session, endpoint_label, endpoint_url, concurrency, sem, i, p)
+        one_call(session, endpoint_label, endpoint_url, concurrency, sem, i, p, model, timeout_s)
         for i, p in enumerate(prompts)
     ]
     results = await asyncio.gather(*coros)
@@ -300,6 +304,10 @@ async def async_main() -> None:
     parser.add_argument("--out", type=Path, default=Path("/home/lancewicki/projects/turing-rl/results/judge_throughput"))
     parser.add_argument("--meta-json", type=Path, default=None,
                         help="optional JSON file with per-endpoint metadata (job_id, node, warmup_s, tp) for the report")
+    parser.add_argument("--model", default="Qwen/Qwen3-8B",
+                        help="model id sent in the payload (must match what the endpoint serves)")
+    parser.add_argument("--timeout", type=float, default=1200.0,
+                        help="per-request client timeout in seconds")
     args = parser.parse_args()
 
     endpoints = []
@@ -334,7 +342,7 @@ async def async_main() -> None:
         for label, url in endpoints:
             for conc in concurrencies:
                 print(f"[bench] measuring endpoint={label} concurrency={conc} n={len(prompts)} ...", flush=True)
-                wall, results = await measure(session, label, url, conc, prompts)
+                wall, results = await measure(session, label, url, conc, prompts, args.model, args.timeout)
                 all_results.extend(results)
                 tp = endpoint_meta.get(label, {}).get("tp")
                 s = summarize_measurement(label, tp, conc, wall, results)
@@ -354,7 +362,7 @@ async def async_main() -> None:
 
     meta = {
         "timestamp": ts,
-        "model": "Qwen/Qwen3-8B",
+        "model": args.model,
         "tps": sorted({endpoint_meta.get(l, {}).get("tp") for l, _ in endpoints if endpoint_meta.get(l, {}).get("tp") is not None}),
         "concurrencies": concurrencies,
         "n": len(prompts),
