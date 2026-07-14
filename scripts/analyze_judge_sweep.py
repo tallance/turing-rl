@@ -202,6 +202,9 @@ def main() -> None:
     for cell_dir in sorted((args.raw_root / "sweep").iterdir()):
         if not cell_dir.is_dir():
             continue
+        if cell_dir.name not in SIZE_MAP:  # skip smoke/exploratory dirs (e.g. fam_*, *-fp8)
+            print(f"[analyzer] skip {cell_dir.name} (not in SIZE_MAP)", flush=True)
+            continue
         for mode_dir in sorted(cell_dir.iterdir()):
             if not mode_dir.is_dir():
                 continue
