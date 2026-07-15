@@ -156,6 +156,22 @@ def find_latest_checkpoint(checkpoint_dir: str) -> str | None:
     return resolve_adapter_path(checkpoint_root)
 
 
+def resolve_adapter_for_run(checkpoint_dir: str, base_model: bool) -> str | None:
+    """Return the adapter path for this run, or None for base-model generation.
+
+    base_model=True short-circuits to None (no LoRA). Otherwise resolve the latest
+    checkpoint / adapter under checkpoint_dir and raise if none is found (existing
+    behavior)."""
+    if base_model:
+        return None
+    adapter_path = find_latest_checkpoint(checkpoint_dir)
+    if adapter_path is None:
+        adapter_path = resolve_adapter_path(checkpoint_dir)
+    if adapter_path is None:
+        raise ValueError(f"No LoRA adapter found under {checkpoint_dir}")
+    return adapter_path
+
+
 def _build_generation_task_list(
     user_results: list[dict[str, Any]],
     *,
@@ -528,8 +544,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        required=True,
+        required=False,
+        default="",
         help="Path to a veRL checkpoint directory containing global_step_*",
+    )
+    parser.add_argument(
+        "--base_model",
+        action="store_true",
+        help="Generate from the base --model_id with no LoRA adapter.",
     )
     parser.add_argument(
         "--metric",
@@ -638,12 +660,11 @@ def main() -> None:
     args = parse_args()
     args.model_id = normalize_model_id(args.model_id)
 
-    args.adapter_path = find_latest_checkpoint(args.checkpoint_dir)
+    args.adapter_path = resolve_adapter_for_run(args.checkpoint_dir, args.base_model)
     if args.adapter_path is None:
-        args.adapter_path = resolve_adapter_path(args.checkpoint_dir)
-    if args.adapter_path is None:
-        raise ValueError(f"No LoRA adapter found under {args.checkpoint_dir}")
-    print(f"Using checkpoint/adapter: {args.adapter_path}")
+        print(f"Base model (no adapter): {args.model_id}")
+    else:
+        print(f"Using checkpoint/adapter: {args.adapter_path}")
 
     args = apply_generation_defaults(args)
     print(
@@ -684,10 +705,12 @@ def main() -> None:
         )
         if args.metric:
             tag = f"grpo_{args.metric}"
-        else:
+        elif args.adapter_path:
             adapter_clean = args.adapter_path.rstrip("/")
             parts = adapter_clean.split("/")
             tag = parts[-2] if parts[-1] in ("actor", "final") else parts[-1]
+        else:
+            tag = os.path.basename(os.path.normpath(args.model_id))
         output_dir = os.path.join("results", "grpo_gen")
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, f"{tag}{conditioning_suffix}_gen{args.gen_num}.pkl")

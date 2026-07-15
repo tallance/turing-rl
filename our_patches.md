@@ -107,3 +107,25 @@ duration of the repro, mark it `PERSISTENT`.
 - **Reverted**: no. Persistent; the fallback is strictly safer than
   crashing.
 
+
+## PERSISTENT: eval/generate_trained.py — --base_model flag
+
+- **What**: Adds an additive `--base_model` flag to `eval/generate_trained.py`
+  that runs the base `--model_id` with no LoRA adapter, enabling no-adapter
+  base-model heldout generation for the generator sweep (scoring candidates
+  from untrained base models like qwen3-8B / qwen3.5-9B alongside SFT'd ones).
+- **How**: A new pure helper `resolve_adapter_for_run(checkpoint_dir, base_model)`
+  short-circuits to `None` when `base_model=True`; otherwise it preserves the
+  existing behavior (resolve latest checkpoint / adapter and raise
+  `ValueError("No LoRA adapter found under ...")` if none is found). `main()`
+  now calls this helper and prints "Base model (no adapter): <model_id>" when
+  the adapter is `None`. Downstream (`build_llm_kwargs`, `build_vllm_lora_request`)
+  already handle `adapter_path=None`.
+- **Also**: `--checkpoint_dir` relaxed from `required=True` to
+  `required=False, default=""` so base runs need not pass a dummy path. The
+  output-naming block that derives a tag from the adapter path is guarded to
+  only run when `args.adapter_path` is set (base runs always pass `--output`
+  explicitly; a `model_id` basename is used as a fallback tag otherwise).
+- **No-op unless `--base_model` is passed**: adapter runs behave exactly as
+  before.
+- **Reverted**: no. Persistent.
