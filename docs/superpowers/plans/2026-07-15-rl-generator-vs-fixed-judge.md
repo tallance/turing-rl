@@ -457,7 +457,8 @@ Parametrized by env: `JUDGE={9b|397b}`, `MODE={overfit|full|epoch1}`. Responsibi
    `PERSONA_JUDGE_SAMPLING={"repetition_penalty":1.1,"temperature":0.6}`, `PERSONA_JUDGE_ENABLE_THINKING=1`,
    `PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192`, `PERSONA_JUDGE_DUMP_RATE=1.0`, `PERSONA_REWARD_DUMP_DIR=<run dir>`,
    `JUDGE_MODEL=<Qwen/Qwen3.5-9B|Qwen/Qwen3.5-397B-A17B-GPTQ-Int4>`, `OPENAI_API_BASE=<judge endpoint>`,
-   `SFT_ADAPTER_PATH=checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack/final`.
+   `SFT_ADAPTER_PATH=checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack/final`,
+   `WANDB_PROJECT=2026-07-15-rl-generator-vs-fixed-judge` (wandb project = the plan name).
 2. Sbatch the judge server (Task 7 for 9b; `judge_serve.sh` for 397b) on a **separate** node; wait
    `/v1/models` + model-verify.
 3. Run `bash bash_scripts/grpo/train_grpo.sh turing prism history none` with **explicit Hydra
@@ -467,6 +468,7 @@ Parametrized by env: `JUDGE={9b|397b}`, `MODE={overfit|full|epoch1}`. Responsibi
    - `MODE=overfit`: also `data.train_files=<overfit10>` `data.train_batch_size=10`
      `actor_rollout_ref.actor.ppo_mini_batch_size=10` `trainer.total_epochs=<~40>` `trainer.save_freq=0`
    - `MODE=epoch1`: `trainer.total_epochs=1`
+   - `trainer.project_name=2026-07-15-rl-generator-vs-fixed-judge` (veRL wandb project = plan name)
    - `trainer.default_local_dir=<run ckpt dir>` `trainer.experiment_name=<name>` `trainer.resume_mode=auto`
    - Carry `our_patches.md` "DELETED: train_grpo_smoke.sh" 40GB overrides IF needed (start without; add on OOM).
 4. `trap`-scancel the judge on exit.
