@@ -97,6 +97,13 @@ QZ=()
 SD=()
 [ -n "${SPEC_DECODE:-}" ] && SD=(--speculative-config "$SPEC_DECODE")
 
+# Optional max_num_seqs cap. Needed with SPEC_DECODE on the hybrid-Mamba 397B: spec
+# decoding reserves draft-token slots that shrink the Mamba cache (~158 blocks), and the
+# default max_num_seqs=256 > blocks aborts CUDA-graph capture. Concurrency is small (8),
+# so capping to <=158 is free. (See post-plan: job 9826 failure.)
+MS=()
+[ -n "${MAX_NUM_SEQS:-}" ] && MS=(--max-num-seqs "$MAX_NUM_SEQS")
+
 PIDS=(); URLS=()
 for i in $(seq 0 $((REPLICAS-1))); do
   gpus=$(seq -s, $((i*TP)) $((i*TP+TP-1)))
@@ -104,7 +111,7 @@ for i in $(seq 0 $((REPLICAS-1))); do
   CUDA_VISIBLE_DEVICES=$gpus $PY_SERVER -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" --download-dir "$HF_HOME" --tensor-parallel-size "$TP" \
     --max-model-len 32768 --gpu-memory-utilization 0.85 --dtype bfloat16 \
-    "${RP[@]}" "${AR[@]}" "${QZ[@]}" "${SD[@]}" --host 0.0.0.0 --port $port \
+    "${RP[@]}" "${AR[@]}" "${QZ[@]}" "${SD[@]}" "${MS[@]}" --host 0.0.0.0 --port $port \
     > "$MODE_DIR/vllm_server/replica_$i.log" 2>&1 &
   PIDS+=($!)
   URLS+=("http://localhost:$port/v1")
