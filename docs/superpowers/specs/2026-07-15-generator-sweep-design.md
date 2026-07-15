@@ -155,9 +155,9 @@ rule.
 ## Open items / caveats
 
 - **Compute magnitude.** 4 generators × 12 cells serialized on one node is a **multi-day
-  chain** (397B on/off are the long poles). This is the deliberate cost of the single-node
-  constraint. If it runs too long, drop 397B-off or the two smallest cells — but default is
-  the full 12.
+  chain** (397B on/off are the long poles). This is the accepted cost of the single-node
+  constraint. **Run the full 12 cells for every generator — no cell is dropped unless the
+  user explicitly says so.**
 - **Base generators + reasoning format.** qwen3.5-9B / qwen3-8B *base* were not trained on
   the `<reasoning>…</reasoning>` SFT format; they may not emit it, so `build_judge_pairs`
   falls back to raw text. That's expected ("before SFT" = worse, less-formatted candidates)
