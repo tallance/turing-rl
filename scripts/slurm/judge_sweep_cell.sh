@@ -61,7 +61,7 @@ PAIRS=${PAIRS:-$REPO/results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.
 [ -f "$PAIRS" ] || { echo "ERROR: pair-set not found: $PAIRS" >&2; exit 2; }
 
 # The client appends $CELL_NAME/$THINKING_MODE to --out_dir, so pass the sweep ROOT.
-SWEEP_ROOT=$REPO/results/2026-07-08-judge-sweep/raw/sweep
+SWEEP_ROOT=${SWEEP_ROOT:-$REPO/results/2026-07-08-judge-sweep/raw/sweep}
 MODE_DIR=$SWEEP_ROOT/$CELL_NAME/$THINKING_MODE
 mkdir -p "$MODE_DIR/vllm_server" "$MODE_DIR/reward" "$MODE_DIR/http"
 

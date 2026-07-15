@@ -1,0 +1,93 @@
+#!/bin/bash
+# Single-node serialized generator sweep. Submits ONE dependency chain so at most one
+# node is allocated at a time (2 nodes stay free for a concurrent agent).
+#
+# Chain per generator: [SFT] -> gen -> build -> {6 judge cells x 2 modes}.
+# qwen3-8b-sft reuses the existing 880 pair-set (no gen/build).
+#
+# Serialization: each job depends afterany on the previous (PREV) so a 397B-on wall
+# timeout doesn't abort the chain. WITHIN a generator, gen->build->first-sweep use
+# afterok so we never sweep on a missing/failed pair-set.
+#
+#   bash scripts/launch_generator_sweep.sh            # submit the whole chain
+#   DRY=1 bash scripts/launch_generator_sweep.sh      # print the plan, submit nothing
+set -uo pipefail
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
+REPO=/home/lancewicki/projects/turing-rl
+PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
+DRY=${DRY:-0}
+cd "$REPO"
+
+SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'   # the cot-failure fixes
+EXISTING_8BSFT_PAIRS=$REPO/results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet
+
+# Judge cells (cell_name model_id tp replicas), incl. the 397B anchor.
+CELLS=$($PY -c "
+from configs.judge_sweep_cells import cell_list
+for c in cell_list('qwen3.5'):
+    print(c['cell_name'], c['model_id'], c['tp'], c['replicas'])
+")
+
+PREV=""   # running tail of the chain
+
+# submit <dependency-or-empty> <sbatch-args...> ; echoes jid, updates PREV
+submit () {
+  local dep="$1"; shift
+  local depflag=(); [ -n "$dep" ] && depflag=(--dependency="$dep")
+  if [ "$DRY" = "1" ]; then
+    echo "[DRY] sbatch ${depflag[*]} $*" >&2
+    PREV="dry$RANDOM"; echo "$PREV"; return 0
+  fi
+  local jid; jid=$(sbatch --parsable "${depflag[@]}" "$@")
+  echo "$jid"; PREV="$jid"
+}
+
+# --- generator branch: gen -> build -> sweeps. $1=genkey $2=model_id $3=ckpt(""=base)
+#     $4=pairs_override("" => build one) $5=sft_dep("" or afterok:<jid>)
+run_generator () {
+  local gk="$1" mid="$2" ckpt="$3" pairs_override="$4" sft_dep="$5"
+  local pairs gate=""
+  if [ -n "$pairs_override" ]; then
+    pairs="$pairs_override"                       # reuse existing pairs, no gen/build
+  else
+    # gen: afterany on PREV to serialize; AND afterok on SFT if this gen needs it.
+    local gendep="afterany:$PREV"
+    [ -z "$PREV" ] && gendep=""
+    [ -n "$sft_dep" ] && gendep="${gendep:+$gendep,}$sft_dep"
+    local gjid; gjid=$(submit "$gendep" --gres=gpu:8 --job-name=gen_${gk} \
+      --export=ALL,GEN_KEY=$gk,MODEL_ID=$mid,CKPT=$ckpt scripts/slurm/generator_infer.sh)
+    echo "submitted gen $gk -> $gjid" >&2
+    local bjid; bjid=$(submit "afterok:$gjid" --gres=gpu:0 --job-name=build_${gk} \
+      --export=ALL,GEN_KEY=$gk scripts/slurm/build_pairs.sh)
+    echo "submitted build $gk -> $bjid" >&2
+    pairs=$REPO/results/2026-07-15-generator-sweep/raw/pairs/gen_${gk}_880.parquet
+    gate="afterok:$bjid"      # first sweep waits afterok on build; rest afterany on PREV
+  fi
+  # Per-generator subtree of BARE judge-cell names => a standard sweep the existing
+  # analyzers handle unchanged.
+  local SWROOT=$REPO/results/2026-07-15-generator-sweep/raw/$gk/sweep
+  while read -r cell_name model_id tp replicas; do
+    [ -z "$cell_name" ] && continue
+    local gpus=$((tp * replicas))
+    for mode in off on; do
+      local dep="afterany:$PREV"
+      if [ -n "$gate" ]; then dep="$gate"; gate=""; fi   # first sweep uses the build gate
+      [ -z "$PREV" ] && [ -z "$dep" ] && dep=""
+      local sjid; sjid=$(submit "$dep" --gres=gpu:$gpus --job-name=gsw_${gk}_${cell_name}_${mode} \
+        --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,THINKING_MODE=$mode,\
+CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$SWROOT,PERSONA_JUDGE_SAMPLING=$SAMPLING \
+        scripts/slurm/judge_sweep_cell.sh)
+      echo "submitted sweep $gk $cell_name $mode -> $sjid (gpu:$gpus)" >&2
+    done
+  done <<< "$CELLS"
+}
+
+# ---- generators (3 for now; qwen35-9b-sft DEFERRED — see note below) ----
+# DEFERRED: the qwen3.5-9B SFT generator needs an SFT env that supports model_type=qwen3_5
+# (turing-rl-train transformers 4.57.6 does not; model is also multimodal). When that lands,
+# re-add the SFT job + `run_generator qwen35-9b-sft Qwen/Qwen3.5-9B "$SFT_OUT" "" "$SFT_DEP"`.
+run_generator qwen3-8b-base  Qwen/Qwen3-8B    ""  ""                       ""
+run_generator qwen35-9b-base Qwen/Qwen3.5-9B  ""  ""                       ""
+run_generator qwen3-8b-sft   Qwen/Qwen3-8B    ""  "$EXISTING_8BSFT_PAIRS"  ""
+
+echo "chain tail job: $PREV" >&2
