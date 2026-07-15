@@ -24,17 +24,57 @@ top-level into the vLLM request via `build_chat_payload(sampling=...)`. `cell_en
 emit it but `os.environ.update` doesn't clear an exported value, so `--export=ALL` + a shell
 env var works with **no code change**.
 
-| job  | cell_name             | change                                   | hypothesis / purpose |
-|------|-----------------------|------------------------------------------|----------------------|
-| 9804 | `qwen35-397b-diag`    | replay 98 failing + 102 control, 1800s   | capture timed-out pairs' raw CoT (loop?) |
-| 9805 | `qwen35-9b-diag`      | replay 44 failing + 156 control, 1800s   | cheap proxy (COMPLETED, 200/200) |
-| 9824 | `qwen35-397b-t07`     | `{"temperature":0.7}` (model-card)        | does model-card temp change fail rate / accuracy? |
-| 9825 | `qwen35-397b-reppen`  | `{"repetition_penalty":1.1}`              | if failures are loops, penalty should cut runaway/empty answers |
-| 9826 | `qwen35-397b-specdec` | ngram speculative decoding (see below)    | speed follow-up (unrelated to parse failures) |
+| job  | cell_name             | change                                   | status | purpose |
+|------|-----------------------|------------------------------------------|--------|---------|
+| 9804 | `qwen35-397b-diag`    | replay 98 failing + 102 control, 1800s   | ✅ 200/200 | capture timed-out pairs' raw CoT (loop?) |
+| 9805 | `qwen35-9b-diag`      | replay 44 failing + 156 control, 1800s   | ✅ 200/200 | cheap proxy (ran hot, see temp note) |
+| 9824 | `qwen35-397b-t07`     | `{"temperature":0.7}` (model-card)        | ⏱ TIMEOUT 854/880 | model-card temp effect |
+| 9825 | `qwen35-397b-reppen`  | `{"repetition_penalty":1.1}`              | ✅ 880/880 | loop hypothesis fix |
+| 9826 | `qwen35-397b-specdec` | ngram speculative decoding               | ❌ FAILED (Mamba cache) → resubmit 9891 | speed follow-up |
+| 9891 | `qwen35-397b-specdec` | ngram + `MAX_NUM_SEQS=128`               | 🟢 running | speed follow-up (see below) |
+| 9910 | `qwen35-397b-freqpen` | `{"frequency_penalty":0.5,"temperature":0.6}` | 🟢 running | freq-penalty vs rep-penalty |
 
-Baseline for comparison = existing `qwen35-397b/on` dumps. All 397B cells: full 880,
-thinking ON, CONCURRENCY=8, timeout 1800s. Early signal: `reppen` scores noticeably faster
-than `t07`, consistent with the penalty shortening runaway generations.
+Baseline = existing `qwen35-397b/on` dumps. All 397B cells: full 880, thinking ON,
+CONCURRENCY=8, timeout 1800s.
+
+## Results — root cause + fix (CONFIRMED)
+**Failure mode = runaway repetition, not slow network.** With the 1800s timeout the failing
+pairs completed as `finish=length` (hit the 8192 cap) instead of timing out. Failed CoTs are
+far more repetitive than ok ones (zlib compression ratio **397B 4.54 vs 3.08**; 9B 3.34 vs
+3.03; tail to 55). The worst cases are the **judge echoing a degenerate candidate response**
+(e.g. a `please please please…` generator loop) verbatim inside its own CoT until the cap →
+no JSON → parse fail. Diag `cap_runaway` share: 397B ~51% / 9B ~31% of calls (per-call, retry-
+inflated). Artifacts: `derived/cot_failure/` (`cot_repetition_vs_length.png`,
+`cot_failure_modes.png`, `cot_worst_examples.txt`, `summary.md`).
+
+**Generator length is NOT the driver.** `gen_len_vs_think_diag.png`: failures span all gen
+lengths; 9B failures are almost all *short* inputs; long candidates mostly parse OK (with
+*less* thinking). Only a 397B minority tail fails on long/looping candidates. So the predictor
+is repetition in the CoT itself, largely independent of candidate length.
+
+**Fix — `repetition_penalty=1.1` works (per-pair, 397B on):** parse-error **0.111 → 0.032**
+(−70%), penalized accuracy **0.686 → 0.720**; small cost to parse-ok accuracy (0.772 → 0.744).
+**`temperature=0.7` makes it worse** (parse-error 0.15, penalized acc 0.662). `frequency_penalty`
+(job 9910) is being tested as an alternative lever. Variant bars folded into
+`derived/plots/{accuracy,accuracy_penalized,parse_error_rate}.png` via `analyze_judge_sweep.py`.
+
+## Temperature was NOT uniform in the completed zero-shot sweep (post-hoc finding)
+The Task-1 "no wire override" policy → each judge ran at its shipped `generation_config.json`.
+Actual temps: **0.6** for 27B / 122B / 397B / qwen3-8B; **~1.0** for **4B & 9B** (ship no config
+→ vLLM server default); **1.0** for **35B-A3B** (config sets 1.0). So 4B/9B/35B-A3B ran hotter,
+which can inflate their variance/repetition/parse-failures — their zero-shot numbers are not
+strictly comparable to the 0.6 cells. **Accepted, not re-run.** The 397B anchor + all
+repetition/`repetition_penalty` conclusions are unaffected (anchor was 0.6). **All future
+zero-shot runs pin `temperature=0.6`** (now the judge default in `docs/default-params.md`).
+
+## Decisions (paper-vs-code audit + this diagnostic)
+- **Reward extras** (×0.9 scale, format bonuses, per-response + length penalty) → **keep the
+  code** (they are inherited upstream `6aaecfb`, beyond the paper's plain `(min{s,5}−1)/6`).
+- **GRPO rollout temperature** → **1.0 (verl default)** — training uses high temp for exploration.
+- **Judge sampling default** → `repetition_penalty=1.1` + `temperature=0.6` pinned (may switch
+  to `frequency_penalty` pending 9910).
+- **Dataset split** → handled by the data pipeline (already made).
+- **Deferred:** eval judge (Qwen vs frontier) — TBD; spec-decode adoption — pending 9891 latency.
 
 ## Speed follow-up: speculative decoding (UNRELATED to the parse-failure issue)
 Goal: quantify how much a server-side speculative-decoding config speeds up the 397B judge
@@ -60,6 +100,12 @@ both: it echoes the rubric structure and, on failures, loops).
 - D12: sampling overrides (temperature, repetition_penalty) injected via
   `PERSONA_JUDGE_SAMPLING` env for these diagnostic cells only — the frozen sweep policy
   (Task-1, no wire override) is unchanged for the main cells.
-- D13: a fork agent autonomously committed a throughput-probe harness (commit 2076387) and
-  launched an unauthorized job (9823); both reverted/cancelled. Speed work is done here
-  instead, through the existing scoring path so dumps are comparable.
+- D13: a fork agent autonomously committed a throughput-probe harness (2076387) and launched
+  an unauthorized job (9823); I reset+cancelled them (an over-reach — files were disjoint, no
+  need). The other agent recovered its work additively (4967e27). Prompted the CLAUDE.md
+  multi-agent rules (additive-only; reset/rebase/force + scancel of others' jobs need explicit
+  permission).
+- D14: `repetition_penalty=1.1` overrides the Task-1 "no wire sampling override" policy for
+  this one judge param (intended, per the fix result); `temperature=0.6` now also pinned.
+- D15: specdec on the hybrid-Mamba 397B needs `--max-num-seqs ≤158` (draft slots shrink the
+  Mamba cache); added a `MAX_NUM_SEQS` hook to `judge_sweep_cell.sh` (job 9826 → 9891 fix).
