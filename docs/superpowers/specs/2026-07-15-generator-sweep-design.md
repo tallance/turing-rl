@@ -53,8 +53,12 @@ split only.
 1. **Generate candidates** — `eval/generate_trained.py` via a 1-GPU vLLM job. Sampling held
    **identical to the existing baseline** so only the model varies: prism domain temp 0.6,
    `presence_penalty=0.5`, `repetition_penalty=1.0`, `gen_num=1`, `--conditioning_mode history`,
-   max 2048 tokens, `PROMPT_MODE=reasoning`. Base generators pass adapter=None
-   (`enable_lora=False`); SFT generators pass `--checkpoint_dir <ckpt>` (adapter auto-resolved).
+   max 2048 tokens, `PROMPT_MODE=reasoning`. SFT generators pass `--checkpoint_dir <ckpt>`
+   (adapter auto-resolved). **Base generators need a small additive patch:**
+   `generate_trained.py:645` hard-raises when no adapter is found, so add a `--base_model`
+   flag that sets `adapter_path=None` (downstream `build_llm_kwargs`/`build_vllm_lora_request`
+   already handle `None` → `enable_lora=False`) and guard the adapter-name output block
+   against `None`. Documented in `our_patches.md`.
    Output pickle → `results/2026-07-15-generator-sweep/raw/generator/<gen>/heldout_inference.pkl`.
    - `qwen3-8b-sft` skips this step — its pickle/pairs already exist from the judge-sweep.
 2. **Build pair-set** — `scripts/build_judge_pairs.py --inference_pkl <pkl> --test_parquet
@@ -115,6 +119,8 @@ free for the other agent):
   `tests/test_analyze_judge_sweep.py`.
 
 **Changed (additive):**
+- `eval/generate_trained.py` — add `--base_model` flag (no-adapter generation) + guard the
+  adapter-name block; log in `our_patches.md`.
 - `scripts/slurm/sft_variant.sh` — parameterize base config + output dir (or add a 9B branch).
 - (Optional) `configs/judge_sweep_cells.py` `SIZE_MAP` — only if the analyzer needs new keys;
   cell keys are unchanged so likely no edit.
