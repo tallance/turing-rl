@@ -210,38 +210,53 @@ save_steps: 10
 save_total_limit: 2
 ```
 
-Then parameterize `scripts/slurm/sft_variant.sh` to accept a model + config + output stem via
-a `MODEL` env (default `qwen3-8b` preserves current behavior). Edit:
+**How `lora_sft.py` selects model + config (verified):** `--model <alias>` →
+`model_id = MODEL_MAP[args.model]` (line 348) and the config is **auto-derived** from the
+alias: `config_name = args.model.replace("-","_").replace(".","_") + "_lora.yaml"` (line 339),
+loaded from `training/sft/configs/`. So `--model qwen35-9b` auto-loads `qwen35_9b_lora.yaml`
+— **there is no `--config` flag**. But `MODEL_MAP` only contains `qwen3-8b`, so we must add
+the 9B entry. `get_lora_targets` maps any `"qwen"` name to the qwen3 target modules (works
+for the 9B dense model). `--data_path`/`--output_dir` are passed explicitly and override the
+alias-derived defaults.
 
+**Edit `training/sft/lora_sft.py` (additive — one dict entry).** Add to `MODEL_MAP`:
+```python
+MODEL_MAP = {
+    "qwen3-8b": "Qwen/Qwen3-8B",
+    "qwen35-9b": "Qwen/Qwen3.5-9B",
+}
+```
+Document this in `our_patches.md` (append a new section; upstream file).
+
+**Parameterize `scripts/slurm/sft_variant.sh`** via a `MODEL` env (default `qwen3-8b` keeps
+current behavior — no `--config` needed):
 - After `VARIANT=...`/`NOPACK=...` add:
   ```bash
   MODEL=${MODEL:-qwen3-8b}   # qwen3-8b | qwen35-9b
   case "$MODEL" in
-    qwen3-8b)  CONFIG=""; STEM=qwen3_8b ;;   # lora_sft.py default config
-    qwen35-9b) CONFIG=$REPO/training/sft/configs/qwen35_9b_lora.yaml; STEM=qwen35_9b ;;
+    qwen3-8b)  STEM=qwen3_8b ;;
+    qwen35-9b) STEM=qwen35_9b ;;
     *) echo "bad MODEL=$MODEL"; exit 2 ;;
   esac
   ```
 - In each `case "$VARIANT"` OUT line, replace the hard-coded `qwen3_8b` stem with `$STEM`
   (e.g. `OUT=$REPO/checkpoints/sft/${STEM}_prism_full_s42_bf16_fsdp`).
-- In the `ARGS=(--model qwen3-8b ...)` line, replace `qwen3-8b` with `$MODEL`, and if
-  `CONFIG` is set append `--config "$CONFIG"` (confirm `lora_sft.py`'s config flag name —
-  grep `add_argument` in `training/sft/lora_sft.py`; it is `--config`/`--config_path`).
-  Verify with: `ssh ... "grep -nE 'config|--model' /home/lancewicki/projects/turing-rl/training/sft/lora_sft.py | head"`.
+- In the `ARGS=(--model qwen3-8b ...)` line, replace `qwen3-8b` with `$MODEL`. **Do NOT add
+  a `--config` flag** (auto-derived). Everything else (`--data_path`, FSDP flags, `--no_qlora`,
+  etc.) is unchanged.
 
-**Step 4: Verify** — cluster pytest passes; `bash -n scripts/slurm/sft_variant.sh` clean;
-and a config-only smoke:
-```bash
-# after sync (Task 9): confirms the config loads + trainer builds, 64 examples, no train.
-ssh ... "cd $REPO && SMOKE=1 MODEL=qwen35-9b VARIANT=bf16_fsdp NOPACK=1 sbatch scripts/slurm/sft_variant.sh"
-```
-(Run the smoke only after preflight; it's fast. The real training run is submitted by the
-chain in Task 6.)
+**Step 4: Verify** — `python3 -m py_compile` is N/A for yaml/shell; run `bash -n
+scripts/slurm/sft_variant.sh` (clean) and confirm the MODEL_MAP edit compiles:
+`python3 -m py_compile training/sft/lora_sft.py`. Cluster pytest for the config test is
+deferred to the Task 7 gate. (A config-only SMOKE run — `SMOKE=1 MODEL=qwen35-9b
+VARIANT=bf16_fsdp NOPACK=1 sbatch scripts/slurm/sft_variant.sh` — can validate config-load +
+trainer-build after sync, but is optional; the real training run is submitted by the chain.)
 
-**Step 5: Commit.**
+**Step 5: Commit** (stage explicit paths only; append our_patches.md at EOF):
 ```bash
-git add training/sft/configs/qwen35_9b_lora.yaml scripts/slurm/sft_variant.sh tests/test_qwen35_9b_sft_config.py
-git commit -m "feat: qwen3.5-9B SFT config + MODEL-parameterized sft_variant launcher"
+git add training/sft/configs/qwen35_9b_lora.yaml scripts/slurm/sft_variant.sh \
+        training/sft/lora_sft.py our_patches.md tests/test_qwen35_9b_sft_config.py
+git commit -m "feat: qwen3.5-9B SFT (config + MODEL_MAP entry + MODEL-parameterized launcher)"
 ```
 
 ---
