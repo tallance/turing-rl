@@ -104,6 +104,9 @@ SIZE_MAP = {
     "qwen35-35b-a3b": 3,
     "qwen35-122b": 10,  # A10B: 10B active
     "qwen35-397b": 17,
+    # 397B sampling-variant diagnostic cells (plotted next to the 397B baseline).
+    "qwen35-397b-t07": 17,     # temperature=0.7 (model card)
+    "qwen35-397b-reppen": 17,  # repetition_penalty=1.1 (loop hypothesis)
 }
 
 ANCHOR_CELL = "qwen35-397b"

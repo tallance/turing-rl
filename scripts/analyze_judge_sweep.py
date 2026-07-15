@@ -20,10 +20,12 @@ RATING_RE = re.compile(r'"rating"\s*:\s*(\d+)')
 
 # Plot order (qwen3.5 dense by size, then MoE by size, then cross-family bonus) + labels.
 PLOT_ORDER = ["qwen35-4b", "qwen35-9b", "qwen35-27b", "qwen35-35b-a3b",
-              "qwen35-122b", "qwen35-397b", "qwen3-8b"]
+              "qwen35-122b", "qwen35-397b", "qwen35-397b-reppen", "qwen35-397b-t07",
+              "qwen3-8b"]
 PLOT_LABELS = {"qwen35-4b": "3.5-4B", "qwen35-9b": "3.5-9B", "qwen35-27b": "3.5-27B",
                "qwen35-35b-a3b": "3.5-35B-A3B", "qwen35-122b": "3.5-122B(Int4)",
-               "qwen35-397b": "3.5-397B(Int4)", "qwen3-8b": "qwen3-8B"}
+               "qwen35-397b": "3.5-397B(Int4)", "qwen35-397b-reppen": "397B reppen",
+               "qwen35-397b-t07": "397B t0.7", "qwen3-8b": "qwen3-8B"}
 # (metric key, y-label, optional (ymin,ymax), optional reference line)
 PLOT_METRICS = [
     ("accuracy", "accuracy | parse ok (picks true human)", (0.45, 0.85), 0.5),
