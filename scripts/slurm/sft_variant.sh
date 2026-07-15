@@ -51,17 +51,24 @@ SMOKE=${SMOKE:-0}
 # upstream (which packs) — documented in our_patches.md.
 NOPACK=${NOPACK:-0}
 
+MODEL=${MODEL:-qwen3-8b}   # qwen3-8b | qwen35-9b
+case "$MODEL" in
+  qwen3-8b)  STEM=qwen3_8b ;;
+  qwen35-9b) STEM=qwen35_9b ;;
+  *) echo "bad MODEL=$MODEL"; exit 2 ;;
+esac
+
 case "$VARIANT" in
   qlora_r64)
-    OUT=$REPO/checkpoints/sft/qwen3_8b_prism_full_s42_qlora_r64
+    OUT=$REPO/checkpoints/sft/${STEM}_prism_full_s42_qlora_r64
     export WANDB_NAME=sft-qlora-r64
     ;;
   bf16_fsdp)
-    OUT=$REPO/checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp
+    OUT=$REPO/checkpoints/sft/${STEM}_prism_full_s42_bf16_fsdp
     export WANDB_NAME=sft-bf16-fsdp
     ;;
   bf16_fa2)
-    OUT=$REPO/checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fa2
+    OUT=$REPO/checkpoints/sft/${STEM}_prism_full_s42_bf16_fa2
     export WANDB_NAME=sft-bf16-fa2
     ;;
   *)
@@ -74,7 +81,7 @@ if [ "$NOPACK" = "1" ]; then
 fi
 
 # Build the arg list as an array so the quoted multi-word FSDP value survives intact.
-ARGS=(--model qwen3-8b --data_path "$DATA" --output_dir "$OUT" --max_seq_length 8192
+ARGS=(--model "$MODEL" --data_path "$DATA" --output_dir "$OUT" --max_seq_length 8192
       --resume_from_checkpoint auto --report_to wandb --no_torch_compile)
 
 case "$VARIANT" in

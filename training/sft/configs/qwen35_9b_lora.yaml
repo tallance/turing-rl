@@ -1,0 +1,23 @@
+# Qwen3.5-9B LoRA SFT config (generator sweep).
+# Identical hyperparameters to qwen3_8b_lora.yaml (paper Table 5): LoRA r=64/alpha=128,
+# bf16 (no QLoRA), 3 epochs. Base model selected by the launcher (--model qwen35-9b);
+# lora_sft.py auto-loads this file from the --model alias.
+lora_r: 64
+lora_alpha: 128
+lora_dropout: 0.05
+use_qlora: false
+
+num_epochs: 3
+batch_size: 1
+gradient_accumulation_steps: 16
+learning_rate: 2e-4
+lr_scheduler: cosine
+warmup_ratio: 0.05
+weight_decay: 0.01
+
+gradient_checkpointing: true
+logging_steps: 10
+report_to: none
+save_strategy: steps
+save_steps: 10
+save_total_limit: 2

@@ -129,3 +129,18 @@ duration of the repro, mark it `PERSISTENT`.
 - **No-op unless `--base_model` is passed**: adapter runs behave exactly as
   before.
 - **Reverted**: no. Persistent.
+
+## PERSISTENT: training/sft/lora_sft.py — MODEL_MAP += qwen35-9b
+
+- **What**: Added a `"qwen35-9b": "Qwen/Qwen3.5-9B"` entry to the `MODEL_MAP`
+  dict in `training/sft/lora_sft.py`, plus a matching
+  `training/sft/configs/qwen35_9b_lora.yaml` (identical hyperparameters to
+  `qwen3_8b_lora.yaml`: LoRA r=64/alpha=128, bf16 no-QLoRA, 3 epochs) and a
+  `MODEL` env parameter in `scripts/slurm/sft_variant.sh` (default `qwen3-8b`).
+- **Why**: The generator sweep needs to SFT qwen3.5-9B as one of four
+  generators. `lora_sft.py` auto-derives the config filename from `--model`
+  (`qwen35-9b` -> `qwen35_9b_lora.yaml`), so no `--config` flag is needed.
+- **No-op for existing runs**: additive only. `MODEL` defaults to `qwen3-8b`
+  and the OUT stem / `--model` arg resolve to the prior literals, so existing
+  qwen3-8b variant runs are byte-for-byte unchanged.
+- **Reverted**: no. Persistent.
