@@ -71,11 +71,11 @@ SSOT: `training/sft/configs/qwen3_8b_lora.yaml`; launcher `scripts/slurm/sft_var
 | Launch variant | `bf16_fsdp` (full_shard, wrap `Qwen3DecoderLayer`) — verified on 40GB | also `qlora_r64`, `bf16_fa2` |
 
 ## Flags / things to fix
-- **Judge parser bug — `deepseek_r1` is wrong for Qwen.** The correct parser is `qwen3`
-  (source-verified in `scripts/slurm/judge_serve_8b.sh:20`; used by the judge sweep). But the
-  **training-side judge servers still use `deepseek_r1`**: `scripts/slurm/judge_serve.sh:53`,
-  `scripts/slurm/grpo_smoke.sh`, `scripts/slurm/cot_server.sh:53` (all also `--max-model-len 16384`).
-  These should be reconciled to `qwen3` + `32768`. *(Not in `train_grpo_smoke.sh` itself — it
-  inherits `JUDGE_MODEL` and the external judge server sets the parser.)*
+- **Judge parser** — the correct parser for Qwen is `qwen3` (source-verified in
+  `scripts/slurm/judge_serve_8b.sh:20`; used by the judge sweep). The 397B training judge
+  `scripts/slurm/judge_serve.sh` is now fixed to `qwen3` (`--max-model-len 32768` was already
+  correct). `scripts/slurm/cot_server.sh` still uses `deepseek_r1` + `16384`, but that server is
+  the **thinking-OFF CoT teacher** (Qwen3-8B, emits `<reasoning>` not `<think>`), so its parser
+  is cosmetic — left as-is.
 - `repetition_penalty=1.1` overrides the Task-1 "no wire sampling override" policy for this one
   judge param (intended, per the cot-failure result).
