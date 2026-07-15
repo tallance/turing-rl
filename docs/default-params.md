@@ -56,8 +56,7 @@ SSOT: `training/sft/configs/qwen3_8b_lora.yaml` (base), `bash_scripts/grpo/train
 > **GRPO training hyperparameters (batch, `rollout.n`, lengths, epochs) follow upstream
 > `bash_scripts/grpo/train_grpo.sh` = paper Table 6** (batch 128, G=4, 3 epochs,
 > max-response 1024, LR 1e-5, KL β 1e-3, PPO clip 0.2). We'll confirm/adjust after our own
-> full run. The old `train_grpo_smoke.sh` (138-row, 40GB-shrunk) is **deprecated/misleading
-> — do not use as a reference.**
+> full run.
 
 ## SFT
 SSOT: `training/sft/configs/qwen3_8b_lora.yaml`; launcher `scripts/slurm/sft_variant.sh` (torchrun, 8-GPU).
