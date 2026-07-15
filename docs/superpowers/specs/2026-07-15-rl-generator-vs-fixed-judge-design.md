@@ -27,10 +27,11 @@ intended deviation. Established during design:
 | Reward "extras" (0.9 scale, format bonuses, meaningful-thinking hard-zero) | **Keep** | Faithful — in the authors' released code `6aaecfb` (not the written formula, but their real runs) |
 | Judge-rubric penalties (source-copy, wrong-target/role, assistant-like) + length penalty | **Keep** | Faithful — App E judge prompt + App C.3 |
 | Judge thinking mode | **ON** for both judges | Faithful — OpenRouter probe proved the paper's judge thinks by default (~1783 reasoning tokens even with `reasoning=False`); the paper never disables it |
-| GRPO hyperparameters | Paper Table 6 (see §8) | Faithful — base config already matches on every row except train_batch |
-| `train_batch_size` | **128** (was 64) | Fix to match Table 6 |
+| GRPO hyperparameters | Upstream code yaml `6aaecfb` (= paper Table 6 on every row except one) | Faithful to the authors' released config |
+| `train_batch_size` | **64** (keep upstream) | **code≠paper:** paper Table 6 says 128, the authors' released yaml trains at 64. We match the code they actually ran (same "trust the code" precedent as the reward extras). `ppo_mini_batch_size=64` (paper silent). |
 | KL penalty | `use_kl_loss=true`, `β=1e-3`, `πref`=SFT ckpt | Faithful — Table 6; SFT auxiliary loss dropped (paper line 290), KL kept |
 | Generator base | Qwen3-8B, thinking-disabled, SFT init | Faithful |
+| Judge sampling | **`repetition_penalty=1.1`, `temperature=0.6`** (via `PERSONA_JUDGE_SAMPLING`) | Current post-sweep judge default (`docs/default-params.md`); fixes the long-thinking loop (parse-error 0.111→0.032 on 397B-on, job 9825). Curbs the ~6400-token CoT that caused truncation. |
 | Judge model | Small = **Qwen3.5-9B**; anchor = **Qwen3.5-397B-A17B-GPTQ-Int4** | 9B is a deliberate small-judge variable (paper used only 397B); 397B matches paper |
 
 All deviations are logged in the post-plan decisions doc as we implement.
@@ -58,6 +59,13 @@ cannot be replicated within a node (needs all 8 GPUs for one TP=8 replica) → ~
 **397B gets overfit + a single-epoch plumbing run only**; the full 3-epoch 397B run is deferred
 (pending a separate speculative-decoding evaluation).
 
+**Caveat — these probe numbers are without `repetition_penalty`.** The probes used the raw
+thinking-on CoT (~5000–6400 tokens, ~40–57% truncation at 8192). The RL reward judge runs with
+`repetition_penalty=1.1` (§4), which shortens the CoT (parse-error 0.111→0.032 in the sweep) and
+therefore raises calls/s and cuts truncation. So the throughput above is a **pessimistic lower
+bound**; actual GRPO judge throughput will be higher. (A reppen throughput re-probe is optional
+before the full runs.)
+
 ## 4. Reward configuration
 
 - **Cap:** make the Likert score clip **env-configurable** — `TURING_JUDGE_SCORE_CLIP_MAX`
@@ -67,10 +75,15 @@ cannot be replicated within a node (needs all 8 GPUs for one TP=8 replica) → ~
   This is the sole code change to `reward.py` and the sole deliberate deviation.
 - **Extras kept** (0.9 scale, format bonuses, hard-zero, rubric penalties, length penalty) — faithful
   to the authors' code.
-- **`max_completion_tokens = 16384`** for thinking-on (fixes the ~40–57% truncation at 8192, which
-  would otherwise turn ~half of reward calls into `-0.15` parse-failure fallbacks = noise).
+- **Judge sampling: `PERSONA_JUDGE_SAMPLING={"repetition_penalty":1.1,"temperature":0.6}`** — the
+  current post-sweep judge default (`docs/default-params.md`). reppen 1.1 shortens the thinking-on
+  CoT that otherwise runs ~6400 tokens and truncates ~40–57% of calls at 8192; it drops parse-error
+  to ~3% (sweep 397B-on: 0.111→0.032) *and* speeds the judge up. temp pinned to 0.6 for uniformity.
+- **`max_completion_tokens = 8192`** (sweep-proven with reppen; do NOT raise to 16k — reppen fixes
+  the overrun and 16k would only slow the judge).
 - **`PERSONA_JUDGE_ENABLE_THINKING=1`** — make thinking-on explicit rather than relying on the
-  served chat-template default.
+  served chat-template default. (Other sweep sampling — top_p 0.95 / top_k 20 — comes from each
+  model's `generation_config`.)
 - **Optional capped control:** the same runs with cap=5 (paper) to demonstrate the cap suppresses
   the hack. Kept optional (one extra run per judge).
 
@@ -90,7 +103,8 @@ LoRA r64/α32, lr 1e-5, KL β=1e-3, G=4, PPO epochs 1, total epochs 3, max_respo
 clip 0.2, token-mean. Overrides needed:
 
 - `data.train_files` → PRISM grpo train (base default points at a non-existent convokit path).
-- `data.train_batch_size` → **128**.
+- `data.train_batch_size` → **keep 64** (upstream code; matches the authors' released config — no
+  override; paper Table 6 says 128, see §2). `ppo_mini_batch_size` stays 64.
 - `lora_adapter_path` / `SFT_ADAPTER_PATH` → the SFT adapter (init **and** KL reference `πref`).
 - `resume_mode: auto` (crash safety on long runs).
 - Judge endpoint env + the §4 reward env.
@@ -141,9 +155,12 @@ other judge as an independent scorer.)
   PRISM data, train_batch 128, SFT adapter, reward env.
 - **Judge serving** — 9B 8-replica launcher (reuse sweep pattern) + 397B `judge_serve.sh`; health +
   model-verify before trainer starts.
-- **Launcher/orchestrator** — generalize `launch_grpo_smoke_8b.sh`: serve judge → wait `/v1/models`
-  → launch trainer with `JUDGE_HOST` + reward env → scancel judge on exit; parametrized over
-  `{9b, 397b} × {overfit, full}`.
+- **Launcher/orchestrator** — build **fresh** (the old `grpo_smoke*.sh` are broken/legacy: they
+  called the deleted `train_grpo_smoke.sh`). Wrap the canonical `bash_scripts/grpo/train_grpo.sh`
+  (authors' launcher; reads the YAML, takes `SFT_ADAPTER_PATH`, forwards `"$@"` Hydra overrides):
+  serve judge (9B 8-replica / 397B TP=8) → wait `/v1/models` + model-verify → launch trainer with
+  `JUDGE_HOST` + reward env → scancel judge on exit; parametrized over `{9b, 397b} × {overfit, full}`.
+  Carry the 40GB overrides preserved in `our_patches.md`.
 - **Overfit dataset builder** — write `grpo/train_overfit10.parquet`.
 - **Eval** — reuse `eval/generate_trained.py` + `build_judge_pairs.py` + judge scoring; a small
   analyzer comparing RL-final vs SFT-baseline accuracy/win-rate/ties per judge.
@@ -152,8 +169,9 @@ other judge as an independent scorer.)
 
 - **veRL LoRA wiring** — must confirm veRL loads the SFT adapter as *both* the RL init *and* the KL
   reference `πref`. Explicit early implementation step, not an assumption.
-- **Parse-fail tail** — even at 16k some thinking-on calls may truncate; monitor parse-fail rate,
-  raise budget if material.
+- **Parse-fail tail** — reppen 1.1 cuts truncation to ~3% (sweep); monitor parse-fail rate during
+  training, and if material either bump reppen slightly or raise `max_completion_tokens`. A reppen
+  throughput re-probe before the full runs is optional (would replace the pessimistic §3 numbers).
 - **397B full 3-epoch run** — deferred; depends on speculative-decoding (evaluated separately) or
   accepting a multi-day/multi-job run.
 - **Overfit not converging** — raise epochs / lower `kl_loss_coef` (already 1e-3).
