@@ -2,9 +2,11 @@
 
 > **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
-**Goal:** Score four generators ({qwen3-8B, qwen3.5-9B} × {base, SFT}) through the full
-qwen3.5 judge matrix (with the cot-failure fixes), serialized on a single node, and plot
-one accuracy/parse-error curve per generator.
+**Goal:** Score generators through the full qwen3.5 judge matrix (with the cot-failure
+fixes), serialized on a single node, and plot one accuracy/parse-error curve per generator.
+Target set = {qwen3-8B, qwen3.5-9B} × {base, SFT}, **but the qwen3.5-9B SFT cell is deferred**
+(the SFT env lacks `model_type=qwen3_5` support) — this run does **3 generators**: qwen3-8B
+base, qwen3.5-9B base, qwen3-8B SFT (existing pairs).
 
 **Architecture:** Reuse the judge-sweep machinery unchanged (`judge_sweep_cell.sh`,
 `run_judge_sweep_cell.py`, `build_judge_pairs.py`, `configs/judge_sweep_cells.cell_list`).
@@ -480,32 +482,28 @@ CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$SWROOT,PERSONA_JUDGE_SAMPLING=$SAM
   done <<< "$CELLS"
 }
 
-# ---- 1. SFT the 9B first (front of the chain) ----
-SFT_OUT=$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack
-SFT_DEP=""
-if [ ! -e "$SFT_OUT" ]; then
-  sjid=$(submit "" --job-name=sft_qwen35_9b \
-    --export=ALL,MODEL=qwen35-9b,VARIANT=bf16_fsdp,NOPACK=1 scripts/slurm/sft_variant.sh)
-  echo "submitted SFT qwen35-9b -> $sjid" >&2
-  SFT_DEP="afterok:$sjid"
-fi
-
-# ---- 2. the four generators ----
-run_generator qwen3-8b-base  Qwen/Qwen3-8B    ""         ""                       ""
-run_generator qwen35-9b-base Qwen/Qwen3.5-9B  ""         ""                       ""
-run_generator qwen35-9b-sft  Qwen/Qwen3.5-9B  "$SFT_OUT" ""                       "$SFT_DEP"
-run_generator qwen3-8b-sft   Qwen/Qwen3-8B    ""         "$EXISTING_8BSFT_PAIRS"  ""
+# ---- generators (3 for now; qwen35-9b-sft DEFERRED — see note below) ----
+# DEFERRED: the qwen3.5-9B SFT generator needs an SFT env that supports model_type=qwen3_5
+# (turing-rl-train transformers 4.57.6 does not; model is also multimodal). When that lands,
+# re-add the SFT job + `run_generator qwen35-9b-sft Qwen/Qwen3.5-9B "$SFT_OUT" "" "$SFT_DEP"`.
+run_generator qwen3-8b-base  Qwen/Qwen3-8B    ""  ""                       ""
+run_generator qwen35-9b-base Qwen/Qwen3.5-9B  ""  ""                       ""
+run_generator qwen3-8b-sft   Qwen/Qwen3-8B    ""  "$EXISTING_8BSFT_PAIRS"  ""
 
 echo "chain tail job: $PREV" >&2
 ```
+
+> **Deferred #3:** the `run_generator` signature keeps its 5th arg (`sft_dep`) unused here so
+> re-adding the SFT branch later is a one-line change. No SFT job is submitted now.
 
 **Step 2: Verify** `bash -n scripts/launch_generator_sweep.sh` clean, then dry-run **on the
 cluster** (needs `configs.judge_sweep_cells` import) and eyeball the plan:
 ```bash
 ssh ... "cd $REPO && DRY=1 bash scripts/launch_generator_sweep.sh"
 ```
-Expected: SFT line, then for each of 4 generators the gen/build (except qwen3-8b-sft) and 12
-sweep lines (6 cells × off/on). 48 sweep submissions total.
+Expected (3 generators; #3 qwen35-9b-sft deferred): for qwen3-8b-base and qwen35-9b-base a
+gen+build then 12 sweep lines each; for qwen3-8b-sft (reuses existing pairs) 12 sweep lines,
+no gen/build. **36 sweep submissions + 2 gen + 2 build total; no SFT job.**
 
 **Step 3: Commit.**
 ```bash
@@ -755,7 +753,7 @@ paths, job ids) per the reports-repro rule, and a short post-plan under
 - Unit tests (cluster): base-model flag, 9B config, discover_generators + comparison_rows —
   all pass.
 - `bash -n` clean on all new/edited shell scripts.
-- Dry-run shows exactly: 1 SFT + 3 gen + 3 build + 48 sweeps.
+- Dry-run shows exactly: 2 gen + 2 build + 36 sweeps (3 generators; qwen35-9b-sft deferred, no SFT job).
 - `squeue` confirms ≤1 node in use throughout the chain.
 - Each generator's pairs = 880 rows, `exact_match_frac < 0.01`.
 - 397B-on parse-error ≈0.03 (fix), ratings parse.

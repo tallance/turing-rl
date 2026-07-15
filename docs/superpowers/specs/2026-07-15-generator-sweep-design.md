@@ -21,12 +21,14 @@ hard each generator is to tell apart from a real human.
 | `qwen3-8b-base`   | qwen3-8B, no SFT      | HF base, adapter=None            | generate |
 | `qwen3-8b-sft`    | qwen3-8B + SFT        | existing ckpt `checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack` | **reuse existing pairs** |
 | `qwen35-9b-base`  | qwen3.5-9B, no SFT    | HF base, adapter=None            | generate |
-| `qwen35-9b-sft`   | qwen3.5-9B + SFT      | **new LoRA — train first**       | train → generate |
+| `qwen35-9b-sft`   | qwen3.5-9B + SFT      | **DEFERRED** — SFT env lacks `qwen3_5` support (transformers 4.57.6; model also multimodal) | train → generate (later) |
 
-The four cells complete a clean **{qwen3-8B, qwen3.5-9B} × {base, SFT}** grid. `qwen3-8b-sft`
-is the generator behind the existing 880 pair-set; it is **re-swept with the fixes** (its
-original sweep predates them → non-uniform judge temp, no rep_pen) so all four cells use
-identical judge settings and are apples-to-apples.
+The target is a clean **{qwen3-8B, qwen3.5-9B} × {base, SFT}** grid, but the **qwen3.5-9B SFT
+cell is deferred** (SFT of `model_type=qwen3_5` needs a transformers upgrade; vLLM-based
+*generation* of the base 9B is fine). This run does **3 generators**. `qwen3-8b-sft` is the
+generator behind the existing 880 pair-set; it is **re-swept with the fixes** (its original
+sweep predates them → non-uniform judge temp, no rep_pen) so the three cells use identical
+judge settings and are apples-to-apples. The 9B-SFT cell lands once the env supports it.
 
 ## Fixed judge sweep (per generator)
 
