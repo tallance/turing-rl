@@ -263,12 +263,35 @@ git commit -m "feat: qwen3.5-9B SFT (config + MODEL_MAP entry + MODEL-parameteri
 
 ---
 
-## Task 3: per-generator generation sbatch
+## Task 3: model-id support for the 9B + per-generator generation sbatch
 
-A parameterized 1-GPU generation job (base or adapter), templated on `heldout_inference.sh`.
+A parameterized 1-GPU generation job (base or adapter), templated on `heldout_inference.sh`,
+plus the model-id support needed so `generate_trained.py` accepts `Qwen/Qwen3.5-9B`.
 
 **Files:**
+- Modify: `shared/model_ids.py` (support the 9B generator id)
+- Modify: `our_patches.md` (APPEND ONLY)
 - Create: `scripts/slurm/generator_infer.sh`
+
+**Step 0: Support `Qwen/Qwen3.5-9B` in `shared/model_ids.py` (additive).**
+`normalize_model_id()` RAISES for any id not in `SUPPORTED_MODEL_IDS`
+(`{Qwen/Qwen3-8B, Qwen/Qwen3.5-397B-A17B}`), so `generate_trained.py --model_id
+Qwen/Qwen3.5-9B` would fail. Add the 9B as a supported id + alias:
+```python
+DEFAULT_MODEL_ID = "Qwen/Qwen3-8B"
+QWEN3_5_MOE_MODEL_ID = "Qwen/Qwen3.5-397B-A17B"
+QWEN3_5_9B_MODEL_ID = "Qwen/Qwen3.5-9B"
+SUPPORTED_MODEL_IDS = {DEFAULT_MODEL_ID, QWEN3_5_MOE_MODEL_ID, QWEN3_5_9B_MODEL_ID}
+MODEL_ID_ALIASES = {
+    "qwen3-8b": DEFAULT_MODEL_ID,
+    "qwen3.5-397b": QWEN3_5_MOE_MODEL_ID,
+    "qwen35-9b": QWEN3_5_9B_MODEL_ID,
+}
+```
+`qwen3-8B` base needs no change (already `DEFAULT_MODEL_ID`). Document in `our_patches.md`
+(append). Note: vLLM in `turing-rl-train` already served Qwen3.5-9B as a judge, so offline
+text generation is expected to load; a failure here surfaces only on the (early) 9B-base gen
+job and does not block the qwen3-8B generators.
 
 **Step 1: Implement.** Create `scripts/slurm/generator_infer.sh`:
 
@@ -324,10 +347,10 @@ path exists on the cluster:
 ssh ... "ls -la $REPO/data/prism/full_s42_history_sft40_grpo60_test10/test.parquet"
 ```
 
-**Step 3: Commit.**
+**Step 3: Commit** (stage explicit paths; append our_patches.md at EOF).
 ```bash
-git add scripts/slurm/generator_infer.sh
-git commit -m "feat: per-generator heldout generation sbatch (generator sweep)"
+git add shared/model_ids.py scripts/slurm/generator_infer.sh our_patches.md
+git commit -m "feat: support Qwen3.5-9B model-id + per-generator generation sbatch"
 ```
 
 ---
