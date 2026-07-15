@@ -144,3 +144,15 @@ duration of the repro, mark it `PERSISTENT`.
   and the OUT stem / `--model` arg resolve to the prior literals, so existing
   qwen3-8b variant runs are byte-for-byte unchanged.
 - **Reverted**: no. Persistent.
+
+## PERSISTENT: shared/model_ids.py — Qwen3.5-9B generator id
+- **What**: Added `Qwen/Qwen3.5-9B` to `SUPPORTED_MODEL_IDS` (new constant
+  `QWEN3_5_9B_MODEL_ID`) plus the alias `qwen35-9b` in `MODEL_ID_ALIASES`.
+- **Why**: The generator sweep needs `eval/generate_trained.py` to generate
+  candidate turns from the Qwen3.5-9B model (used as a base-model generator,
+  no checkpoint) as one of the three sweep generators. Without this the id
+  fails `normalize_model_id`'s supported-set check.
+- **Scope**: Additive only — the two existing ids (`Qwen/Qwen3-8B`,
+  `Qwen/Qwen3.5-397B-A17B`) and their aliases are unchanged, and
+  `normalize_model_id`/`load_tokenizer` are untouched. Existing runs unaffected.
+- **Reverted**: no. Persistent.
