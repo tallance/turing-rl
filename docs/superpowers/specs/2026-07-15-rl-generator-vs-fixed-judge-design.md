@@ -165,7 +165,20 @@ other judge as an independent scorer.)
 - **Eval** — reuse `eval/generate_trained.py` + `build_judge_pairs.py` + judge scoring; a small
   analyzer comparing RL-final vs SFT-baseline accuracy/win-rate/ties per judge.
 
-## 11. Risks & open items
+## 11. Tests (TDD)
+
+| # | Test | Type | Asserts |
+|---|---|---|---|
+| 1 | **Cap env** (`clip_turing_judge_score`) | unit | Default `TURING_JUDGE_SCORE_CLIP_MAX=5.0` clips 6,7→5; `=7` no-ops 1–7; reward `(clip−1)/6·0.9` = 0.6 at cap-5 vs 0.9 at cap-7 for s=7; bad env value → default/error. **The one code change — must-have.** |
+| 2 | **Overfit-gate metric** | unit | Win-rate from reward dumps: pick=gen if Likert≥5, ties (rating 4) excluded, pass = ≥8/10. Locks the gate definition. |
+| 3 | **Reward-env → payload wiring** | unit | `PERSONA_JUDGE_SAMPLING={"repetition_penalty":1.1,"temperature":0.6}` + `PERSONA_JUDGE_ENABLE_THINKING=1` land in the judge payload (reppen present, temp 0.6, thinking on). Guards the fidelity knobs. |
+| 4 | **Config integrity (SSOT)** | unit | GRPO configs resolve with locked values: train_batch 64, ppo_mini 64, LoRA r64/α32, KL 1e-3, G=4, total_epochs 3, SFT adapter path, PRISM train path exists. (Mirrors `test_sweep_cell_config.py`.) |
+| 5 | **Overfit-10 builder** | unit | Output parquet = 10 rows, veRL schema (`data_source/prompt/reward_model/extra_info`), strict subset of the grpo train split. |
+| 6 | **Eval-vs-sweep parity** | regression | The RL-eval scorer reproduces the sweep's directional-accuracy on the SFT-baseline pairs (same order + logic) → RL-final numbers are directly comparable to the baseline. Catches drift. |
+
+**Functional gate (not a unit test):** the overfit-10 run itself is the integration check that GRPO drives the judge (Stage 0, §7).
+
+## 12. Risks & open items
 
 - **veRL LoRA wiring** — must confirm veRL loads the SFT adapter as *both* the RL init *and* the KL
   reference `πref`. Explicit early implementation step, not an assumption.
@@ -178,7 +191,7 @@ other judge as an independent scorer.)
 - **Multi-agent repo** — additive commits only; `reward.py` is the one shared-file touch (other
   agent not expected to edit it now).
 
-## 12. Success criteria
+## 13. Success criteria
 
 1. **Overfit gate:** ≥8/10 training-judge win on the 10 prompts (per judge) with cap lifted.
 2. **Full 9B run:** on the 880 held-out set, generator win-rate vs the real human turn **exceeds
