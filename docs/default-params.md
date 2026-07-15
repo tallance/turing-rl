@@ -36,7 +36,7 @@ Shared serving/sampling defaults (all judges):
 |---|---|---|
 | Serving common | `--dtype bfloat16`, `--max-model-len 32768`, `--gpu-memory-utilization 0.85`, `--disable-custom-all-reduce` (TP>1) | |
 | Thinking mode | `on` → `--reasoning-parser qwen3`, `PERSONA_JUDGE_ENABLE_THINKING=1` | off = no reasoning parser. **`qwen3` is the correct parser for Qwen — NOT `deepseek_r1`** (see Flags) |
-| **Sampling** | **`repetition_penalty=1.1`**; temperature/top_p = model `generation_config.json` defaults (~0.6) | inject via `PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1}'` |
+| **Sampling** | **`repetition_penalty=1.1`, `temperature=0.6`** (pin explicitly) | inject via `PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'`. Pin temp so it's **uniform across judges** regardless of each model's `generation_config.json` (see Flags) |
 | Output schema | `PERSONA_JUDGE_JSON_SCHEMA=1` (strict json_schema; `rating` required) | |
 | Max completion tokens | `PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192` | |
 | Client timeout | `PERSONA_OPENAI_TIMEOUT_SECONDS=1800` (thinking-on 397B) | reward.py fallback is 400 |
@@ -79,3 +79,12 @@ SSOT: `training/sft/configs/qwen3_8b_lora.yaml`; launcher `scripts/slurm/sft_var
   is cosmetic — left as-is.
 - `repetition_penalty=1.1` overrides the Task-1 "no wire sampling override" policy for this one
   judge param (intended, per the cot-failure result).
+- **Zero-shot sweep temperature was NOT uniform (post-hoc finding).** The completed judge sweep
+  used the Task-1 "no wire override" policy → each judge ran at whatever its shipped
+  `generation_config.json` sets. Actual temps: **0.6** for 27B / 122B / 397B / qwen3-8B; **~1.0**
+  for **4B & 9B** (ship no `generation_config.json` → vLLM server default); **1.0** for
+  **35B-A3B** (its config sets 1.0). So 4B/9B/35B-A3B ran hotter than 0.6, which can inflate their
+  variance / repetition / parse-failure rates vs a 0.6 run — cross-judge zero-shot numbers for
+  those cells are **not strictly comparable** to the 0.6 cells. **Accepted, not re-run.** The 397B
+  anchor + all `repetition_penalty` / cot-failure conclusions are unaffected (anchor was 0.6).
+  **All future zero-shot runs pin `temperature=0.6`** (see Sampling row) for a clean comparison.
