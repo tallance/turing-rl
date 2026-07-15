@@ -30,10 +30,16 @@ duration of the repro, mark it `PERSISTENT`.
 
 ---
 
-## PERSISTENT (new file): `bash_scripts/grpo/train_grpo_smoke.sh`
+## DELETED: `bash_scripts/grpo/train_grpo_smoke.sh` — smoke overrides NOT yet migrated
 
-- **Origin**: a copy of `bash_scripts/grpo/train_grpo.sh` with minimal deltas.
-- **Deltas** (see the SMOKE_OVERRIDES block in the file):
+- **Status**: deleted (commit `3c1a475`) as misleading vs the canonical `train_grpo.sh`.
+  The old smoke launchers `scripts/slurm/grpo_smoke.sh` / `grpo_smoke_8b.sh` still invoke it,
+  so they are **broken — and are being treated as legacy, NOT fixed**: the RL-generator work
+  (spec `docs/superpowers/specs/2026-07-15-rl-generator-vs-fixed-judge-design.md`) will use
+  **fresh launch scripts** rather than these. Left in place for now (may still be referenced);
+  delete the smoke launchers + `launch_grpo_smoke*.sh` once the fresh RL scripts land.
+- **Overrides it carried** (kept as reference for writing the fresh scripts — 40GB/small-slice
+  deltas worth reusing):
   - `actor_rollout_ref.model.use_remove_padding=false` — our env has no
     flash_attn (no cu130 wheel; see `scripts/slurm/train_env_install.sh`);
     verl's `unpad_input` requires it, so the sequence-packed path can't run.
@@ -48,15 +54,7 @@ duration of the repro, mark it `PERSISTENT`.
   - `trainer.total_epochs=1`, `trainer.save_freq=2` — smoke scale.
   - `trainer.project_name=${WANDB_PROJECT:-turing-rl-smoke}` — route smoke
     runs to our wandb project.
-  - Passes `"$@"` through as extra Hydra overrides so callers can tune ad hoc
-    without re-editing the script.
-- **Why**: we tried to reimplement the invocation from scratch in
-  `scripts/slurm/grpo_smoke.sh` and hit six preventable bugs (`--config-path`
-  vs `--config-dir`, forgetting `PYTHONPATH`, batch-size math, etc.). Reusing
-  their launcher shape is simpler and keeps parity with how they run.
-- **NOT a modification of an upstream file** — it's an additional sibling
-  script under `bash_scripts/grpo/`. Listed here anyway because it lives
-  inside their tree and could confuse a `git status` reader.
+  - Passed `"$@"` through as extra Hydra overrides so callers could tune ad hoc.
 
 ---
 
