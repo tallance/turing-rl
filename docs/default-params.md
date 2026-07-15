@@ -45,7 +45,7 @@ Shared serving/sampling defaults (all judges):
 | Reward math | clip judge score at **5.0**, `(clip−1)/6`, ×**0.9**; rating re-derived from 6 dims + penalties (mean×3) | `TURING_JUDGE_SCORE_CLIP_MAX`, `TURING_RAW_REWARD_SCALE` |
 
 ## Generator
-SSOT: `training/sft/configs/qwen3_8b_lora.yaml` (base), `bash_scripts/grpo/train_grpo_smoke.sh` (GRPO).
+SSOT: `training/sft/configs/qwen3_8b_lora.yaml` (base), `bash_scripts/grpo/train_grpo.sh` (GRPO, upstream = paper Table 6).
 
 | Param | Default | Notes |
 |---|---|---|
@@ -53,10 +53,11 @@ SSOT: `training/sft/configs/qwen3_8b_lora.yaml` (base), `bash_scripts/grpo/train
 | **GRPO rollout temperature** | **1.0 (verl default, not overridden)** | training uses high temp for exploration; validation/eval rollout = 0 (greedy). verl `trainer/config/rollout/rollout.yaml` |
 | Heldout-inference sampling | **T=0.6, 1 sample/pair** | eval only (not training); per judge-sweep `derived/README.txt` |
 
-> **GRPO training hyperparameters (batch, `rollout.n`, lengths, epochs, mem) are NOT
-> defaulted here.** The only values that exist are the smoke config (138-row, 40GB-shrunk
-> in `train_grpo_smoke.sh`), which are not representative. We'll set the real defaults
-> after a full training run.
+> **GRPO training hyperparameters (batch, `rollout.n`, lengths, epochs) follow upstream
+> `bash_scripts/grpo/train_grpo.sh` = paper Table 6** (batch 128, G=4, 3 epochs,
+> max-response 1024, LR 1e-5, KL β 1e-3, PPO clip 0.2). We'll confirm/adjust after our own
+> full run. The old `train_grpo_smoke.sh` (138-row, 40GB-shrunk) is **deprecated/misleading
+> — do not use as a reference.**
 
 ## SFT
 SSOT: `training/sft/configs/qwen3_8b_lora.yaml`; launcher `scripts/slurm/sft_variant.sh` (torchrun, 8-GPU).
