@@ -16,11 +16,26 @@ source of truth (SSOT), it's named — edit there, not here.
 SSOT: `configs/judge_sweep_cells.py` (model matrix), `scripts/run_judge_sweep_cell.py`
 (`cell_env`), `training/grpo/reward.py` (reward math), `scripts/slurm/judge_sweep_cell.sh` (serving).
 
+**These defaults apply to ALL judges** (any Qwen3.5 size), not just the 397B anchor.
+Only two things vary per judge — the **model_id** and the **serving shape** (TP/replicas,
+quantization), chosen by memory footprint via `tp_for_size` in `configs/judge_sweep_cells.py`.
+Sampling, reasoning parser, output schema, and reward math are **shared across judges**.
+
+Per-judge serving (footprint-based): fits one 40GB GPU (≤30GB) → **TP=1, 8 replicas**;
+else whole node → **TP=8, 1 replica**.
+
+| Judge | model_id | serving |
+|---|---|---|
+| 397B anchor (training judge) | `Qwen/Qwen3.5-397B-A17B-GPTQ-Int4` | TP=8/1rep, Int4, env `judge-vllm` (hybrid-Mamba MoE) |
+| 122B | `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4` | TP=8/1rep, Int4 |
+| 4B / 9B / 27B / 35B-A3B | `Qwen/Qwen3.5-{4B,9B,27B,35B-A3B}` | TP=1/8rep (bf16), env `turing-rl-train` |
+
+Shared serving/sampling defaults (all judges):
+
 | Param | Default | Notes |
 |---|---|---|
-| Anchor / training judge | `Qwen/Qwen3.5-397B-A17B-GPTQ-Int4` | Int4 (bf16 397B won't fit 40GB); hybrid-Mamba MoE |
-| Serving | TP=8, 1 replica, `--dtype bfloat16`, `--max-model-len 32768`, `--gpu-memory-utilization 0.85` | whole 8-GPU node; env `judge-vllm` |
-| Thinking mode | `on` → `--reasoning-parser qwen3`, `PERSONA_JUDGE_ENABLE_THINKING=1` | off = no reasoning parser |
+| Serving common | `--dtype bfloat16`, `--max-model-len 32768`, `--gpu-memory-utilization 0.85`, `--disable-custom-all-reduce` (TP>1) | |
+| Thinking mode | `on` → `--reasoning-parser qwen3`, `PERSONA_JUDGE_ENABLE_THINKING=1` | off = no reasoning parser. **`qwen3` is the correct parser for Qwen — NOT `deepseek_r1`** (see Flags) |
 | **Sampling** | **`repetition_penalty=1.1`**; temperature/top_p = model `generation_config.json` defaults (~0.6) | inject via `PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1}'` |
 | Output schema | `PERSONA_JUDGE_JSON_SCHEMA=1` (strict json_schema; `rating` required) | |
 | Max completion tokens | `PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192` | |
@@ -35,12 +50,13 @@ SSOT: `training/sft/configs/qwen3_8b_lora.yaml` (base), `bash_scripts/grpo/train
 | Param | Default | Notes |
 |---|---|---|
 | Base model | `qwen3-8b` (SFT LoRA adapter → GRPO actor) | |
-| GRPO rollout group size | `rollout.n=2` | reduced from 4 for 40GB |
-| GRPO batch | `train_batch_size=32`, `ppo_mini_batch_size=32`, `micro_batch=1` | smoke slice = 138 rows |
-| GRPO lengths | `max_prompt_length=6144`, `rollout.max_model_len=7168`, `max_num_batched_tokens=8192` | 40GB safety |
-| GRPO rollout mem | `gpu_memory_utilization=0.35`; `use_remove_padding=false` (no flash_attn) | |
-| GRPO epochs | `total_epochs=1` | |
-| Heldout-inference sampling | **T=0.6, 1 sample/pair** | per judge-sweep `derived/README.txt` |
+| **GRPO rollout temperature** | **1.0 (verl default, not overridden)** | training uses high temp for exploration; validation/eval rollout = 0 (greedy). verl `trainer/config/rollout/rollout.yaml` |
+| Heldout-inference sampling | **T=0.6, 1 sample/pair** | eval only (not training); per judge-sweep `derived/README.txt` |
+
+> **GRPO training hyperparameters (batch, `rollout.n`, lengths, epochs, mem) are NOT
+> defaulted here.** The only values that exist are the smoke config (138-row, 40GB-shrunk
+> in `train_grpo_smoke.sh`), which are not representative. We'll set the real defaults
+> after a full training run.
 
 ## SFT
 SSOT: `training/sft/configs/qwen3_8b_lora.yaml`; launcher `scripts/slurm/sft_variant.sh` (torchrun, 8-GPU).
@@ -54,8 +70,12 @@ SSOT: `training/sft/configs/qwen3_8b_lora.yaml`; launcher `scripts/slurm/sft_var
 | Data | `data/sft/prism_full_s42_sft_cot.jsonl` (PRISM full CoT slice, ~3272 rows, seed 42) | |
 | Launch variant | `bf16_fsdp` (full_shard, wrap `Qwen3DecoderLayer`) — verified on 40GB | also `qlora_r64`, `bf16_fa2` |
 
-## Flags / things to confirm
-- **GRPO rollout temperature/top_p** are not pinned in `train_grpo_smoke.sh` → verl/vLLM default (likely T=1.0). If GRPO generation should match the T=0.6 heldout policy, set it explicitly. *(unconfirmed)*
-- The GRPO values above are the **smoke** config (138-row slice, 40GB-shrunk: batch 32, n=2, mem 0.35). A **full-scale** GRPO run will likely raise batch / `rollout.n` / lengths.
-- `train_grpo_smoke.sh` judge wiring uses `--reasoning-parser deepseek_r1` + `--max-model-len 16384`; the current judge-sweep serving uses `qwen3` + 32768. Treat the **judge-sweep config as canonical**; reconcile the GRPO judge launch to match.
-- `repetition_penalty=1.1` overrides the Task-1 "no wire sampling override" policy for this one param (intended, per the cot-failure result).
+## Flags / things to fix
+- **Judge parser bug — `deepseek_r1` is wrong for Qwen.** The correct parser is `qwen3`
+  (source-verified in `scripts/slurm/judge_serve_8b.sh:20`; used by the judge sweep). But the
+  **training-side judge servers still use `deepseek_r1`**: `scripts/slurm/judge_serve.sh:53`,
+  `scripts/slurm/grpo_smoke.sh`, `scripts/slurm/cot_server.sh:53` (all also `--max-model-len 16384`).
+  These should be reconciled to `qwen3` + `32768`. *(Not in `train_grpo_smoke.sh` itself — it
+  inherits `JUDGE_MODEL` and the external judge server sets the parser.)*
+- `repetition_penalty=1.1` overrides the Task-1 "no wire sampling override" policy for this one
+  judge param (intended, per the cot-failure result).
