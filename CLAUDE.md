@@ -6,7 +6,7 @@ Additinal context is in `turing-rl/Adversarial-User-Simulation.md`
 ## Where you are
 - **Mac working copy.** Edit code, write specs/plans, implement changes. No GPUs, no Slurm locally.
 - Cluster checkout at `/storage/home/lancewicki/projects/turing-rl` on V3 AWS (8× A100-40GB per node) runs everything.
-- Sync CODE via git: commit + push to `mine/lancewicki/main` (fork: `tallance/turing-rl`); the cluster checkout pulls.
+- Sync CODE with `scripts/sync_to_cluster.sh`: it ships the committed HEAD to the cluster over the tunnel (`git archive | tar`) and stamps `DEPLOYED_SHA`. `git push` to the fork (`tallance/turing-rl`) is optional backup/history; the cluster does NOT `git pull`.
 - **Run cluster commands directly** over the SSH tunnel (see below) — no relay agent needed.
 
 ## Workflow

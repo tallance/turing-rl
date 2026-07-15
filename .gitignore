@@ -105,6 +105,8 @@ bash_scripts/Untitled
 *.pyo
 
 # ==== our (lancewicki) additions ====
+# macOS junk
+.DS_Store
 # IDE state
 .vscode/
 # Hydra run dirs (verl writes here on every launch)
