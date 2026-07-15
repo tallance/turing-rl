@@ -39,7 +39,16 @@ allocated (2 nodes stay free for a concurrent agent).
 
 Results root: `results/2026-07-15-generator-sweep/` (call it `$GROOT`).
 Judge cells: `cell_list("qwen3.5")` = `qwen35-4b, qwen35-9b, qwen35-27b, qwen35-35b-a3b,
-qwen35-122b, qwen35-397b` × modes `{off,on}`. Sweep cell name = `gen_<genkey>__<judgecell>`.
+qwen35-122b, qwen35-397b` × modes `{off,on}`.
+
+**Output layout — one standard sweep subtree per generator.** Each generator's cells use
+**bare judge-cell names** under a per-generator `SWEEP_ROOT`:
+`$GROOT/raw/<genkey>/sweep/<judgecell>/<mode>/{reward,http}`. This makes every generator's
+subtree a self-contained judge sweep (cell names are in `SIZE_MAP`), so the existing
+`analyze_judge_sweep.py` + `plot_field_compliance.py` run on it unchanged to produce the
+**full per-model plot set** (`accuracy`, `accuracy_penalized`, `parse_error_rate`,
+`tie_rate`, `budget_hit_rate`, `kappa_vs_anchor`, `position_bias_delta`,
+`position_bias_signed`, `rating_distribution`, `rubric_complete_by_model`) per generator.
 
 ---
 
@@ -356,7 +365,18 @@ The core new piece. Submits SFT → (gen → build → 12 sweeps) per generator,
 via `--dependency`, ≤1 node ever active.
 
 **Files:**
+- Modify: `scripts/slurm/judge_sweep_cell.sh` (make `SWEEP_ROOT` env-overridable)
 - Create: `scripts/launch_generator_sweep.sh`
+
+**Step 0: Make `SWEEP_ROOT` overridable.** In `scripts/slurm/judge_sweep_cell.sh:64`,
+change the hardcoded assignment to honor an env override (additive — default unchanged):
+
+```bash
+# was: SWEEP_ROOT=$REPO/results/2026-07-08-judge-sweep/raw/sweep
+SWEEP_ROOT=${SWEEP_ROOT:-$REPO/results/2026-07-08-judge-sweep/raw/sweep}
+```
+Verify: `ssh ... "grep -n 'SWEEP_ROOT=' $REPO/scripts/slurm/judge_sweep_cell.sh"`. Commit
+this small edit with the orchestrator in Step 3.
 
 **Step 1: Implement.** Create `scripts/launch_generator_sweep.sh`:
 
@@ -426,7 +446,9 @@ run_generator () {
     pairs=$REPO/results/2026-07-15-generator-sweep/raw/pairs/gen_${gk}_880.parquet
     gate="afterok:$bjid"      # first sweep waits afterok on build; rest afterany on PREV
   fi
-  local SWROOT=$REPO/results/2026-07-15-generator-sweep/raw/sweep
+  # Per-generator subtree of BARE judge-cell names => a standard sweep the existing
+  # analyzers handle unchanged.
+  local SWROOT=$REPO/results/2026-07-15-generator-sweep/raw/$gk/sweep
   while read -r cell_name model_id tp replicas; do
     [ -z "$cell_name" ] && continue
     local gpus=$((tp * replicas))
@@ -436,7 +458,7 @@ run_generator () {
       [ -z "$PREV" ] && [ -z "$dep" ] && dep=""
       local sjid; sjid=$(submit "$dep" --gres=gpu:$gpus --job-name=gsw_${gk}_${cell_name}_${mode} \
         --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,THINKING_MODE=$mode,\
-CELL_NAME=gen_${gk}__${cell_name},PAIRS=$pairs,SWEEP_ROOT=$SWROOT,PERSONA_JUDGE_SAMPLING=$SAMPLING \
+CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$SWROOT,PERSONA_JUDGE_SAMPLING=$SAMPLING \
         scripts/slurm/judge_sweep_cell.sh)
       echo "submitted sweep $gk $cell_name $mode -> $sjid (gpu:$gpus)" >&2
     done
@@ -462,13 +484,6 @@ run_generator qwen3-8b-sft   Qwen/Qwen3-8B    ""         "$EXISTING_8BSFT_PAIRS"
 echo "chain tail job: $PREV" >&2
 ```
 
-> **`SWEEP_ROOT` override:** `judge_sweep_cell.sh` currently sets `SWEEP_ROOT` to the
-> 2026-07-08 tree. Confirm whether it honors a `SWEEP_ROOT` env; if not, add one line
-> (`SWEEP_ROOT=${SWEEP_ROOT:-<default>}`) — additive, one edit. Verify:
-> `ssh ... "grep -n SWEEP_ROOT $REPO/scripts/slurm/judge_sweep_cell.sh"`. If it can't be
-> overridden cleanly, fall back to keeping outputs under the 2026-07-08 sweep dir (the
-> `gen_*__*` CELL_NAME still namespaces them) and point the analyzer there instead.
-
 **Step 2: Verify** `bash -n scripts/launch_generator_sweep.sh` clean, then dry-run **on the
 cluster** (needs `configs.judge_sweep_cells` import) and eyeball the plan:
 ```bash
@@ -479,39 +494,52 @@ sweep lines (6 cells × off/on). 48 sweep submissions total.
 
 **Step 3: Commit.**
 ```bash
-git add scripts/launch_generator_sweep.sh
-git commit -m "feat: single-node dependency-chain orchestrator for the generator sweep"
+git add scripts/slurm/judge_sweep_cell.sh scripts/launch_generator_sweep.sh
+git commit -m "feat: single-node dependency-chain orchestrator + SWEEP_ROOT override"
 ```
 
 ---
 
-## Task 6: comparison analyzer
+## Task 6: analyzer — full per-generator plot set + cross-generator comparison
 
-Reuse `analyze_judge_sweep.py` internals; plot one line per generator vs judge size.
+Two responsibilities: (A) for **each** generator, run the existing `analyze_judge_sweep.py`
+and `plot_field_compliance.py` on that generator's subtree → the **full 10-plot set** in
+`derived/<gen>/plots/`; (B) read each generator's `summary.parquet` and draw comparison
+plots (one line per generator) in `derived/compare/plots/`.
 
 **Files:**
 - Create: `scripts/analyze_generator_sweep.py`
 - Test: `tests/test_analyze_generator_sweep.py`
 
-**Step 1: Write the failing test** — the only net-new logic is parsing `gen_<gen>__<judge>`
-cell dir names.
+**Step 1: Write the failing test** — the net-new pure logic is (a) discovering generator
+subtrees and (b) assembling comparison rows from per-gen summary parquets.
 
 Create `tests/test_analyze_generator_sweep.py`:
 
 ```python
 import os, sys
+import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.analyze_generator_sweep import split_cell_name
+from scripts.analyze_generator_sweep import discover_generators, comparison_rows
 
 
-def test_split_cell_name():
-    assert split_cell_name("gen_qwen35-9b-sft__qwen35-397b") == ("qwen35-9b-sft", "qwen35-397b")
-    assert split_cell_name("gen_qwen3-8b-base__qwen35-4b") == ("qwen3-8b-base", "qwen35-4b")
+def test_discover_generators(tmp_path):
+    for g in ("qwen3-8b-base", "qwen35-9b-sft"):
+        (tmp_path / g / "sweep" / "qwen35-397b" / "on" / "reward").mkdir(parents=True)
+    (tmp_path / "pairs").mkdir()                       # non-generator dir ignored
+    assert discover_generators(tmp_path) == ["qwen35-9b-sft", "qwen3-8b-base"] or \
+           sorted(discover_generators(tmp_path)) == ["qwen3-8b-base", "qwen35-9b-sft"]
 
 
-def test_split_cell_name_ignores_non_gen():
-    assert split_cell_name("qwen35-397b") is None          # plain judge-sweep cell
-    assert split_cell_name("fam_qwen3-4b") is None
+def test_comparison_rows(tmp_path):
+    # one fake per-generator summary.parquet -> flat comparison rows tagged by generator
+    d = tmp_path / "derived" / "qwen3-8b-base"; d.mkdir(parents=True)
+    pd.DataFrame([{"cell": "qwen35-397b", "mode": "on", "accuracy": 0.72,
+                   "accuracy_penalized": 0.70, "parse_error_rate": 0.03}]
+                 ).to_parquet(d / "summary.parquet")
+    rows = comparison_rows(tmp_path / "derived", ["qwen3-8b-base"])
+    assert rows[0]["generator"] == "qwen3-8b-base"
+    assert rows[0]["judge"] == "qwen35-397b" and rows[0]["accuracy"] == 0.72
 ```
 
 **Step 2: Run it, verify it fails** (cluster pytest): FAIL — module/function missing.
@@ -519,65 +547,89 @@ def test_split_cell_name_ignores_non_gen():
 **Step 3: Implement.** Create `scripts/analyze_generator_sweep.py`:
 
 ```python
-"""Generator sweep analyzer: one accuracy/parse-error curve per generator vs judge size.
+"""Generator-sweep analyzer.
 
-Reuses analyze_judge_sweep.py internals (load_cell_rows, aggregate_cell, compute_kappa...).
-Cell dirs are named gen_<generator>__<judgecell>; we group by generator and plot judge size
-(SIZE_MAP[judgecell]) on x, one line per generator.
+(A) Per generator, run the existing analyzers on that generator's standard sweep subtree
+    (raw/<gen>/sweep/<judgecell>/<mode>) -> the full per-model plot set in derived/<gen>/.
+(B) Read each derived/<gen>/summary.parquet and draw cross-generator comparison plots
+    (one line per generator) in derived/compare/plots/.
 """
 from __future__ import annotations
-import argparse, sys
+import argparse, subprocess, sys
 from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(REPO_ROOT))
+import pandas as pd
 from configs.judge_sweep_cells import SIZE_MAP
-from scripts.analyze_judge_sweep import (
-    load_cell_rows, aggregate_cell, write_summary,
-)
 
+PY = sys.executable
 GEN_LABELS = {
     "qwen3-8b-base": "qwen3-8B base", "qwen3-8b-sft": "qwen3-8B SFT",
     "qwen35-9b-base": "qwen3.5-9B base", "qwen35-9b-sft": "qwen3.5-9B SFT",
 }
 GEN_ORDER = ["qwen3-8b-base", "qwen3-8b-sft", "qwen35-9b-base", "qwen35-9b-sft"]
-PLOT_METRICS = [
+# Comparison metrics (must be columns in analyze_judge_sweep's summary.parquet).
+CMP_METRICS = [
     ("accuracy", "accuracy | parse ok (picks true human)", (0.45, 0.85), 0.5),
     ("accuracy_penalized", "accuracy (parse-fail counted wrong)", (0.45, 0.85), 0.5),
     ("parse_error_rate", "parse-error rate", None, None),
+    ("tie_rate", "tie rate (rating==4)", None, None),
 ]
 
 
-def split_cell_name(name: str):
-    """('gen_<g>__<judge>') -> (g, judge); None for non-generator-sweep dirs."""
-    if not name.startswith("gen_") or "__" not in name:
-        return None
-    gen, judge = name[len("gen_"):].split("__", 1)
-    return (gen, judge)
+def discover_generators(raw_root: Path) -> list[str]:
+    """Sub-dirs of raw_root that contain a sweep/ dir (i.e. a generator subtree)."""
+    return sorted(p.name for p in raw_root.iterdir()
+                  if p.is_dir() and (p / "sweep").is_dir())
 
 
-def write_gen_plots(rows, out_dir: Path):
+def comparison_rows(derived_root: Path, generators: list[str]) -> list[dict]:
+    """Flatten each generator's summary.parquet into rows tagged by generator + judge."""
+    rows: list[dict] = []
+    for gen in generators:
+        pq = derived_root / gen / "summary.parquet"
+        if not pq.exists():
+            print(f"[gen-analyzer] no summary for {gen} (skipping in comparison)", flush=True)
+            continue
+        for rec in pd.read_parquet(pq).to_dict("records"):
+            rec = dict(rec); rec["generator"] = gen; rec["judge"] = rec.get("cell")
+            rows.append(rec)
+    return rows
+
+
+def run_per_generator_analyzers(raw_root: Path, derived_root: Path, gen: str) -> None:
+    """Full per-model plot set for one generator via the existing two analyzers."""
+    graw, gderived = raw_root / gen, derived_root / gen
+    subprocess.run([PY, "scripts/analyze_judge_sweep.py",
+                    "--raw_root", str(graw), "--derived_root", str(gderived)],
+                   cwd=REPO_ROOT, check=True)
+    subprocess.run([PY, "scripts/plot_field_compliance.py",
+                    "--raw_root", str(graw), "--out_dir", str(gderived / "plots")],
+                   cwd=REPO_ROOT, check=True)
+
+
+def write_comparison_plots(rows: list[dict], out_dir: Path) -> None:
     import matplotlib; matplotlib.use("Agg"); import matplotlib.pyplot as plt
     out_dir.mkdir(parents=True, exist_ok=True)
     by = {(r["generator"], r["judge"], r["mode"]): r for r in rows}
     for mode in ("off", "on"):
-        for metric, ylab, ylim, ref in PLOT_METRICS:
+        for metric, ylab, ylim, ref in CMP_METRICS:
             fig, ax = plt.subplots(figsize=(7, 5))
             for gen in GEN_ORDER:
-                pts = [(SIZE_MAP[j], by[(gen, j, mode)][metric])
+                pts = [(SIZE_MAP[j], by[(gen, j, mode)].get(metric))
                        for (g, j, m) in by if g == gen and m == mode
                        and j in SIZE_MAP and by[(gen, j, mode)].get(metric) is not None]
                 if not pts:
                     continue
-                pts.sort()
-                xs, ys = zip(*pts)
+                pts.sort(); xs, ys = zip(*pts)
                 ax.plot(xs, ys, marker="o", label=GEN_LABELS.get(gen, gen))
             if ref is not None:
                 ax.axhline(ref, ls="--", c="gray", lw=1)
             if ylim:
                 ax.set_ylim(*ylim)
             ax.set_xscale("log"); ax.set_xlabel("judge active-params (B)")
-            ax.set_ylabel(ylab); ax.set_title(f"{metric} — thinking {mode}")
+            ax.set_ylabel(ylab); ax.set_title(f"{metric} — thinking {mode} (per generator)")
             ax.legend(); fig.tight_layout()
-            fig.savefig(out_dir / f"{metric}_{mode}.png", dpi=130); plt.close(fig)
+            fig.savefig(out_dir / f"cmp_{metric}_{mode}.png", dpi=130); plt.close(fig)
 
 
 def main() -> None:
@@ -587,50 +639,34 @@ def main() -> None:
     ap.add_argument("--derived_root", type=Path, default=base / "derived")
     args = ap.parse_args()
 
-    rows = []
-    for cell_dir in sorted((args.raw_root / "sweep").iterdir()):
-        if not cell_dir.is_dir():
-            continue
-        parsed = split_cell_name(cell_dir.name)
-        if parsed is None:
-            continue
-        gen, judge = parsed
-        if judge not in SIZE_MAP:
-            print(f"[gen-analyzer] skip {cell_dir.name} (judge not in SIZE_MAP)", flush=True)
-            continue
-        for mode_dir in sorted(cell_dir.iterdir()):
-            if not mode_dir.is_dir():
-                continue
-            calls = load_cell_rows(mode_dir)
-            if not calls:
-                continue
-            summ, _ = aggregate_cell(cell_dir.name, mode_dir.name, calls)
-            summ["generator"] = gen; summ["judge"] = judge; summ["mode"] = mode_dir.name
-            rows.append(summ)
-            print(f"[gen-analyzer] {gen} {judge}/{mode_dir.name}: n={summ['n_calls']}", flush=True)
-
-    args.derived_root.mkdir(parents=True, exist_ok=True)
-    write_gen_plots(rows, args.derived_root / "plots")
-    import pandas as pd
-    pd.DataFrame(rows).to_parquet(args.derived_root / "generator_summary.parquet", index=False)
-    print(f"[gen-analyzer] wrote {len(rows)} (generator,judge,mode) summaries", flush=True)
+    gens = discover_generators(args.raw_root)
+    print(f"[gen-analyzer] generators: {gens}", flush=True)
+    for gen in gens:                              # (A) full per-model plot set
+        run_per_generator_analyzers(args.raw_root, args.derived_root, gen)
+    rows = comparison_rows(args.derived_root, gens)   # (B) cross-generator comparison
+    write_comparison_plots(rows, args.derived_root / "compare" / "plots")
+    pd.DataFrame(rows).to_parquet(args.derived_root / "compare" / "comparison_summary.parquet",
+                                  index=False)
+    print(f"[gen-analyzer] per-gen plots in derived/<gen>/plots; comparison in "
+          f"derived/compare/plots ({len(rows)} rows)", flush=True)
 
 
 if __name__ == "__main__":
     main()
 ```
 
-> Confirm the exact key names `aggregate_cell` returns (`accuracy`, `accuracy_penalized`,
-> `parse_error_rate`, `n_calls`) by reading `scripts/analyze_judge_sweep.py:121` before
-> finalizing; adjust `PLOT_METRICS` keys to match.
+> Confirm `analyze_judge_sweep.py`'s `summary.parquet` columns include `cell`, `mode`,
+> `accuracy`, `accuracy_penalized`, `parse_error_rate`, `tie_rate` (read `write_summary` /
+> `aggregate_cell` at `scripts/analyze_judge_sweep.py:121,204`). Adjust `CMP_METRICS` / the
+> `judge = rec["cell"]` mapping if a column is named differently.
 
-**Step 2: Run tests, verify pass** (cluster pytest on the split-name tests). Expected: 3
-passed. (Plot/aggregate paths are integration-tested in Task 8, not unit-tested here.)
+**Step 2: Run tests, verify pass** (cluster pytest). Expected: 2 passed. (The subprocess
+per-generator path is integration-tested in Task 8, not unit-tested here.)
 
 **Step 3: Commit.**
 ```bash
 git add scripts/analyze_generator_sweep.py tests/test_analyze_generator_sweep.py
-git commit -m "feat: generator-sweep comparison analyzer (one curve per generator)"
+git commit -m "feat: generator-sweep analyzer (full per-gen plot set + comparison)"
 ```
 
 ---
@@ -680,13 +716,18 @@ ssh ... "cd $REPO && /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 **Step 2:** Sanity-check per generator: `gen_<gen>_880.parquet` `.meta.json` shows 880 rows
 and `exact_match_frac < 0.01`; 397B-on parse-error ≈0.03 (rep_pen fix working).
 
-**Step 3:** Pull plots to the Mac and eyeball the money plot (one curve per generator):
+**Step 3:** Confirm each generator got the **full plot set** (10 PNGs) and pull to the Mac:
 ```bash
-mkdir -p results/2026-07-15-generator-sweep/derived/plots
-scp -P 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-  "lancewicki@localhost:$REPO/results/2026-07-15-generator-sweep/derived/plots/*.png" \
-  results/2026-07-15-generator-sweep/derived/plots/
+# per-generator plot sets + the comparison set
+ssh ... "for g in qwen3-8b-base qwen3-8b-sft qwen35-9b-base qwen35-9b-sft; do \
+  echo \$g: \$(ls $REPO/results/2026-07-15-generator-sweep/derived/\$g/plots/*.png 2>/dev/null | wc -l) plots; done"
+scp -P 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -r \
+  "lancewicki@localhost:$REPO/results/2026-07-15-generator-sweep/derived" \
+  results/2026-07-15-generator-sweep/
 ```
+Expected per generator: `accuracy`, `accuracy_penalized`, `parse_error_rate`, `tie_rate`,
+`budget_hit_rate`, `kappa_vs_anchor`, `position_bias_delta`, `position_bias_signed`,
+`rating_distribution`, `rubric_complete_by_model`. Plus `derived/compare/plots/cmp_*.png`.
 
 **Step 4:** Write `results/2026-07-15-generator-sweep/README.txt` (repro commands, input
 paths, job ids) per the reports-repro rule, and a short post-plan under
@@ -696,10 +737,13 @@ paths, job ids) per the reports-repro rule, and a short post-plan under
 
 ## Verification summary
 
-- Unit tests (cluster): base-model flag, 9B config, cell-name split — all pass.
-- `bash -n` clean on all four new/edited shell scripts.
+- Unit tests (cluster): base-model flag, 9B config, discover_generators + comparison_rows —
+  all pass.
+- `bash -n` clean on all new/edited shell scripts.
 - Dry-run shows exactly: 1 SFT + 3 gen + 3 build + 48 sweeps.
 - `squeue` confirms ≤1 node in use throughout the chain.
 - Each generator's pairs = 880 rows, `exact_match_frac < 0.01`.
-- 397B-on parse-error ≈0.03 (fix), ratings parse, plots render with 4 curves.
+- 397B-on parse-error ≈0.03 (fix), ratings parse.
+- **Every generator has the full 10-plot per-model set** in `derived/<gen>/plots/`, plus the
+  cross-generator `derived/compare/plots/cmp_*.png` (one line per generator).
 - Full 12 cells run for every generator — **no cell dropped** without explicit approval.

@@ -69,9 +69,11 @@ split only.
      `results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet`.
 3. **Full judge sweep** — for each (cell, mode): submit `scripts/slurm/judge_sweep_cell.sh`
    with `MODEL/TP/REPLICAS/THINKING_MODE` per cell, `PAIRS=raw/pairs/gen_<gen>_880.parquet`,
-   `CELL_NAME=gen_<gen>__<cell>`. Dumps land at
-   `raw/sweep/gen_<gen>__<cell>/<mode>/{reward,http}` (namespaced by `CELL_NAME` — no
-   clobbering, no cell-script change needed).
+   `CELL_NAME=<judgecell>` (bare, e.g. `qwen35-397b`), and `SWEEP_ROOT=raw/<gen>/sweep`.
+   Dumps land at `raw/<gen>/sweep/<judgecell>/<mode>/{reward,http}`. **Each generator gets its
+   own subtree of bare judge-cell names — i.e. a self-contained standard judge sweep** — so
+   the existing analyzers run on it unchanged. Requires a one-line additive change to make
+   `judge_sweep_cell.sh`'s `SWEEP_ROOT` env-overridable.
 
 ## Single-node serialized chaining
 
@@ -122,6 +124,8 @@ free for the other agent):
 - `eval/generate_trained.py` — add `--base_model` flag (no-adapter generation) + guard the
   adapter-name block; log in `our_patches.md`.
 - `scripts/slurm/sft_variant.sh` — parameterize base config + output dir (or add a 9B branch).
+- `scripts/slurm/judge_sweep_cell.sh` — make `SWEEP_ROOT` env-overridable (one line:
+  `SWEEP_ROOT=${SWEEP_ROOT:-<default>}`) so per-generator subtrees are possible.
 - (Optional) `configs/judge_sweep_cells.py` `SIZE_MAP` — only if the analyzer needs new keys;
   cell keys are unchanged so likely no edit.
 
@@ -135,14 +139,23 @@ template for the per-generator generation jobs).
 Root: `results/2026-07-15-generator-sweep/`.
 - `raw/generator/<gen>/heldout_inference.pkl` (+ metadata) — per-generator candidates.
 - `raw/pairs/gen_<gen>_880.parquet` (+ `.meta.json`).
-- `raw/sweep/gen_<gen>__<cell>/<mode>/{reward,http}` — per-cell judge dumps.
-- `derived/` + `plots/` from `scripts/analyze_generator_sweep.py`.
+- `raw/<gen>/sweep/<judgecell>/<mode>/{reward,http}` — per-generator standard sweep subtree.
+- `derived/<gen>/{summary.md,summary.parquet,plots/}` — **full per-generator plot set**.
+- `derived/compare/plots/` — cross-generator comparison plots.
 
-`analyze_generator_sweep.py` reuses `analyze_judge_sweep.py` internals (per-call features,
-`aggregate_cell`, accuracy / penalized-accuracy / parse-error). **Primary output:** curves
-of judge-size (x) vs metric (y) with **one line per generator** — the money plot showing
-which generator best fools each judge, and whether SFT closes the human-gap more for
-qwen3-8B or qwen3.5-9B. Also a 2×2 summary table at the anchor (397B-on).
+**Per-generator (required — the full judge-sweep plot set, for every generator):** because
+each generator's subtree is a standard judge sweep, `scripts/analyze_generator_sweep.py`
+runs the two existing analyzers per generator with per-generator roots:
+- `scripts/analyze_judge_sweep.py --raw_root raw/<gen> --derived_root derived/<gen>` →
+  `accuracy`, `accuracy_penalized`, `parse_error_rate`, `tie_rate`, `budget_hit_rate`,
+  `kappa_vs_anchor`, `position_bias_delta`, `position_bias_signed`, `rating_distribution`.
+- `scripts/plot_field_compliance.py --raw_root raw/<gen> --out_dir derived/<gen>/plots` →
+  `rubric_complete_by_model`.
+
+**Cross-generator (comparison):** read each `derived/<gen>/summary.parquet` and plot judge
+size (x) vs metric (y) with **one line per generator** — the money plot showing which
+generator best fools each judge and whether SFT closes the human-gap more for qwen3-8B or
+qwen3.5-9B. Plus a 2×2 summary table at the anchor (397B-on).
 
 Write `README.txt` (repro commands, input paths, upstream job ids) per the reports-repro
 rule.
