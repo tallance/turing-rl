@@ -54,7 +54,7 @@ DEFAULT_FORMAT_NONEMPTY_REASONING_BONUS = 0.0
 DEFAULT_FORMAT_REASONING_SCHEMA_BONUS = 0.05
 DEFAULT_FORMAT_NO_POST_HUMAN_THINKING_BONUS = 0.05
 TURING_RAW_REWARD_SCALE = 0.9
-TURING_JUDGE_SCORE_CLIP_MAX = 5.0
+TURING_JUDGE_SCORE_CLIP_MAX = 5.0  # default; overridable via TURING_JUDGE_SCORE_CLIP_MAX env
 DEFAULT_TURING_LENGTH_LOWER_RATIO = 0.8
 DEFAULT_TURING_LENGTH_UPPER_RATIO = 1.1
 DEFAULT_TURING_LENGTH_SHORT_PENALTY_LAMBDA = 0.35
@@ -264,9 +264,18 @@ def adjust_turing_raw_reward(raw_reward: float) -> float:
     return float(raw_reward) * TURING_RAW_REWARD_SCALE
 
 
+def _get_turing_judge_score_clip_max() -> float:
+    raw = os.environ.get("TURING_JUDGE_SCORE_CLIP_MAX")
+    if raw is None:
+        return TURING_JUDGE_SCORE_CLIP_MAX
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"TURING_JUDGE_SCORE_CLIP_MAX must be a float, got {raw!r}") from exc
+
 def clip_turing_judge_score(score: float) -> float:
     """Clip the raw Turing judge score before reward normalization for training."""
-    return min(float(score), TURING_JUDGE_SCORE_CLIP_MAX)
+    return min(float(score), _get_turing_judge_score_clip_max())
 
 
 def compute_turing_length_info(response: str, ground_truth: str) -> dict[str, float]:
