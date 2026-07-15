@@ -152,7 +152,7 @@ other judge as an independent scorer.)
 - **`reward.py`** — env-configurable `TURING_JUDGE_SCORE_CLIP_MAX` (default 5.0). TDD unit test on
   `clip_turing_judge_score`. Sole reward code change.
 - **GRPO configs** — `qwen3_8b_grpo_turing_9bjudge.yaml` / `_397bjudge.yaml` (+ overfit variants):
-  PRISM data, train_batch 128, SFT adapter, reward env.
+  PRISM data (train_batch stays 64), SFT adapter, reward env (cap, reppen, thinking-on).
 - **Judge serving** — 9B 8-replica launcher (reuse sweep pattern) + 397B `judge_serve.sh`; health +
   model-verify before trainer starts.
 - **Launcher/orchestrator** — build **fresh** (the old `grpo_smoke*.sh` are broken/legacy: they
