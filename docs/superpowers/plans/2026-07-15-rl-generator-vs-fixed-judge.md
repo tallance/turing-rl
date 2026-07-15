@@ -428,6 +428,52 @@ git commit -m "add RL-generator eval scorer (sweep-matched directional accuracy)
 
 ---
 
+## Task 6b: Split-integrity / no-leakage guard
+
+Standing guard (spec §11 test 7). Parquets are cluster-side + gitignored → test **skips** if absent,
+**runs** where data exists; also invoked as a preflight gate before any train/eval.
+
+**Files:**
+- Create: `scripts/verify_rl_splits.py`
+- Test: `tests/test_split_integrity.py`
+
+**Step 1: Failing test**
+
+```python
+# tests/test_split_integrity.py
+import os, pytest
+from scripts.verify_rl_splits import check_splits
+
+BASE = "data/prism/full_s42_history_sft40_grpo60_test10"
+
+@pytest.mark.skipif(not os.path.exists(f"{BASE}/test.parquet"), reason="PRISM splits not present (cluster-only)")
+def test_no_leakage_and_counts():
+    r = check_splits(BASE)
+    assert r["counts"] == {"grpo/train": (4174, 696), "grpo/val": (705, 696), "test": (880, 128)}
+    assert r["overlaps"]["train_test"] == 0
+    assert r["overlaps"]["val_test"] == 0
+    assert r["overlaps"]["sft_grpo"] == 0
+    assert r["overlaps"]["sft_test"] == 0
+```
+
+**Step 2: Run — expect FAIL** (module missing) or **SKIP** locally (no data).
+
+**Step 3: Implement** `check_splits(base)` — read each parquet, pull `extra_info["user_id"]`
+(dict or JSON), return `{counts: {split: (rows, n_users)}, overlaps: {train_test, val_test, sft_grpo, sft_test}}`.
+`__main__` prints JSON and exits non-zero on any test-overlap>0 or count mismatch. Also expose an
+`--overfit <path>` check: overfit rows ⊂ grpo/train and overfit users ∩ test = ∅.
+
+**Step 4: Run on cluster** (where data lives): `python scripts/verify_rl_splits.py --base data/prism/full_s42_history_sft40_grpo60_test10` → all zero-overlap, counts match. Local pytest SKIPs.
+
+**Step 5: Commit**
+
+```bash
+git add scripts/verify_rl_splits.py tests/test_split_integrity.py
+git commit -m "add PRISM split-integrity/no-leakage guard (disjoint users, paper counts) + test"
+```
+
+---
+
 ## Task 7: 9B 8-replica judge serve script
 
 **Files:**
@@ -565,6 +611,7 @@ git commit -m "docs: RL-generator decisions/deviations + reward cap patch note"
 
 ## Execution order & gates
 
-1–6 (local TDD, any order) → 7,8 (scripts) → **deploy + Task 9 (veRL wiring gate)** →
-**Task 10 (9B overfit gate)** → Task 12 (9B full) → Task 14 (9B eval). In parallel after Task 9:
-Task 11 (397B overfit gate) → Task 13 (397B epoch1). Task 15 throughout.
+1–6, 6b (local TDD, any order) → 7,8 (scripts) → **deploy → run Task 6b `verify_rl_splits.py` on
+cluster (data-integrity gate) → Task 9 (veRL wiring gate)** → **Task 10 (9B overfit gate)** →
+Task 12 (9B full) → Task 14 (9B eval). In parallel after Task 9: Task 11 (397B overfit gate) →
+Task 13 (397B epoch1). Task 15 throughout.

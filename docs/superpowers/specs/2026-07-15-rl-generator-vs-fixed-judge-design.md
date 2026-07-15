@@ -175,6 +175,7 @@ other judge as an independent scorer.)
 | 4 | **Config integrity (SSOT)** | unit | GRPO configs resolve with locked values: train_batch 64, ppo_mini 64, LoRA r64/α32, KL 1e-3, G=4, total_epochs 3, SFT adapter path, PRISM train path exists. (Mirrors `test_sweep_cell_config.py`.) |
 | 5 | **Overfit-10 builder** | unit | Output parquet = 10 rows, veRL schema (`data_source/prompt/reward_model/extra_info`), strict subset of the grpo train split. |
 | 6 | **Eval-vs-sweep parity** | regression | The RL-eval scorer reproduces the sweep's directional-accuracy on the SFT-baseline pairs (same order + logic) → RL-final numbers are directly comparable to the baseline. Catches drift. |
+| 7 | **Split integrity / no leakage** | data-integrity (skip if parquets absent) | On the PRISM `full_s42_history_sft40_grpo60_test10` splits: `extra_info.user_id` sets are disjoint `grpo/train ∩ test = ∅`, `grpo/val ∩ test = ∅`, `sft/train ∩ {grpo,test} = ∅`; row/user counts match paper Table 3 (4174/696, 705/696, 880/128); overfit-10 ⊂ grpo/train and overfit-10 users ∩ test = ∅. Verified live 2026-07-15. Runs as a preflight gate before any train/eval. |
 
 **Functional gate (not a unit test):** the overfit-10 run itself is the integration check that GRPO drives the judge (Stage 0, §7).
 
