@@ -441,7 +441,10 @@ PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 DRY=${DRY:-0}
 cd "$REPO"
 
-SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'   # the cot-failure fixes
+# The cot-failure fixes. Export into the ENV so `--export=ALL` carries it to each job.
+# Do NOT put this in the `--export=ALL,VAR=..,VAR=..` comma-list: Slurm --export is
+# comma-delimited and the JSON's internal comma would split/corrupt it.
+export PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'
 EXISTING_8BSFT_PAIRS=$REPO/results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet
 
 # Judge cells (cell_name model_id tp replicas), incl. the 397B anchor.
@@ -451,18 +454,19 @@ for c in cell_list('qwen3.5'):
     print(c['cell_name'], c['model_id'], c['tp'], c['replicas'])
 ")
 
-PREV=""   # running tail of the chain
+PREV=""   # running tail of the chain (set by CALLERS after each submit)
 
-# submit <dependency-or-empty> <sbatch-args...> ; echoes jid, updates PREV
+# submit <dependency-or-empty> <sbatch-args...> ; echoes the job id ONLY.
+# NOTE: callers invoke this via $(...), a subshell — so submit() must NOT set PREV
+# (the assignment would be lost). Each call site does `X=$(submit ...); PREV=$X`.
 submit () {
   local dep="$1"; shift
   local depflag=(); [ -n "$dep" ] && depflag=(--dependency="$dep")
   if [ "$DRY" = "1" ]; then
     echo "[DRY] sbatch ${depflag[*]} $*" >&2
-    PREV="dry$RANDOM"; echo "$PREV"; return 0
+    echo "dry$RANDOM"; return 0
   fi
-  local jid; jid=$(sbatch --parsable "${depflag[@]}" "$@")
-  echo "$jid"; PREV="$jid"
+  sbatch --parsable "${depflag[@]}" "$@"
 }
 
 # --- generator branch: gen -> build -> sweeps. $1=genkey $2=model_id $3=ckpt(""=base)
@@ -474,15 +478,14 @@ run_generator () {
     pairs="$pairs_override"                       # reuse existing pairs, no gen/build
   else
     # gen: afterany on PREV to serialize; AND afterok on SFT if this gen needs it.
-    local gendep="afterany:$PREV"
-    [ -z "$PREV" ] && gendep=""
+    local gendep=""; [ -n "$PREV" ] && gendep="afterany:$PREV"
     [ -n "$sft_dep" ] && gendep="${gendep:+$gendep,}$sft_dep"
     local gjid; gjid=$(submit "$gendep" --gres=gpu:8 --job-name=gen_${gk} \
       --export=ALL,GEN_KEY=$gk,MODEL_ID=$mid,CKPT=$ckpt scripts/slurm/generator_infer.sh)
-    echo "submitted gen $gk -> $gjid" >&2
+    PREV="$gjid"; echo "submitted gen $gk -> $gjid" >&2
     local bjid; bjid=$(submit "afterok:$gjid" --gres=gpu:0 --job-name=build_${gk} \
       --export=ALL,GEN_KEY=$gk scripts/slurm/build_pairs.sh)
-    echo "submitted build $gk -> $bjid" >&2
+    PREV="$bjid"; echo "submitted build $gk -> $bjid" >&2
     pairs=$REPO/results/2026-07-15-generator-sweep/raw/pairs/gen_${gk}_880.parquet
     gate="afterok:$bjid"      # first sweep waits afterok on build; rest afterany on PREV
   fi
@@ -493,14 +496,15 @@ run_generator () {
     [ -z "$cell_name" ] && continue
     local gpus=$((tp * replicas))
     for mode in off on; do
-      local dep="afterany:$PREV"
+      local dep=""; [ -n "$PREV" ] && dep="afterany:$PREV"
       if [ -n "$gate" ]; then dep="$gate"; gate=""; fi   # first sweep uses the build gate
-      [ -z "$PREV" ] && [ -z "$dep" ] && dep=""
+      # PERSONA_JUDGE_SAMPLING is carried by --export=ALL (exported above) — NOT in the
+      # comma-list (its JSON comma would corrupt Slurm --export).
       local sjid; sjid=$(submit "$dep" --gres=gpu:$gpus --job-name=gsw_${gk}_${cell_name}_${mode} \
         --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,THINKING_MODE=$mode,\
-CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$SWROOT,PERSONA_JUDGE_SAMPLING=$SAMPLING \
+CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$SWROOT \
         scripts/slurm/judge_sweep_cell.sh)
-      echo "submitted sweep $gk $cell_name $mode -> $sjid (gpu:$gpus)" >&2
+      PREV="$sjid"; echo "submitted sweep $gk $cell_name $mode -> $sjid (gpu:$gpus)" >&2
     done
   done <<< "$CELLS"
 }
