@@ -45,3 +45,13 @@ def test_prompt_level_gate_fails_below_threshold():
             rows.append(_r(f"u{i}", t, 6 if i < 5 else 2))  # only 5 prompts win
     g = prompt_level_gate(rows, pass_prompts=8, group_size=4)
     assert g["won"] == 5 and g["passed"] is False
+
+def test_prompt_level_gate_even_split_is_tie_not_win():
+    # final 4 rollouts per prompt = [6,6,2,2]: 2 win / 2 lose -> frac==0.5 -> TIE, not a win (strict >0.5)
+    rows = []
+    for i in range(10):
+        for t, lk in zip(range(10, 14), [6, 6, 2, 2]):
+            rows.append(_r(f"u{i}", t, lk))
+    g = prompt_level_gate(rows, pass_prompts=8, group_size=4)
+    assert all(p["frac"] == 0.5 for p in g["per_prompt"])
+    assert g["won"] == 0 and g["passed"] is False

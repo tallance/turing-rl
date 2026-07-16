@@ -24,9 +24,9 @@ def prompt_key(row) -> tuple:
 
 def prompt_level_gate(rows, pass_prompts: int = 8, group_size: int = 4) -> dict:
     """Per-prompt overfit gate. Groups rows by prompt_key; for each prompt takes its LATEST
-    `group_size` rollouts by ts (final-epoch proxy); the prompt 'wins' if the majority of those
-    non-tie rollouts have Likert>=5 (ties=4 and parse-fails (0/None) excluded from the fraction).
-    Gate passes when #winning prompts >= pass_prompts.
+    `group_size` rollouts by ts (final-epoch proxy); the prompt 'wins' if a STRICT majority of those
+    non-tie rollouts have Likert>=5 (frac>0.5; an even split frac==0.5 is a TIE, not a win). ties=4
+    and parse-fails (0/None) are excluded from the fraction. Gate passes when #winning prompts >= pass_prompts.
     Returns: {n_prompts, won, pass_prompts, passed, final_win_rate (overall over the selected
     final rollouts), per_prompt: [{key, n, wins, frac, won}]}.
     """
@@ -55,7 +55,8 @@ def prompt_level_gate(rows, pass_prompts: int = 8, group_size: int = 4) -> dict:
             if lk >= 5:
                 wins += 1
         frac = (wins / n_nontie) if n_nontie else 0.0
-        won = (n_nontie > 0) and (frac >= 0.5)
+        # strict majority: an even split among non-tie rollouts (frac==0.5) is a TIE, not a win.
+        won = (n_nontie > 0) and (frac > 0.5)
         if won:
             won_count += 1
         total_wins += wins
