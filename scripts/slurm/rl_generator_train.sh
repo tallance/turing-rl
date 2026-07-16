@@ -22,6 +22,10 @@ mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
 
 REPO=/home/lancewicki/projects/turing-rl
 cd "$REPO"
+# Ray worker subprocesses inherit env vars but NOT cwd/sys.path, so `-m training...`
+# resolving in the driver process is not enough — the workers must find the `training`
+# package (custom reward + worker_process_setup_hook) via PYTHONPATH. (Repo is not pip-installed.)
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 
 # Teardown the judge when training ends (success or failure).
