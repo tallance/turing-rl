@@ -27,6 +27,7 @@ PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 # Teardown the judge when training ends (success or failure).
 JUDGE_JOB_ID=${RL_JUDGE_JOB_ID:-}
 cleanup() { [ -n "$JUDGE_JOB_ID" ] && scancel "$JUDGE_JOB_ID" 2>/dev/null || true; }
+trap 'cleanup; exit 143' TERM INT
 trap cleanup EXIT
 
 MODE=${RL_MODE:?}; JUDGE=${RL_JUDGE:-9b}; RUN_TAG=${RL_RUN_TAG:-${JUDGE}_${MODE}}
@@ -36,6 +37,7 @@ DATA_BASE=data/prism/full_s42_history_sft40_grpo60_test10/grpo
 TRAIN_FILE=${TRAIN_FILE:-$DATA_BASE/train.parquet}
 VAL_FILE=${VAL_FILE:-$DATA_BASE/val.parquet}
 OVERFIT10=${OVERFIT10:-$DATA_BASE/train_overfit10.parquet}
+[ "$MODE" = overfit ] && TRAIN_FILE="$OVERFIT10"
 EXP="qwen3-8b-grpo-turing-${JUDGE}-${MODE}"
 
 echo "============================================"
@@ -66,7 +68,6 @@ OVR=(
 case "$MODE" in
   overfit)
     OVR+=(
-      data.train_files="$OVERFIT10"
       data.train_batch_size="${OVERFIT_TRAIN_BATCH:-10}"
       actor_rollout_ref.actor.ppo_mini_batch_size="${OVERFIT_PPO_MINI:-10}"
       actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu="${OVERFIT_PPO_MICRO:-1}"
