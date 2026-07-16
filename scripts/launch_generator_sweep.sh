@@ -49,6 +49,16 @@ submit () {
   sbatch --parsable $deparg "$@"
 }
 
+# Abort the chain if a submit returned no real job id. Otherwise PREV would go empty and
+# every later job would launch with no dependency — un-serialized (multi-node) and against
+# inputs that were never produced. In DRY mode any non-empty token is fine.
+need_jid () {  # $1=captured id  $2=label
+  if [ "$DRY" = "1" ]; then [ -n "$1" ] && return 0; fi
+  case "$1" in
+    ''|*[!0-9]*) echo "FATAL: sbatch failed for $2 (got '$1') — aborting chain" >&2; exit 1 ;;
+  esac
+}
+
 # --- generator branch: gen -> build -> sweeps. $1=genkey $2=model_id $3=ckpt(""=base)
 #     $4=pairs_override("" => build one) $5=sft_dep("" or afterok:<jid>)
 run_generator () {
@@ -62,10 +72,10 @@ run_generator () {
     [ -n "$sft_dep" ] && gendep="${gendep:+$gendep,}$sft_dep"
     local gjid; gjid=$(submit "$gendep" --gres=gpu:8 --job-name=gen_${gk} \
       --export=ALL,GEN_KEY=$gk,MODEL_ID=$mid,CKPT=$ckpt scripts/slurm/generator_infer.sh)
-    PREV="$gjid"; echo "submitted gen $gk -> $gjid" >&2
+    need_jid "$gjid" "gen $gk"; PREV="$gjid"; echo "submitted gen $gk -> $gjid" >&2
     local bjid; bjid=$(submit "afterok:$gjid" --gres=gpu:0 --job-name=build_${gk} \
       --export=ALL,GEN_KEY=$gk scripts/slurm/build_pairs.sh)
-    PREV="$bjid"; echo "submitted build $gk -> $bjid" >&2
+    need_jid "$bjid" "build $gk"; PREV="$bjid"; echo "submitted build $gk -> $bjid" >&2
     pairs=$REPO/results/2026-07-15-generator-sweep/raw/pairs/gen_${gk}_880.parquet
     gate="afterok:$bjid"      # first sweep waits afterok on build; rest afterany on PREV
   fi
@@ -84,7 +94,8 @@ run_generator () {
         --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,THINKING_MODE=$mode,\
 CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$SWROOT \
         scripts/slurm/judge_sweep_cell.sh)
-      PREV="$sjid"; echo "submitted sweep $gk $cell_name $mode -> $sjid (gpu:$gpus)" >&2
+      need_jid "$sjid" "sweep $gk $cell_name $mode"; PREV="$sjid"
+      echo "submitted sweep $gk $cell_name $mode -> $sjid (gpu:$gpus)" >&2
     done
   done <<< "$CELLS"
 }

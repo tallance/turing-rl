@@ -207,7 +207,8 @@ async def async_main() -> None:
             "endpoints": endpoints,
             "num_endpoints": args.num_endpoints,
             "concurrency_per_endpoint": args.concurrency_per_endpoint,
-            "sampling": "generation_config_defaults (no wire override)",
+            "sampling": os.environ.get("PERSONA_JUDGE_SAMPLING")
+            or "generation_config_defaults (no wire override)",
             "json_schema": os.environ.get("PERSONA_JUDGE_JSON_SCHEMA"),
             "enable_thinking": os.environ.get("PERSONA_JUDGE_ENABLE_THINKING"),
             "max_completion_tokens": os.environ.get("PERSONA_JUDGE_MAX_COMPLETION_TOKENS"),
