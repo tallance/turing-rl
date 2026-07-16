@@ -16,6 +16,7 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 REPO=/home/lancewicki/projects/turing-rl
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 DRY=${DRY:-0}
+GEN_ONLY=${GEN_ONLY:-}   # optional: run only this generator key (e.g. qwen35-9b-base)
 cd "$REPO"
 
 # The cot-failure fixes. Export into the ENV so `--export=ALL` carries it to each job.
@@ -63,6 +64,10 @@ need_jid () {  # $1=captured id  $2=label
 #     $4=pairs_override("" => build one) $5=sft_dep("" or afterok:<jid>)
 run_generator () {
   local gk="$1" mid="$2" ckpt="$3" pairs_override="$4" sft_dep="$5"
+  # GEN_ONLY filter: skip generators other than the requested one (single-generator launch).
+  if [ -n "$GEN_ONLY" ] && [ "$GEN_ONLY" != "$gk" ]; then
+    echo "skip $gk (GEN_ONLY=$GEN_ONLY)" >&2; return 0
+  fi
   local pairs gate=""
   if [ -n "$pairs_override" ]; then
     pairs="$pairs_override"                       # reuse existing pairs, no gen/build
