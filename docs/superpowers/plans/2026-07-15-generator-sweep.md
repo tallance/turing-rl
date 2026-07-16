@@ -575,14 +575,14 @@ def test_discover_generators(tmp_path):
 
 
 def test_comparison_rows(tmp_path):
-    # one fake per-generator summary.parquet -> flat comparison rows tagged by generator
+    # fake summary.parquet in the REAL persisted schema (write_summary renames columns)
     d = tmp_path / "derived" / "qwen3-8b-base"; d.mkdir(parents=True)
-    pd.DataFrame([{"cell": "qwen35-397b", "mode": "on", "accuracy": 0.72,
-                   "accuracy_penalized": 0.70, "parse_error_rate": 0.03}]
+    pd.DataFrame([{"cell": "qwen35-397b", "mode": "on", "acc_parse_ok": 0.72,
+                   "acc_penalized": 0.70, "parse_error": 0.03, "tie_rate": 0.05}]
                  ).to_parquet(d / "summary.parquet")
     rows = comparison_rows(tmp_path / "derived", ["qwen3-8b-base"])
     assert rows[0]["generator"] == "qwen3-8b-base"
-    assert rows[0]["judge"] == "qwen35-397b" and rows[0]["accuracy"] == 0.72
+    assert rows[0]["judge"] == "qwen35-397b" and rows[0]["acc_parse_ok"] == 0.72
 ```
 
 **Step 2: Run it, verify it fails** (cluster pytest): FAIL — module/function missing.
@@ -611,10 +611,12 @@ GEN_LABELS = {
 }
 GEN_ORDER = ["qwen3-8b-base", "qwen3-8b-sft", "qwen35-9b-base", "qwen35-9b-sft"]
 # Comparison metrics (must be columns in analyze_judge_sweep's summary.parquet).
+# keys = PERSISTED summary.parquet columns (write_summary renames the aggregate_cell dict:
+# accuracy->acc_parse_ok, accuracy_penalized->acc_penalized, parse_error_rate->parse_error).
 CMP_METRICS = [
-    ("accuracy", "accuracy | parse ok (picks true human)", (0.45, 0.85), 0.5),
-    ("accuracy_penalized", "accuracy (parse-fail counted wrong)", (0.45, 0.85), 0.5),
-    ("parse_error_rate", "parse-error rate", None, None),
+    ("acc_parse_ok", "accuracy | parse ok (picks true human)", (0.45, 0.85), 0.5),
+    ("acc_penalized", "accuracy (parse-fail counted wrong)", (0.45, 0.85), 0.5),
+    ("parse_error", "parse-error rate", None, None),
     ("tie_rate", "tie rate (rating==4)", None, None),
 ]
 
@@ -698,10 +700,12 @@ if __name__ == "__main__":
     main()
 ```
 
-> Confirm `analyze_judge_sweep.py`'s `summary.parquet` columns include `cell`, `mode`,
-> `accuracy`, `accuracy_penalized`, `parse_error_rate`, `tie_rate` (read `write_summary` /
-> `aggregate_cell` at `scripts/analyze_judge_sweep.py:121,204`). Adjust `CMP_METRICS` / the
-> `judge = rec["cell"]` mapping if a column is named differently.
+> **Confirmed** (`scripts/analyze_judge_sweep.py:write_summary`, ~line 204): the PERSISTED
+> `summary.parquet` columns are `cell, mode, n_calls, n_scored, parse_error, tie_rate,
+> budget_hit, acc_parse_ok, acc_penalized, pos_bias, rating_mean, kappa_vs_anchor` — i.e.
+> `write_summary` RENAMES the `aggregate_cell` dict (accuracy→`acc_parse_ok`,
+> accuracy_penalized→`acc_penalized`, parse_error_rate→`parse_error`). `CMP_METRICS` above
+> uses these persisted names; `judge = rec["cell"]` is correct (`cell` is persisted).
 
 **Step 2: Run tests, verify pass** (cluster pytest). Expected: 2 passed. (The subprocess
 per-generator path is integration-tested in Task 8, not unit-tested here.)
