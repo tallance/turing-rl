@@ -23,6 +23,13 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 REPO=/home/lancewicki/projects/turing-rl
 cd "$REPO"
 
+# wandb: source .env for WANDB_API_KEY + WANDB_BASE_URL, then force online + the
+# self-hosted endpoint (same recipe as the working SFT runs — sft_full.sh/wandb_smoke.sh).
+# Exported here so the trainer srun step inherits them (fixes 404 createRunFiles / no-sync).
+if [ -f "$REPO/.env" ]; then set -a; source "$REPO/.env"; set +a; fi
+export WANDB_BASE_URL="${WANDB_BASE_URL:-https://meta.wandb.io}"
+export WANDB_MODE=online
+
 JUDGE=${JUDGE:?set JUDGE=9b|397b}
 MODE=${MODE:?set MODE=overfit|full|epoch1}
 case "$JUDGE" in 9b|397b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
