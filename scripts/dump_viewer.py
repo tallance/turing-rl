@@ -99,6 +99,9 @@ def _scan_dumps(dumps_dir: Path) -> pd.DataFrame:
                         "ts": d.get("ts"),
                         "worker_pid": d.get("worker_pid"),
                         "job_and_pid": job_and_pid,
+                        "user_id": d.get("user_id"),
+                        "post_id": d.get("post_id"),
+                        "target_idx": d.get("target_idx"),
                         # Sidebar columns
                         "final_reward": d.get("final_reward"),
                         "rating": rating,
@@ -140,6 +143,9 @@ def _scan_dumps(dumps_dir: Path) -> pd.DataFrame:
                         "model": d.get("model"),
                         "worker_pid": d.get("worker_pid"),
                         "job_and_pid": job_and_pid,
+                        "user_id": None,
+                        "post_id": None,
+                        "target_idx": None,
                         "prompt_tokens": usage.get("prompt_tokens"),
                         "completion_tokens": usage.get("completion_tokens"),
                         "total_tokens": usage.get("total_tokens"),
@@ -160,7 +166,13 @@ def _scan_dumps(dumps_dir: Path) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     df = pd.DataFrame(rows)
-    df = df.reset_index(drop=True)
+    # Chronological order by ts (stable sort; rows without a ts sink to the end).
+    # This makes idx / sidebar order reflect training-call order across all files.
+    df = df.sort_values("ts", kind="stable", na_position="last").reset_index(drop=True)
+    # Per-example chronological sequence number (1-based). Reward rows carry the
+    # example identity (user_id/post_id/target_idx), so this lets you step through
+    # one example's generations + judge calls in training order.
+    df["seq"] = df.groupby(["user_id", "post_id", "target_idx"], dropna=False).cumcount() + 1
     df["idx"] = df.index
     return df
 
@@ -243,6 +255,9 @@ TEMPLATE = Template("""<!doctype html>
     <div class="filters">
       <form method="get" action="/">
         <label>text: <input type="text" name="q" value="{{ filters.q or '' }}" placeholder="substring"></label>
+        <label>user_id: <input type="text" name="user_id" value="{{ filters.user_id if filters.user_id is not none else '' }}" placeholder="exact"></label>
+        <label>post_id: <input type="text" name="post_id" value="{{ filters.post_id if filters.post_id is not none else '' }}" placeholder="exact"></label>
+        <label>target_idx: <input type="text" name="target_idx" value="{{ filters.target_idx if filters.target_idx is not none else '' }}" placeholder="exact"></label>
         <label>schema:
           <select name="schema">
             <option value="all" {% if filters.schema == 'all' %}selected{% endif %}>all</option>
@@ -270,7 +285,7 @@ TEMPLATE = Template("""<!doctype html>
           {% if filters.schema == 'http' %}
             <col class="num"><col class="num"><col class="short">
           {% else %}
-            <col class="num"><col class="short"><col class="short"><col class="short">
+            <col class="short"><col class="num"><col class="short"><col class="short"><col class="short">
           {% endif %}
         </colgroup>
         <thead><tr>
@@ -283,6 +298,7 @@ TEMPLATE = Template("""<!doctype html>
             <th class="right">in→out</th>
             <th>ok</th>
           {% else %}
+            <th class="right">seq</th>
             <th class="right">reward</th>
             <th class="right">rating</th>
             <th>human</th>
@@ -302,6 +318,7 @@ TEMPLATE = Template("""<!doctype html>
               <td class="right">{{ row.prompt_tokens or '-' }} → {{ row.completion_tokens or '-' }}</td>
               <td class="{{ 'ok' if row.parses_ok else 'bad' }}">{{ '✓' if row.parses_ok else '✗' }}</td>
             {% else %}
+              <td class="right">{{ row.seq if row.seq is not none else '-' }}</td>
               <td class="right">{{ '%.2f' % row.final_reward if row.final_reward is not none else '-' }}</td>
               <td class="right">{{ row.rating|int if row.rating is not none else '-' }}</td>
               <td>{{ row.human_side or '-' }}</td>
@@ -401,6 +418,7 @@ TEMPLATE = Template("""<!doctype html>
             <dt>user_id</dt><dd>{{ selected.user_id }}</dd>
             <dt>post_id</dt><dd>{{ selected.post_id }}</dd>
             <dt>target_idx</dt><dd>{{ selected.target_idx }}</dd>
+            <dt>seq (chronological, per example)</dt><dd>{{ selected.seq if selected.seq is not none else '-' }}</dd>
             <dt>persona</dt><dd>{{ selected.persona }}</dd>
             <dt>ts (epoch)</dt><dd>{{ selected.ts }}</dd>
             <dt>ts (utc)</dt><dd>{{ selected.human_ts }}</dd>
@@ -465,12 +483,22 @@ def _filter_df(
     only_parse_failures: bool,
     q: str | None,
     schema: str | None,
+    user_id: str | None = None,
+    post_id: str | None = None,
+    target_idx: str | None = None,
 ) -> pd.DataFrame:
     out = df
     if schema in ("http", "reward"):
         out = out[out["schema"] == schema]
     if only_parse_failures:
         out = out[~out["parses_ok"]]
+    # Exact per-example filters (compare as strings so int/str target_idx both match).
+    if user_id not in (None, ""):
+        out = out[out["user_id"].astype("string") == str(user_id)]
+    if post_id not in (None, ""):
+        out = out[out["post_id"].astype("string") == str(post_id)]
+    if target_idx not in (None, ""):
+        out = out[out["target_idx"].astype("string") == str(target_idx)]
     if q:
         needle = q.lower()
         out = out[out["_search_blob"].str.contains(needle, regex=False)]
@@ -495,6 +523,9 @@ def index(
     only_parse_failures: bool = False,
     q: str | None = None,
     schema: str | None = "reward",
+    user_id: str | None = None,
+    post_id: str | None = None,
+    target_idx: str | None = None,
     reload: bool = False,
 ) -> HTMLResponse:
     assert state is not None
@@ -505,6 +536,9 @@ def index(
         only_parse_failures=only_parse_failures,
         q=q,
         schema=schema,
+        user_id=user_id,
+        post_id=post_id,
+        target_idx=target_idx,
     )
     df_all = state.df
     if df_all.empty:
@@ -537,6 +571,7 @@ def index(
             "rating": r["rating"],
             "human_side": r["human_side"],
             "correct": r["correct"],
+            "seq": (int(r["seq"]) if r.get("seq") is not None and pd.notna(r["seq"]) else None),
             "link": _link_for(int(r["idx"])),
         }
         for _, r in df_page.iterrows()
@@ -566,6 +601,7 @@ def index(
                 "schema": "reward",
                 "ts": ts_val,
                 "human_ts": human_ts,
+                "seq": (int(row["seq"]) if row.get("seq") is not None and pd.notna(row.get("seq")) else None),
                 "worker_pid": row.get("worker_pid"),
                 "job_and_pid": row.get("job_and_pid"),
                 # Reward-layer fields
