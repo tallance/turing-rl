@@ -749,6 +749,15 @@ at a time (others PENDING with `(Dependency)`):
 ssh ... "squeue --me -o '%.10i %.24j %.8T %.10r'"
 ```
 
+> **Final-review fixes (commit 98e939d), applied before launch:**
+> - `launch_generator_sweep.sh` now calls `need_jid` after every `submit` — a failed `sbatch`
+>   aborts the whole chain instead of silently emptying `PREV` (which would de-serialize the
+>   rest into concurrent head jobs against unbuilt inputs).
+> - `run_judge_sweep_cell.py` run-metadata now records the actual `PERSONA_JUDGE_SAMPLING`
+>   (was hard-coded "no wire override") — important since judge sampling is this sweep's IV.
+> - Provenance confirmed: the reused `qwen3-8b-sft` pairs came from the qwen3-8B SFT ckpt,
+>   same `test.parquet`, `exact_match_frac=0`.
+
 ---
 
 ## Task 8: analyze + write up (after the chain lands)
