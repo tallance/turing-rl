@@ -18,11 +18,14 @@ GEN_LABELS = {
     "qwen35-9b-base": "qwen3.5-9B base", "qwen35-9b-sft": "qwen3.5-9B SFT",
 }
 GEN_ORDER = ["qwen3-8b-base", "qwen3-8b-sft", "qwen35-9b-base", "qwen35-9b-sft"]
-# Comparison metrics (must be columns in analyze_judge_sweep's summary.parquet).
+# Comparison metrics — keys are the PERSISTED summary.parquet column names, which
+# write_summary() RENAMES from the in-memory aggregate_cell dict:
+#   accuracy -> acc_parse_ok, accuracy_penalized -> acc_penalized, parse_error_rate -> parse_error.
+# (tie_rate keeps its name.) See scripts/analyze_judge_sweep.py:write_summary.
 CMP_METRICS = [
-    ("accuracy", "accuracy | parse ok (picks true human)", (0.45, 0.85), 0.5),
-    ("accuracy_penalized", "accuracy (parse-fail counted wrong)", (0.45, 0.85), 0.5),
-    ("parse_error_rate", "parse-error rate", None, None),
+    ("acc_parse_ok", "accuracy | parse ok (picks true human)", (0.45, 0.85), 0.5),
+    ("acc_penalized", "accuracy (parse-fail counted wrong)", (0.45, 0.85), 0.5),
+    ("parse_error", "parse-error rate", None, None),
     ("tie_rate", "tie rate (rating==4)", None, None),
 ]
 
