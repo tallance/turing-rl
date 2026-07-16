@@ -13,12 +13,29 @@ Schema is auto-detected per row: presence of `generated_is_b` field ⇒ reward
 row; otherwise HTTP row. The viewer recurses into subdirs, so passing the
 parent directory picks up both types.
 
-Usage:
-  python scripts/dump_viewer.py --dumps /home/lancewicki/tmp/judge_dumps_8b --port 8082
+Run on the RFAI cluster (login node — no GPU needed; recipe verified 2026-07-16):
+  # A bare `... &` background process is reaped when the ssh session closes on the
+  # k8s login pod, so launch inside tmux (persists). PYTHONPATH is required because
+  # the viewer imports training.grpo.reward; use the turing-rl-train env.
+  ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null lancewicki@localhost \
+    'tmux kill-session -t viewer 2>/dev/null; \
+     tmux new-session -d -s viewer "cd /home/lancewicki/projects/turing-rl && \
+       export PYTHONPATH=/home/lancewicki/projects/turing-rl && \
+       /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python scripts/dump_viewer.py \
+         --dumps results/grpo/rl-generator/<run>/reward_dump --port 8082 --host 127.0.0.1 \
+         2>&1 | tee logs/dump_viewer.log"'
+  # verify:  curl -sf -m6 -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082/   (expect 200)
+  # stop:    ssh ... 'tmux kill-session -t viewer'
 
-Access from Mac:
-  ssh -L 8082:localhost:8082 <cluster-host>
+Access from Mac (second terminal; --dumps recurses, so pass the parent dir to see http/ + reward/):
+  ssh -L 8082:localhost:8082 rfai-research-aws-use2-1 -N
   # then browse http://localhost:8082
+
+View ONE example chronologically: filter by ids and read down the ts-sorted `seq` column,
+  http://localhost:8082/?schema=reward&user_id=<uid>&post_id=<pid>&target_idx=<n>
+  # `response` tab = the generated turn; `reasoning` tab = the judge's chain-of-thought.
+
+Local dev: `python scripts/dump_viewer.py --dumps <dir> --port 8082` (loopback default).
 """
 from __future__ import annotations
 
