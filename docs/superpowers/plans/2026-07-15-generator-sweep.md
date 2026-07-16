@@ -461,12 +461,15 @@ PREV=""   # running tail of the chain (set by CALLERS after each submit)
 # (the assignment would be lost). Each call site does `X=$(submit ...); PREV=$X`.
 submit () {
   local dep="$1"; shift
-  local depflag=(); [ -n "$dep" ] && depflag=(--dependency="$dep")
+  # Plain string (NOT an array): an empty array expansion under `set -u` errors on
+  # bash 3.2. deparg is empty (expands to nothing) for the head job, else one token
+  # `--dependency=<dep>` with no spaces, so leaving it unquoted is safe.
+  local deparg=""; [ -n "$dep" ] && deparg="--dependency=$dep"
   if [ "$DRY" = "1" ]; then
-    echo "[DRY] sbatch ${depflag[*]} $*" >&2
+    echo "[DRY] sbatch $deparg $*" >&2
     echo "dry$RANDOM"; return 0
   fi
-  sbatch --parsable "${depflag[@]}" "$@"
+  sbatch --parsable $deparg "$@"
 }
 
 # --- generator branch: gen -> build -> sweeps. $1=genkey $2=model_id $3=ckpt(""=base)
