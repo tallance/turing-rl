@@ -32,7 +32,10 @@ for c in cell_list('qwen3.5'):
     print(c['cell_name'], c['model_id'], c['tp'], c['replicas'])
 ")
 
-PREV=""   # running tail of the chain (set by CALLERS after each submit)
+# Running tail of the chain (set by CALLERS after each submit). Optionally SEED it with an
+# existing job id via CHAIN_AFTER=<jid> so this launch queues BEHIND an already-running chain
+# (keeps a single node in use across separately-launched generators).
+PREV="${CHAIN_AFTER:-}"
 
 # submit <dependency-or-empty> <sbatch-args...> ; echoes the job id ONLY.
 # NOTE: callers invoke this via $(...), a subshell — so submit() must NOT set PREV
