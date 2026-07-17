@@ -36,7 +36,7 @@ $PY -u -m eval.generate_trained "${BASE[@]}" "${CK[@]}" --test_parquet "$TEST" \
     --vllm_tensor_parallel_size 1 --vllm_gpu_memory_utilization 0.6 --vllm_max_num_seqs 32
 RC=$?
 $PY -c "import json,os; json.dump({'gen_key':'$GEN_KEY','model_id':'$MODEL_ID',\
-'checkpoint_dir':'${CKPT:-}','base_model':$([ -z "$CKPT" ] && echo true || echo false),\
+'checkpoint_dir':'${CKPT:-}','base_model':$([ -z "$CKPT" ] && echo True || echo False),\
 'test_parquet':'$TEST','gen_num':1,'output':'$OUT',\
 'slurm_job_id':os.environ.get('SLURM_JOB_ID')}, open('$OUT_DIR/gen_metadata.json','w'), indent=2)"
 echo "=== exit: $RC ==="; exit $RC
