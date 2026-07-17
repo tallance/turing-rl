@@ -90,6 +90,7 @@ export PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY="${PERSONA_OPENAI_JUDGE_MAX_CONCURRE
 export PERSONA_OPENAI_MAX_RETRIES="${PERSONA_OPENAI_MAX_RETRIES:-3}"
 export WANDB_PROJECT="${WANDB_PROJECT:-2026-07-15-rl-generator-vs-fixed-judge}"
 export SFT_ADAPTER_PATH="${SFT_ADAPTER_PATH:-checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack/final}"
+export EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"   # extra Hydra overrides (e.g. kl_loss_coef) -> trainer step
 export RL_MODE="$MODE" RL_JUDGE="$JUDGE" RL_RUN_TAG="$RUN_TAG" RL_RUN_DIR="$RUN_DIR" RL_CKPT_DIR="$CKPT_DIR"
 export RL_JUDGE_JOB_ID=""   # no separate judge job; teardown handled here by killing the judge srun step
 
