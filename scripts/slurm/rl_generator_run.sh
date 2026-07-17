@@ -44,7 +44,7 @@ mapfile -t NODES < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
 [ "${#NODES[@]}" -ge 2 ] || { echo "ERROR: need 2 nodes, got '${NODES[*]:-none}'" >&2; exit 2; }
 NODE_JUDGE=${NODES[0]}; NODE_TRAIN=${NODES[1]}
 
-RUN_TAG=${RUN_TAG:-${JUDGE}_${MODE}}
+RUN_TAG=${RUN_TAG:-${JUDGE}_${MODE}_merged_sft_ref}
 RUN_DIR=$REPO/results/grpo/rl-generator/$RUN_TAG
 ENDPOINT_FILE=$RUN_DIR/judge_endpoint.txt
 REWARD_DUMP_DIR=$RUN_DIR/reward_dump
@@ -89,7 +89,7 @@ export PERSONA_EVAL_JUDGE_MODEL="$JUDGE_MODEL"
 export PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY="${PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY:-128}"
 export PERSONA_OPENAI_MAX_RETRIES="${PERSONA_OPENAI_MAX_RETRIES:-3}"
 export WANDB_PROJECT="${WANDB_PROJECT:-2026-07-15-rl-generator-vs-fixed-judge}"
-export SFT_ADAPTER_PATH="${SFT_ADAPTER_PATH:-checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack/final}"
+export MERGED_SFT_MODEL_PATH="${MERGED_SFT_MODEL_PATH:-checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack/merged}"
 export EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"   # extra Hydra overrides (e.g. kl_loss_coef) -> trainer step
 export RL_MODE="$MODE" RL_JUDGE="$JUDGE" RL_RUN_TAG="$RUN_TAG" RL_RUN_DIR="$RUN_DIR" RL_CKPT_DIR="$CKPT_DIR"
 export RL_JUDGE_JOB_ID=""   # no separate judge job; teardown handled here by killing the judge srun step

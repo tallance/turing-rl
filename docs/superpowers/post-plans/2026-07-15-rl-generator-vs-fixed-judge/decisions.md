@@ -87,6 +87,23 @@ first via the no-GPU `wandb_smoke.sh` dummy job (10020), then confirmed in the r
   even 2/2 split (frac 0.5) counted as a win. Changed to **strict `frac > 0.5`** (a 2/2 split is a tie).
   This flipped the epoch-32 snapshot from 9/10 → 7/10.
 
+### B4 — KL reference was base Qwen3, not the SFT policy
+- **Intended:** initialize the actor from the SFT policy and use that same SFT policy as the frozen
+  KL reference. The plan's Task 9 treated a loaded `lora_adapter_path` as satisfying both roles.
+- **Actual veRL behavior:** when LoRA is active, `ref_in_actor=true` and the colocated reference is
+  the actor with its active LoRA disabled. Because the active LoRA was the loaded SFT adapter, the
+  reference was bare Qwen3-8B. The step-one `actor/kl_loss` was already ~0.63–0.86 rather than near
+  zero. Loading the existing adapter also retained its PEFT config (`r=64`, `alpha=128`, dropout
+  0.05), so the YAML's intended fresh RL LoRA `alpha=32` was not created.
+- **Correction:** `scripts/merge_sft_adapter.py` safely merges the SFT adapter into a standalone
+  backbone. The RL launcher now sets that artifact as `actor_rollout_ref.model.path` and explicitly
+  sets `lora_adapter_path=null`, causing veRL to create a fresh RL LoRA from the YAML. Disabling that
+  new LoRA now recovers the merged SFT policy, which is the intended reference.
+- **Compatibility:** corrected runs use a new default `_merged_sft_ref` run tag so `resume_mode=auto`
+  cannot load an old checkpoint with the previous parameterization. Before a real run, validate
+  logits parity (`base+SFT adapter` vs merged), step-zero KL near zero, and that only the new RL LoRA
+  is trainable.
+
 ### Minor TDD-time adaptations (not detours, noted for completeness)
 - Task 4: replaced the plan's vacuous `assert os.path.exists(p) or True` with `pytest.skip` (mirrors
   Task 6b's pattern) — flagged pre-execution, user-consistent.

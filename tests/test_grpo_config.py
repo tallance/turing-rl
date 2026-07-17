@@ -18,6 +18,14 @@ CFG = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "training", "grpo", "configs", "qwen3_8b_grpo.yaml",
 )
+TRAIN_LAUNCHER = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts", "slurm", "rl_generator_train.sh",
+)
+RUN_LAUNCHER = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "scripts", "slurm", "rl_generator_run.sh",
+)
 
 
 def _load():
@@ -50,3 +58,14 @@ def test_grpo_train_data_path_present_or_skipped():
     if not os.path.exists(p):
         pytest.skip("PRISM grpo split not present locally (cluster-only)")
     assert os.path.exists(p)
+
+
+def test_rl_generator_uses_merged_sft_backbone_and_fresh_rl_lora():
+    train_text = open(TRAIN_LAUNCHER).read()
+    run_text = open(RUN_LAUNCHER).read()
+    assert 'actor_rollout_ref.model.path="$MERGED_SFT_MODEL_PATH"' in train_text
+    assert "actor_rollout_ref.model.lora_adapter_path=null" in train_text
+    assert 'actor_rollout_ref.model.lora_adapter_path="$SFT_ADAPTER_PATH"' not in train_text
+    assert 'export MERGED_SFT_MODEL_PATH=' in run_text
+    assert 'export SFT_ADAPTER_PATH=' not in run_text
+    assert "_merged_sft_ref}" in run_text
