@@ -28,8 +28,8 @@ PLOT_LABELS = {"qwen35-4b": "3.5-4B", "qwen35-9b": "3.5-9B", "qwen35-27b": "3.5-
                "qwen35-397b-t07": "397B t0.7", "qwen3-8b": "qwen3-8B"}
 # (metric key, y-label, optional (ymin,ymax), optional reference line)
 PLOT_METRICS = [
-    ("accuracy", "accuracy | parse ok (picks true human)", (0.45, 0.85), 0.5),
-    ("accuracy_penalized", "accuracy (parse-fail counted wrong)", (0.45, 0.85), 0.5),
+    ("accuracy", "accuracy | parse ok (picks true human)", (0.0, 0.85), 0.5),
+    ("accuracy_penalized", "accuracy (parse-fail counted wrong)", (0.0, 0.85), 0.5),
     ("kappa_vs_anchor", "Cohen's kappa vs 397B anchor", (0.0, 0.7), None),
     ("tie_rate", "tie rate (rating==4)", None, None),
     ("budget_hit_rate", "budget-hit rate (finish=length)", None, None),

@@ -23,8 +23,8 @@ GEN_ORDER = ["qwen3-8b-base", "qwen3-8b-sft", "qwen35-9b-base", "qwen35-9b-sft"]
 #   accuracy -> acc_parse_ok, accuracy_penalized -> acc_penalized, parse_error_rate -> parse_error.
 # (tie_rate keeps its name.) See scripts/analyze_judge_sweep.py:write_summary.
 CMP_METRICS = [
-    ("acc_parse_ok", "accuracy | parse ok (picks true human)", (0.45, 0.85), 0.5),
-    ("acc_penalized", "accuracy (parse-fail counted wrong)", (0.45, 0.85), 0.5),
+    ("acc_parse_ok", "accuracy | parse ok (picks true human)", (0.0, 0.85), 0.5),
+    ("acc_penalized", "accuracy (parse-fail counted wrong)", (0.0, 0.85), 0.5),
     ("parse_error", "parse-error rate", None, None),
     ("tie_rate", "tie rate (rating==4)", None, None),
 ]
