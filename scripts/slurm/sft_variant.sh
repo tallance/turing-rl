@@ -52,9 +52,18 @@ SMOKE=${SMOKE:-0}
 NOPACK=${NOPACK:-0}
 
 MODEL=${MODEL:-qwen3-8b}   # qwen3-8b | qwen35-9b
+# Per-model: output stem, python env, and the FSDP auto-wrap decoder class.
+# qwen3.5 needs its own transformers-5.x env (model_type=qwen3_5 unsupported by the 4.57.6
+# in turing-rl-train) and a different decoder class (both verified via probe_qwen35.py).
 case "$MODEL" in
-  qwen3-8b)  STEM=qwen3_8b ;;
-  qwen35-9b) STEM=qwen35_9b ;;
+  qwen3-8b)
+    STEM=qwen3_8b
+    PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
+    FSDP_LAYER_CLS=Qwen3DecoderLayer ;;
+  qwen35-9b)
+    STEM=qwen35_9b
+    PY=/home/lancewicki/miniconda3/envs/turing-rl-sft-qwen35/bin/python
+    FSDP_LAYER_CLS=Qwen3_5DecoderLayer ;;
   *) echo "bad MODEL=$MODEL"; exit 2 ;;
 esac
 
@@ -88,7 +97,7 @@ case "$VARIANT" in
   qlora_r64) ARGS+=(--force_qlora --attn_implementation sdpa) ;;
   # bf16 variants pass --no_qlora explicitly so the recipe is self-describing and
   # robust to yaml drift (4-bit bnb + FSDP full_shard is a broken combo).
-  bf16_fsdp) ARGS+=(--no_qlora --attn_implementation sdpa --fsdp "full_shard auto_wrap" --fsdp_transformer_layer_cls Qwen3DecoderLayer) ;;
+  bf16_fsdp) ARGS+=(--no_qlora --attn_implementation sdpa --fsdp "full_shard auto_wrap" --fsdp_transformer_layer_cls "$FSDP_LAYER_CLS") ;;
   bf16_fa2)  ARGS+=(--no_qlora --attn_implementation flash_attention_2) ;;
 esac
 

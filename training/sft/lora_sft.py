@@ -18,6 +18,13 @@ MODEL_MAP = {
 
 LORA_TARGET_MODULES = {
     "qwen3": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    # Qwen3.5 has a HYBRID text tower (verified via probe_qwen35.py against Qwen3.5-9B):
+    # full-attention layers use q/k/v/o_proj, but ~3/4 of layers are Gated-DeltaNet
+    # linear-attention layers whose linears are in_proj_qkv/z/b/a + out_proj (NO q/k/v/o).
+    # The plain qwen3 list would leave every DeltaNet layer untrained, so include them.
+    # (Loaded via AutoModelForCausalLM -> Qwen3_5ForCausalLM: pure text tower, no vision.)
+    "qwen3.5": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
+                "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj"],
     "llama": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
 }
 
@@ -33,6 +40,8 @@ CHAT_TEMPLATE_END_TOKENS = ("<|im_end|>",)
 
 def get_lora_targets(model_name: str) -> list[str]:
     """Get LoRA target modules for the model family."""
+    if "qwen35" in model_name or "qwen3.5" in model_name:
+        return LORA_TARGET_MODULES["qwen3.5"]
     if "qwen" in model_name:
         return LORA_TARGET_MODULES["qwen3"]
     if "llama" in model_name:
