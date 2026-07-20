@@ -16,7 +16,15 @@
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache PYTHONUNBUFFERED=1
-PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
+# BACKEND selects the inference path + env. vLLM (default) can't LoRA-serve Qwen3.5-9B's
+# Gated-DeltaNet adapter, so that generator uses BACKEND=hf (transformers+PEFT in the
+# transformers-5.x SFT env). See eval/generate_trained.py::generate_for_user_results_hf.
+BACKEND=${BACKEND:-vllm}
+case "$BACKEND" in
+  vllm) PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python ;;
+  hf)   PY=/home/lancewicki/miniconda3/envs/turing-rl-sft-qwen35/bin/python ;;
+  *) echo "bad BACKEND=$BACKEND (expected vllm|hf)"; exit 2 ;;
+esac
 REPO=/home/lancewicki/projects/turing-rl
 GEN_KEY=${GEN_KEY:?set GEN_KEY}
 MODEL_ID=${MODEL_ID:?set MODEL_ID}
@@ -30,9 +38,10 @@ mkdir -p "$OUT_DIR"; cd "$REPO"
 BASE=(); [ -z "$CKPT" ] && BASE=(--base_model)
 CK=(); [ -n "$CKPT" ] && CK=(--checkpoint_dir "$CKPT")
 
-echo "=== generator_infer: GEN_KEY=$GEN_KEY MODEL_ID=$MODEL_ID CKPT=${CKPT:-<base>} ==="
+echo "=== generator_infer: GEN_KEY=$GEN_KEY MODEL_ID=$MODEL_ID CKPT=${CKPT:-<base>} BACKEND=$BACKEND ==="
 $PY -u -m eval.generate_trained "${BASE[@]}" "${CK[@]}" --test_parquet "$TEST" \
     --model_id "$MODEL_ID" --gen_num 1 --output "$OUT" --conditioning_mode history \
+    --backend "$BACKEND" \
     --vllm_tensor_parallel_size 1 --vllm_gpu_memory_utilization 0.6 --vllm_max_num_seqs 32
 RC=$?
 $PY -c "import json,os; json.dump({'gen_key':'$GEN_KEY','model_id':'$MODEL_ID',\

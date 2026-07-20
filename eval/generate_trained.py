@@ -390,6 +390,104 @@ def generate_for_user_results_vllm(
     return {user_result["user_id"]: user_result for user_result in user_results}
 
 
+def generate_for_user_results_hf(
+    *,
+    user_results: list[dict[str, Any]],
+    model_id: str,
+    adapter_path: str | None,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    min_p: float | None,
+    repetition_penalty: float | None,
+    batch_size: int,
+    max_tokens: int,
+    gen_num: int,
+    max_prompt_tokens: int = 8192,
+) -> dict[str, dict[str, Any]]:
+    """Generate with HuggingFace transformers + a PEFT adapter (no vLLM).
+
+    Needed for models vLLM can't LoRA-serve in our stack — e.g. Qwen3.5-9B, whose
+    Gated-DeltaNet adapter modules crash vLLM 0.18's LoRA path, and whose merged
+    Qwen3_5ForCausalLM arch vLLM doesn't register. Prompts/parsing are shared with the
+    vLLM path (_build_generation_task_list + parse_generation), so outputs stay comparable.
+    """
+    import torch
+    from transformers import AutoModelForCausalLM
+
+    if not user_results:
+        return {}
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0, got {batch_size}")
+    tokenizer = load_tokenizer(model_id)
+    tokenizer.padding_side = "left"  # left-pad so generated tokens are contiguous per row
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    generation_tasks = _build_generation_task_list(user_results, tokenizer=tokenizer)
+    target_count = len(generation_tasks)
+    print(f"[hf] Starting generation for {len(user_results)} users / {target_count} targets",
+          flush=True)
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, dtype=torch.bfloat16, trust_remote_code=True,
+        low_cpu_mem_usage=True, device_map="cuda:0",
+    )
+    if adapter_path:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, adapter_path, is_trainable=False)
+        print(f"[hf] attached PEFT adapter: {adapter_path}", flush=True)
+    model.eval()
+
+    do_sample = bool(temperature and temperature > 0)
+    gen_kwargs: dict[str, Any] = {
+        "max_new_tokens": max_tokens,
+        "do_sample": do_sample,
+        "num_return_sequences": gen_num,
+        "pad_token_id": tokenizer.pad_token_id,
+    }
+    if do_sample:
+        gen_kwargs["temperature"] = temperature
+        gen_kwargs["top_p"] = top_p
+        if top_k and top_k > 0:
+            gen_kwargs["top_k"] = top_k
+        if min_p is not None:
+            gen_kwargs["min_p"] = min_p
+        if repetition_penalty is not None:
+            gen_kwargs["repetition_penalty"] = repetition_penalty
+
+    for start in range(0, target_count, batch_size):
+        batch_tasks = generation_tasks[start:start + batch_size]
+        tokenizer.truncation_side = "left"
+        enc = tokenizer(
+            [task["prompt_text"] for task in batch_tasks],
+            return_tensors="pt", padding=True, truncation=True,
+            max_length=max_prompt_tokens, add_special_tokens=False,
+        ).to(model.device)
+        input_len = enc["input_ids"].shape[1]
+        with torch.no_grad():
+            out = model.generate(**enc, **gen_kwargs)
+        gen_tokens = out[:, input_len:]
+        texts = tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
+        for i, task in enumerate(batch_tasks):
+            parsed_generations = []
+            for g in range(gen_num):
+                row = i * gen_num + g
+                raw_completion = texts[row]
+                parsed = parse_generation(raw_completion)
+                parsed["raw_completion"] = raw_completion
+                parsed["finish_reason"] = None
+                parsed["stop_reason"] = None
+                parsed["output_token_count"] = int(
+                    (gen_tokens[row] != tokenizer.pad_token_id).sum().item()
+                )
+                parsed_generations.append(parsed)
+            task["target_result"]["generations"] = parsed_generations
+        print(f"[hf] {min(start + batch_size, target_count)}/{target_count} targets", flush=True)
+
+    print(f"[hf] Finished generation for {target_count} targets", flush=True)
+    return {user_result["user_id"]: user_result for user_result in user_results}
+
+
 def load_user_results_from_test_parquet(
     test_parquet: str,
     *,
@@ -590,6 +688,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=8, help="Number of prompts per generation batch")
     parser.add_argument("--max_tokens", type=int, default=None, help="Max tokens per generation")
     parser.add_argument(
+        "--backend", choices=("vllm", "hf"), default="vllm",
+        help="Inference backend. 'hf' = transformers+PEFT (for models vLLM can't LoRA-serve, "
+             "e.g. Qwen3.5-9B); 'vllm' = default.",
+    )
+    parser.add_argument(
         "--vllm_tensor_parallel_size",
         type=int,
         default=DEFAULT_VLLM_TENSOR_PARALLEL_SIZE,
@@ -735,27 +838,42 @@ def main() -> None:
             persona_map=persona_map,
         )
 
-    results = generate_for_user_results_vllm(
-        user_results=user_results,
-        model_id=args.model_id,
-        adapter_path=args.adapter_path,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        top_k=args.top_k,
-        min_p=args.min_p,
-        presence_penalty=args.presence_penalty,
-        repetition_penalty=args.repetition_penalty,
-        batch_size=args.batch_size,
-        max_tokens=args.max_tokens,
-        gen_num=args.gen_num,
-        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
-        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
-        vllm_max_model_len=args.vllm_max_model_len,
-        vllm_max_num_seqs=args.vllm_max_num_seqs,
-        vllm_enforce_eager=args.vllm_enforce_eager,
-        vllm_disable_custom_all_reduce=args.vllm_disable_custom_all_reduce,
-        vllm_truncate_prompt_tokens=args.vllm_truncate_prompt_tokens,
-    )
+    if args.backend == "hf":
+        results = generate_for_user_results_hf(
+            user_results=user_results,
+            model_id=args.model_id,
+            adapter_path=args.adapter_path,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            min_p=args.min_p,
+            repetition_penalty=args.repetition_penalty,
+            batch_size=args.batch_size,
+            max_tokens=args.max_tokens,
+            gen_num=args.gen_num,
+        )
+    else:
+        results = generate_for_user_results_vllm(
+            user_results=user_results,
+            model_id=args.model_id,
+            adapter_path=args.adapter_path,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            min_p=args.min_p,
+            presence_penalty=args.presence_penalty,
+            repetition_penalty=args.repetition_penalty,
+            batch_size=args.batch_size,
+            max_tokens=args.max_tokens,
+            gen_num=args.gen_num,
+            vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
+            vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+            vllm_max_model_len=args.vllm_max_model_len,
+            vllm_max_num_seqs=args.vllm_max_num_seqs,
+            vllm_enforce_eager=args.vllm_enforce_eager,
+            vllm_disable_custom_all_reduce=args.vllm_disable_custom_all_reduce,
+            vllm_truncate_prompt_tokens=args.vllm_truncate_prompt_tokens,
+        )
 
     generation_tasks = _build_generation_task_list(user_results)
 
