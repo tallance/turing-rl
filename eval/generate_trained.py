@@ -633,7 +633,9 @@ def apply_generation_defaults(args: argparse.Namespace) -> argparse.Namespace:
     args.top_k = model_defaults["top_k"]
     args.min_p = model_defaults["min_p"]
     args.presence_penalty = model_defaults["presence_penalty"]
-    args.repetition_penalty = DEFAULT_REPETITION_PENALTY
+    # Respect a CLI --repetition_penalty override; else the domain default (1.0 = none).
+    if getattr(args, "repetition_penalty", None) is None:
+        args.repetition_penalty = DEFAULT_REPETITION_PENALTY
     return args
 
 
@@ -687,6 +689,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gen_num", type=int, default=None, help="Generations per target")
     parser.add_argument("--batch_size", type=int, default=8, help="Number of prompts per generation batch")
     parser.add_argument("--max_tokens", type=int, default=None, help="Max tokens per generation")
+    parser.add_argument("--repetition_penalty", type=float, default=None,
+                        help="Override the generation repetition_penalty (default: domain default 1.0 = none).")
     parser.add_argument(
         "--backend", choices=("vllm", "hf"), default="vllm",
         help="Inference backend. 'hf' = transformers+PEFT (for models vLLM can't LoRA-serve, "
