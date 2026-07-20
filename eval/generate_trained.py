@@ -439,11 +439,16 @@ def generate_for_user_results_hf(
     model.eval()
 
     do_sample = bool(temperature and temperature > 0)
+    # Qwen3.5-9B ships no generation_config.json, so model.generate would fall back to
+    # config.json's eos (<|endoftext|>), which the CHAT model never emits -> every gen runs
+    # to max_new_tokens. The chat turn terminator is the tokenizer's eos (<|im_end|>); stop on it.
+    eos_id = tokenizer.eos_token_id
     gen_kwargs: dict[str, Any] = {
         "max_new_tokens": max_tokens,
         "do_sample": do_sample,
         "num_return_sequences": gen_num,
         "pad_token_id": tokenizer.pad_token_id,
+        "eos_token_id": eos_id,
     }
     if do_sample:
         gen_kwargs["temperature"] = temperature
