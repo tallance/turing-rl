@@ -142,8 +142,12 @@ def probe_fwd_bwd(model, tok, feats, attn: str):
     import torch
 
     _hr(f"6. 1-step forward/backward (attn={attn})")
-    ids = feats["input_ids"][:512]
-    mask = feats["completion_mask"][:512]
+    # Slice the TAIL, not the head: the supervised (completion_mask==1) tokens sit at the
+    # end of the row, so input_ids[:N] would drop every target -> all-(-100) labels ->
+    # cross-entropy over zero valid tokens -> nan (a test artifact, not a model problem).
+    ids = feats["input_ids"][-512:]
+    mask = feats["completion_mask"][-512:]
+    assert sum(mask) > 0, "no supervised tokens in the slice; widen the window"
     input_ids = torch.tensor([ids], device="cuda:0")
     labels = torch.tensor([[t if m else -100 for t, m in zip(ids, mask)]], device="cuda:0")
     model.train()
