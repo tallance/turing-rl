@@ -90,6 +90,12 @@ OVR=(
 )
 case "$MODE" in
   overfit)
+    # Overfit probes run ~50 epochs and only need the reward dumps, not checkpoints.
+    # The epoch-end checkpoint hook (PERSONA_ENABLE_EPOCH_END_CHECKPOINTING, default on)
+    # otherwise writes a full ~7GB ckpt EVERY epoch -> ~360G/run -> blows the ~1TB quota
+    # (this is what FAILED job 10252 at epoch 18). Disable it for overfit ONLY; full runs
+    # (few epochs) keep epoch-end saves. save_freq below already disables regular mid-run saves.
+    export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0
     OVR+=(
       data.train_batch_size="${OVERFIT_TRAIN_BATCH:-10}"
       actor_rollout_ref.actor.ppo_mini_batch_size="${OVERFIT_PPO_MINI:-10}"
