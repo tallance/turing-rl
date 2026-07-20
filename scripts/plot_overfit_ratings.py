@@ -53,7 +53,17 @@ def main() -> None:
     for k in groups:
         groups[k].sort(key=lambda r: r.get("ts") or 0)
 
-    keys = list(groups.keys())
+    # Fixed, canonical subplot order so the same example sits in the same panel
+    # across every run's plot (dump insertion order otherwise varies per run).
+    def _order(k: tuple):
+        uid, pid, tgt = k
+        # numeric-aware user id ("user1" < "user100"), then post id, then target idx
+        import re
+        m = re.search(r"(\d+)$", str(uid))
+        uid_num = int(m.group(1)) if m else 0
+        return (uid_num, str(uid), str(pid), tgt if tgt is not None else -1)
+
+    keys = sorted(groups.keys(), key=_order)
     n = len(keys)
     ncol = 2
     nrow = (n + ncol - 1) // ncol
