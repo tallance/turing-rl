@@ -18,13 +18,14 @@ MODEL_MAP = {
 
 LORA_TARGET_MODULES = {
     "qwen3": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-    # Qwen3.5 has a HYBRID text tower (verified via probe_qwen35.py against Qwen3.5-9B):
-    # full-attention layers use q/k/v/o_proj, but ~3/4 of layers are Gated-DeltaNet
-    # linear-attention layers whose linears are in_proj_qkv/z/b/a + out_proj (NO q/k/v/o).
-    # The plain qwen3 list would leave every DeltaNet layer untrained, so include them.
-    # (Loaded via AutoModelForCausalLM -> Qwen3_5ForCausalLM: pure text tower, no vision.)
-    "qwen3.5": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
-                "in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj"],
+    # Qwen3.5 has a HYBRID text tower (verified via probe_qwen35.py): full-attention layers
+    # use q/k/v/o_proj; ~3/4 are Gated-DeltaNet linear-attention layers (in_proj_qkv/z/b/a,
+    # out_proj). ATTENTION+MLP ONLY — do NOT adapt the DeltaNet backbone: LoRA on the GDN
+    # mixer is destructive (verified empirically here — targeting it produced a model that
+    # degenerates into non-terminating repetition even served with correct vLLM kernels; see
+    # arXiv:2604.22127 "Where Should LoRA Go?" for the same finding on Qwen3.5 hybrids). This
+    # matches the working qwen3-8B recipe and leaves the recurrent mixer at its base weights.
+    "qwen3.5": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     "llama": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
 }
 
