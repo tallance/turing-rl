@@ -126,20 +126,32 @@ def _normalize_messages(messages: Any) -> list[dict[str, str]]:
     return normalized
 
 
-def _assistant_target_end_char(full_text: str, target_start_char: int) -> int:
-    """Return the char offset before the assistant end marker, if the template has one."""
-    candidate_offsets = [
-        full_text.rfind(end_token)
-        for end_token in CHAT_TEMPLATE_END_TOKENS
-        if full_text.rfind(end_token) >= target_start_char
-    ]
+def _assistant_target_end_char(
+    full_text: str, target_start_char: int, *, include_end_token: bool = False
+) -> int:
+    """Char offset bounding the assistant target.
+
+    Default ends BEFORE the end marker (<|im_end|>). include_end_token=True extends past
+    it so the stop token is inside the supervised span — otherwise the model is never
+    trained to emit <|im_end|> and, after SFT, generates its turn then fails to stop
+    (verified: degenerates into non-terminating repetition on Qwen3.5-9B)."""
+    candidate_offsets = []
+    for end_token in CHAT_TEMPLATE_END_TOKENS:
+        idx = full_text.rfind(end_token)
+        if idx >= target_start_char:
+            candidate_offsets.append(idx + len(end_token) if include_end_token else idx)
     if not candidate_offsets:
         return len(full_text)
     return min(candidate_offsets)
 
 
-def build_chat_template_sft_features(tokenizer: Any, messages: Any) -> dict[str, list[int]]:
-    """Tokenize one SFT row and mask the assistant target span."""
+def build_chat_template_sft_features(
+    tokenizer: Any, messages: Any, *, supervise_stop_token: bool = False
+) -> dict[str, list[int]]:
+    """Tokenize one SFT row and mask the assistant target span.
+
+    supervise_stop_token=True includes the trailing <|im_end|> in the loss so the model
+    learns to terminate its turn (default off preserves the prior shared behavior)."""
     normalized_messages = _normalize_messages(messages)
     if not normalized_messages:
         raise ValueError("messages must be non-empty")
@@ -168,7 +180,9 @@ def build_chat_template_sft_features(tokenizer: Any, messages: Any) -> dict[str,
         )
 
     target_start_char = len(masked_prefix_text)
-    target_end_char = _assistant_target_end_char(full_text, target_start_char)
+    target_end_char = _assistant_target_end_char(
+        full_text, target_start_char, include_end_token=supervise_stop_token
+    )
     if target_end_char <= target_start_char:
         raise ValueError("Computed an empty assistant target span")
 
@@ -389,8 +403,13 @@ def main():
         log(f"Selected {len(dataset)} / {original_len} examples for smoke run")
     log(f"Training examples: {len(dataset)}")
 
+    supervise_stop_token = bool(config.get("supervise_stop_token", False))
+    log(f"supervise_stop_token: {supervise_stop_token}")
+
     def tokenize_with_completion_mask(example):
-        return build_chat_template_sft_features(tokenizer, example["messages"])
+        return build_chat_template_sft_features(
+            tokenizer, example["messages"], supervise_stop_token=supervise_stop_token
+        )
 
     log("Tokenizing chat templates with explicit assistant completion masks")
     dataset = dataset.map(

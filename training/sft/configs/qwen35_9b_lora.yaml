@@ -7,6 +7,11 @@ lora_alpha: 128
 lora_dropout: 0.05
 use_qlora: false
 
+# Supervise the trailing <|im_end|> so the model learns to STOP its turn. Without this,
+# the SFT'd 9B generates a coherent user turn then degenerates into non-terminating
+# repetition (verified). Attention+MLP-only LoRA alone did not fix it — this is the fix.
+supervise_stop_token: true
+
 num_epochs: 3
 batch_size: 1
 gradient_accumulation_steps: 16
