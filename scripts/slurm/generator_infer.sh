@@ -16,6 +16,7 @@
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache PYTHONUNBUFFERED=1
+export HF_HUB_OFFLINE=1  # all models cached/local; avoids the concurrent-rank hub-check race
 # BACKEND selects the inference path + env. vLLM (default) can't LoRA-serve Qwen3.5-9B's
 # Gated-DeltaNet adapter, so that generator uses BACKEND=hf (transformers+PEFT in the
 # transformers-5.x SFT env). See eval/generate_trained.py::generate_for_user_results_hf.

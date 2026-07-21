@@ -24,9 +24,11 @@ cd "$REPO"
 # comma-delimited and the JSON's internal comma would split/corrupt it.
 export PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'
 EXISTING_8BSFT_PAIRS=$REPO/results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet
-# qwen3.5-9B SFT LoRA adapter (trained via sft_variant.sh MODEL=qwen35-9b; the FSDP end-save
-# left only the tokenizer in final/, so the adapter weights were copied in from checkpoint-78).
-SFT9B_ADP=$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack/final
+# qwen3.5-9B SFT served as a MERGED full-multimodal checkpoint via vLLM (its correct GDN
+# kernels), NOT vLLM native-LoRA (crashes on the split-name DeltaNet adapter) and NOT the HF
+# torch-fallback path (slow). splice_sft_into_full.py merges the attention+MLP LoRA (trained
+# WITH supervised <|im_end|>) into the base and keeps the registered arch + vision weights.
+SFT9B_MERGED=$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack/merged_full
 
 # Judge cells (cell_name model_id tp replicas), incl. the 397B anchor.
 CELLS=$($PY -c "
@@ -111,13 +113,12 @@ CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$SWROOT \
   done <<< "$CELLS"
 }
 
-# ---- generators (4; qwen35-9b-sft now trained — see below) ----
-# qwen35-9b-sft: the adapter (SFT9B_ADP) was trained in a dedicated transformers-5.x env
-# (turing-rl-sft-qwen35). vLLM 0.18 can't LoRA-serve its Gated-DeltaNet adapter, so it
-# generates via BACKEND=hf (transformers+PEFT). The judge sweep for it is unchanged.
-run_generator qwen3-8b-base  Qwen/Qwen3-8B    ""            ""                       ""  vllm
-run_generator qwen35-9b-base Qwen/Qwen3.5-9B  ""            ""                       ""  vllm
-run_generator qwen3-8b-sft   Qwen/Qwen3-8B    ""            "$EXISTING_8BSFT_PAIRS"  ""  vllm
-run_generator qwen35-9b-sft  Qwen/Qwen3.5-9B  "$SFT9B_ADP"  ""                       ""  hf
+# ---- generators (4; qwen35-9b-sft served as a merged checkpoint) ----
+# qwen35-9b-sft: pass the MERGED model dir as MODEL_ID with CKPT="" (base mode) so vLLM serves
+# it like any base model (correct GDN kernels); no adapter/LoRA at serve time.
+run_generator qwen3-8b-base  Qwen/Qwen3-8B     ""  ""                       ""  vllm
+run_generator qwen35-9b-base Qwen/Qwen3.5-9B   ""  ""                       ""  vllm
+run_generator qwen3-8b-sft   Qwen/Qwen3-8B     ""  "$EXISTING_8BSFT_PAIRS"  ""  vllm
+run_generator qwen35-9b-sft  "$SFT9B_MERGED"   ""  ""                       ""  vllm
 
 echo "chain tail job: $PREV" >&2
