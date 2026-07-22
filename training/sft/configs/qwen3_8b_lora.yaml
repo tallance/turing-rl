@@ -7,6 +7,12 @@ lora_alpha: 128
 lora_dropout: 0.05
 use_qlora: false
 
+# Supervise the trailing <|im_end|> so the model learns to STOP its turn (the end-of-turn
+# token). Without it the SFT completion mask ends before <|im_end|>, so the model is never
+# trained to terminate — the shared masking bug that also affected the 9B. Not a Table-5
+# hyperparameter; a masking correctness fix.
+supervise_stop_token: true
+
 num_epochs: 3
 batch_size: 1
 gradient_accumulation_steps: 16
@@ -18,6 +24,6 @@ weight_decay: 0.01
 gradient_checkpointing: true
 logging_steps: 10
 report_to: none
-save_strategy: steps
-save_steps: 10
-save_total_limit: 2
+# One checkpoint per epoch, ALL retained (save_kwargs_from_config drops save_total_limit
+# when strategy=epoch). Yields checkpoint-26/52/78 = epochs 1/2/3 for the trajectory study.
+save_strategy: epoch

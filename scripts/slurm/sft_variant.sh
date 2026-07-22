@@ -89,6 +89,15 @@ if [ "$NOPACK" = "1" ]; then
   export WANDB_NAME="${WANDB_NAME}-nopack"
 fi
 
+# RUN_TAG (optional): a distinct suffix for the output dir + WANDB name so a re-run with a
+# changed recipe (e.g. save_strategy=epoch + stop-token supervision) does NOT resume/clobber a
+# prior run's dir under --resume_from_checkpoint auto. Default empty = original behavior.
+RUN_TAG=${RUN_TAG:-}
+if [ -n "$RUN_TAG" ]; then
+  OUT="${OUT}_${RUN_TAG}"
+  export WANDB_NAME="${WANDB_NAME}-${RUN_TAG}"
+fi
+
 # Build the arg list as an array so the quoted multi-word FSDP value survives intact.
 ARGS=(--model "$MODEL" --data_path "$DATA" --output_dir "$OUT" --max_seq_length 8192
       --resume_from_checkpoint auto --report_to wandb --no_torch_compile)

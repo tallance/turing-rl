@@ -37,6 +37,24 @@ for c in cell_list('qwen3.5'):
     print(c['cell_name'], c['model_id'], c['tp'], c['replicas'])
 ")
 
+# JUDGES (optional): space-separated judge cell names to run, IN THE GIVEN ORDER (a subset of
+# cell_list). Default empty = all cells in cell_list order. Used to restrict + order the sweep
+# (e.g. JUDGES="qwen35-4b qwen35-9b qwen35-27b" -> run 4B, then 9B, then 27B only).
+JUDGES=${JUDGES:-}
+if [ -n "$JUDGES" ]; then
+  FILTERED=""
+  for j in $JUDGES; do
+    line=$(printf '%s\n' "$CELLS" | awk -v j="$j" '$1==j {print; exit}')
+    [ -z "$line" ] && { echo "FATAL: judge '$j' not in cell_list('qwen3.5')" >&2; exit 1; }
+    FILTERED="${FILTERED}${line}
+"
+  done
+  CELLS="$FILTERED"
+fi
+
+# MODES (optional): space-separated thinking modes to run. Default "off on".
+MODES=${MODES:-off on}
+
 # Running tail of the chain (set by CALLERS after each submit). Optionally SEED it with an
 # existing job id via CHAIN_AFTER=<jid> so this launch queues BEHIND an already-running chain
 # (keeps a single node in use across separately-launched generators).
@@ -98,7 +116,7 @@ run_generator () {
   while read -r cell_name model_id tp replicas; do
     [ -z "$cell_name" ] && continue
     local gpus=$((tp * replicas))
-    for mode in off on; do
+    for mode in $MODES; do
       local dep=""; [ -n "$PREV" ] && dep="afterany:$PREV"
       if [ -n "$gate" ]; then dep="$gate"; gate=""; fi   # first sweep uses the build gate
       # PERSONA_JUDGE_SAMPLING is carried by --export=ALL (exported above) — NOT in the
@@ -120,5 +138,24 @@ run_generator qwen3-8b-base  Qwen/Qwen3-8B     ""  ""                       ""  
 run_generator qwen35-9b-base Qwen/Qwen3.5-9B   ""  ""                       ""  vllm
 run_generator qwen3-8b-sft   Qwen/Qwen3-8B     ""  "$EXISTING_8BSFT_PAIRS"  ""  vllm
 run_generator qwen35-9b-sft  "$SFT9B_MERGED"   ""  ""                       ""  vllm
+
+# ---- SFT checkpoint-trajectory generators (one per epoch; run with GEN_ONLY=<key>) ----
+# 8B is dense -> served via native vLLM LoRA straight from the epoch checkpoint dir (CKPT set).
+# 9B can't be vLLM-LoRA-served -> served as a per-epoch MERGED full checkpoint (base mode, CKPT="")
+# produced by scripts/splice_sft_into_full.py. TRAJ_TAG must match the SFT RUN_TAG (Stage 2).
+# Epoch->checkpoint is resolved by sorting checkpoint-* numerically (robust to the exact step
+# count); these dirs must exist at launch time (i.e. run this AFTER the SFT + splice stages).
+TRAJ_TAG=${TRAJ_TAG:-epochsave}
+CKPT8B=$REPO/checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_${TRAJ_TAG}
+MERGED9B=$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_${TRAJ_TAG}
+ckpt_by_epoch () {  # $1=base dir  $2=epoch index (1-based) -> the k-th checkpoint-N by step
+  ls -d "$1"/checkpoint-* 2>/dev/null | sort -t- -k2 -n | sed -n "${2}p"
+}
+run_generator qwen3-8b-sft-ep1  Qwen/Qwen3-8B  "$(ckpt_by_epoch "$CKPT8B" 1)"  ""  ""  vllm
+run_generator qwen3-8b-sft-ep2  Qwen/Qwen3-8B  "$(ckpt_by_epoch "$CKPT8B" 2)"  ""  ""  vllm
+run_generator qwen3-8b-sft-ep3  Qwen/Qwen3-8B  "$(ckpt_by_epoch "$CKPT8B" 3)"  ""  ""  vllm
+run_generator qwen35-9b-sft-ep1 "$MERGED9B/merged_ep1"  ""  ""  ""  vllm
+run_generator qwen35-9b-sft-ep2 "$MERGED9B/merged_ep2"  ""  ""  ""  vllm
+run_generator qwen35-9b-sft-ep3 "$MERGED9B/merged_ep3"  ""  ""  ""  vllm
 
 echo "chain tail job: $PREV" >&2
