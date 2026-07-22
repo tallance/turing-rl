@@ -584,7 +584,7 @@ def plot_differences_rating_accuracy(
                 ax.set_ylim(-0.4, 0.2)
             else:
                 ax.axhline(0.5, color="gray", linestyle="--", linewidth=1)
-                ax.set_ylim(0.0, 1.0)
+                ax.set_ylim(0.2, 0.8)
             ax.set_xticks([0, 1, 2, 3])
             ax.grid(alpha=0.25)
             ax.set_title(f"{model_title}: {DIFFERENCE_METRICS[metric]}", fontsize=9)
