@@ -37,6 +37,13 @@ SCORE_FIELDS = {
     "human_goal_score",
     "communication_style_score",
 }
+COMBINED_METRICS = {
+    "immediate_target_score": "context targeting score",
+    "human_goal_score": "goal plausibility score",
+    "communication_style_score": "communication style score",
+    "normalized_generated_rating": "normalized effective rating (higher = generated preferred)",
+    "accuracy": "accuracy (judge picks human)",
+}
 MODELS = [
     ("qwen35-9b", "qwen3.5-9B"),
     ("qwen3-8b", "qwen3-8B"),
@@ -104,6 +111,19 @@ def raw_generated_field(row: dict[str, Any], field: str) -> float | None:
     return value if 0.0 <= value <= 1.0 else None
 
 
+def effective_oriented_rating(row: dict[str, Any]) -> float | None:
+    """Return the pipeline's effective rating, generated-oriented and normalized to 0-1."""
+    rating = row.get("rating_gt_first")
+    if rating is None:
+        rating = row.get("rating_gen_first")
+    if isinstance(rating, bool) or not isinstance(rating, (int, float)):
+        return None
+    if float(rating) != int(rating) or not 1 <= int(rating) <= 7:
+        return None
+    generated_rating = int(rating) if bool(row.get("generated_is_b")) else 8 - int(rating)
+    return (generated_rating - 1) / 6.0
+
+
 def read_cell_frame(mode_dir: Path) -> pd.DataFrame:
     """Read one generator/judge/mode cell into one row per pair and raw primitive field."""
     records: list[dict[str, Any]] = []
@@ -120,9 +140,17 @@ def read_cell_frame(mode_dir: Path) -> pd.DataFrame:
             record: dict[str, Any] = {"pair_id": _pair_id(row)}
             for field in RAW_FIELDS:
                 record[field] = raw_generated_field(row, field)
+            normalized_rating = effective_oriented_rating(row)
+            record["normalized_generated_rating"] = normalized_rating
+            if normalized_rating is None or normalized_rating == 0.5:
+                record["picked_human"] = None
+            else:
+                record["picked_human"] = float(normalized_rating < 0.5)
             records.append(record)
     if not records:
-        return pd.DataFrame(columns=["pair_id", *RAW_FIELDS])
+        return pd.DataFrame(
+            columns=["pair_id", *RAW_FIELDS, "normalized_generated_rating", "picked_human"]
+        )
     # Targeted reruns may append a newer result for a pair. The last sorted dump wins.
     return pd.DataFrame(records).drop_duplicates("pair_id", keep="last").reset_index(drop=True)
 
@@ -175,6 +203,13 @@ def summarize_trajectories(
 
 
 def collect_summary(raw_root: Path, *, mode: str, judges: list[str]) -> pd.DataFrame:
+    cells = collect_cells(raw_root, mode=mode, judges=judges)
+    return summarize_trajectories(cells, judges=judges)
+
+
+def collect_cells(
+    raw_root: Path, *, mode: str, judges: list[str]
+) -> dict[tuple[str, int, str], pd.DataFrame]:
     cells: dict[tuple[str, int, str], pd.DataFrame] = {}
     for model_key, epochs in GENERATORS.items():
         for epoch, generator in epochs.items():
@@ -182,7 +217,46 @@ def collect_summary(raw_root: Path, *, mode: str, judges: list[str]) -> pd.DataF
                 mode_dir = raw_root / generator / "sweep" / judge / mode
                 if mode_dir.is_dir():
                     cells[(model_key, epoch, judge)] = read_cell_frame(mode_dir)
-    return summarize_trajectories(cells, judges=judges)
+    return cells
+
+
+def summarize_combined_metrics(
+    cells: dict[tuple[str, int, str], pd.DataFrame], *, judges: list[str]
+) -> pd.DataFrame:
+    """Summarize available-case scores, raw normalized ratings, and human-pick accuracy."""
+    records: list[dict[str, Any]] = []
+    source_columns = {
+        "immediate_target_score": "immediate_target_score",
+        "human_goal_score": "human_goal_score",
+        "communication_style_score": "communication_style_score",
+        "normalized_generated_rating": "normalized_generated_rating",
+        "accuracy": "picked_human",
+    }
+    for model_key, _ in MODELS:
+        for epoch, generator in GENERATORS[model_key].items():
+            for judge in judges:
+                frame = cells.get((model_key, epoch, judge))
+                if frame is None or frame.empty:
+                    continue
+                for metric, column in source_columns.items():
+                    values = frame[column].dropna().astype(float)
+                    records.append(
+                        {
+                            "model_key": model_key,
+                            "epoch": epoch,
+                            "generator": generator,
+                            "judge": judge,
+                            "metric": metric,
+                            "n": len(values),
+                            "mean": float(values.mean()) if len(values) else float("nan"),
+                            "std": (
+                                float(values.std(ddof=1))
+                                if metric != "accuracy" and len(values) > 1
+                                else float("nan")
+                            ),
+                        }
+                    )
+    return pd.DataFrame(records)
 
 
 def _dynamic_upper(values: pd.Series, *, floor: float) -> float:
@@ -352,6 +426,66 @@ def plot_overview(
     plt.close(fig)
 
 
+def plot_scores_rating_accuracy(
+    summary: pd.DataFrame, *, mode: str, judges: list[str], out_path: Path
+) -> None:
+    """Plot the three scores, oriented normalized rating, and human-pick accuracy."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    metrics = list(COMBINED_METRICS)
+    fig, axes = plt.subplots(
+        len(metrics), len(MODELS), figsize=(6.4 * len(MODELS), 2.9 * len(metrics)), squeeze=False
+    )
+    for row, metric in enumerate(metrics):
+        metric_df = summary[summary["metric"] == metric]
+        for col, (model_key, model_title) in enumerate(MODELS):
+            ax = axes[row, col]
+            model_df = metric_df[metric_df["model_key"] == model_key]
+            for judge in judges:
+                judge_df = model_df[model_df["judge"] == judge].sort_values("epoch")
+                if judge_df.empty:
+                    continue
+                x = judge_df["epoch"].to_numpy(dtype=float)
+                mean = judge_df["mean"].to_numpy(dtype=float)
+                color = JUDGE_COLORS.get(judge)
+                ax.plot(x, mean, marker="o", color=color, label=judge)
+                if metric != "accuracy":
+                    std = judge_df["std"].fillna(0.0).to_numpy(dtype=float)
+                    ax.fill_between(
+                        x,
+                        (mean - std).clip(0.0, 1.0),
+                        (mean + std).clip(0.0, 1.0),
+                        color=color,
+                        alpha=0.12,
+                        linewidth=0,
+                    )
+            if metric == "normalized_generated_rating":
+                ax.axhline(0.5, color="gray", linestyle="--", linewidth=1)
+            elif metric == "accuracy":
+                ax.axhline(0.5, color="gray", linestyle="--", linewidth=1)
+            ax.set_ylim(0.0, 1.0)
+            ax.set_xticks([0, 1, 2, 3])
+            ax.grid(alpha=0.25)
+            ax.set_title(f"{model_title}: {COMBINED_METRICS[metric]}", fontsize=9)
+            if row == len(metrics) - 1:
+                ax.set_xlabel("SFT epoch (0 = base)")
+            if col == 0:
+                ax.set_ylabel("mean" if metric != "accuracy" else "fraction", fontsize=8)
+            if row == 0:
+                ax.legend(title="judge", fontsize=7)
+    fig.suptitle(
+        f"Scores, normalized generated rating, and accuracy — thinking {mode}\n"
+        "Shading = ±1 SD for scores/rating; accuracy excludes ties",
+        fontsize=14,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     repo = Path(__file__).resolve().parents[1]
     ap = argparse.ArgumentParser()
@@ -367,7 +501,8 @@ def main() -> None:
     ap.add_argument("--judges", nargs="+", default=DEFAULT_JUDGES)
     args = ap.parse_args()
 
-    summary = collect_summary(args.raw_root, mode=args.mode, judges=args.judges)
+    cells = collect_cells(args.raw_root, mode=args.mode, judges=args.judges)
+    summary = summarize_trajectories(cells, judges=args.judges)
     if summary.empty:
         raise SystemExit(f"no rubric cells found under {args.raw_root}")
 
@@ -376,6 +511,11 @@ def main() -> None:
     plots_dir.mkdir(parents=True, exist_ok=True)
     csv_path = args.out_dir / f"rubric_trajectory_{args.mode}.csv"
     summary.sort_values(["field", "model_key", "judge", "epoch"]).to_csv(csv_path, index=False)
+    combined = summarize_combined_metrics(cells, judges=args.judges)
+    combined_csv_path = args.out_dir / f"scores_rating_accuracy_trajectory_{args.mode}.csv"
+    combined.sort_values(["metric", "model_key", "judge", "epoch"]).to_csv(
+        combined_csv_path, index=False
+    )
 
     for field, label in RAW_FIELDS.items():
         out_path = plots_dir / f"traj_raw_{field}_{args.mode}.png"
@@ -409,7 +549,14 @@ def main() -> None:
         judges=args.judges,
         out_path=plots_dir / f"traj_raw_rubric_field_error_{args.mode}.png",
     )
-    print(f"[rubric-traj] wrote {csv_path} + {len(RAW_FIELDS) + 3} plots", flush=True)
+    combined_plot = plots_dir / f"traj_scores_rating_accuracy_{args.mode}.png"
+    plot_scores_rating_accuracy(
+        combined, mode=args.mode, judges=args.judges, out_path=combined_plot
+    )
+    print(
+        f"[rubric-traj] wrote {csv_path}, {combined_csv_path} + {len(RAW_FIELDS) + 4} plots",
+        flush=True,
+    )
 
 
 if __name__ == "__main__":
