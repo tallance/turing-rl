@@ -246,7 +246,7 @@ def plot_field(
                 label=judge,
             )
 
-        mean_ax.set_title(f"{model_title}: paired raw mean")
+        mean_ax.set_title(f"{model_title}: raw mean (paired solid, unpaired dashed)")
         mean_ax.set_ylim(0.0, mean_upper)
         error_ax.set_title(f"{model_title}: raw-field error fraction")
         error_ax.set_ylim(0.0, error_upper)
@@ -273,7 +273,7 @@ def plot_field(
     axes[1, 0].set_ylabel("missing or invalid field / all calls")
     fig.suptitle(
         f"Raw judge field: {field} — thinking {mode}\n"
-        "Means use pair IDs valid at all epochs; errors are field-specific",
+        "Solid = pair IDs valid at all epochs; dashed = available cases; errors are field-specific",
         fontsize=13,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
@@ -302,7 +302,7 @@ def plot_overview(
     for row, field in enumerate(fields):
         field_df = summary[summary["field"] == field]
         upper = 1.0
-        if metric == "paired_mean" and field not in SCORE_FIELDS:
+        if metric in {"paired_mean", "available_mean"} and field not in SCORE_FIELDS:
             upper = _dynamic_upper(field_df[metric], floor=0.1)
         elif metric == "field_error_fraction":
             upper = _dynamic_upper(field_df[metric], floor=0.1)
