@@ -69,5 +69,6 @@ def test_summary_reports_field_errors_and_uses_common_pair_support_across_epochs
     assert score["n_calls"].tolist() == [3, 3, 3, 3]
     assert score["n_valid"].tolist() == [3, 3, 2, 3]
     assert score["field_error_fraction"].tolist() == pytest.approx([0.0, 0.0, 1 / 3, 0.0])
+    assert score["available_mean"].tolist() == pytest.approx([0.5, 1.6 / 3, 0.4, 0.6])
     assert score["paired_n"].tolist() == [2, 2, 2, 2]
     assert score["paired_mean"].tolist() == pytest.approx([0.3, 0.35, 0.4, 0.45])

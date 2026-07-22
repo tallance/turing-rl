@@ -204,6 +204,7 @@ def plot_field(
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
     field_df = summary[summary["field"] == field]
     fig, axes = plt.subplots(2, len(MODELS), figsize=(6.4 * len(MODELS), 8.0), squeeze=False)
@@ -228,6 +229,15 @@ def plot_field(
                 color=color,
                 label=f"{judge} (paired n={paired_n})",
             )
+            mean_ax.plot(
+                judge_df["epoch"],
+                judge_df["available_mean"],
+                marker="x",
+                linestyle="--",
+                linewidth=1.2,
+                color=color,
+                label="_nolegend_",
+            )
             error_ax.plot(
                 judge_df["epoch"],
                 judge_df["field_error_fraction"],
@@ -244,7 +254,21 @@ def plot_field(
             ax.set_xticks([0, 1, 2, 3])
             ax.set_xlabel("SFT epoch (0 = base)")
             ax.grid(alpha=0.25)
-            ax.legend(title="judge", fontsize=7)
+        judge_legend = mean_ax.legend(title="judge", fontsize=7, loc="best")
+        mean_ax.add_artist(judge_legend)
+        mean_ax.legend(
+            handles=[
+                Line2D([0], [0], color="black", marker="o", label="paired common support"),
+                Line2D(
+                    [0], [0], color="black", marker="x", linestyle="--",
+                    label="unpaired available cases",
+                ),
+            ],
+            title="support",
+            fontsize=7,
+            loc="lower right",
+        )
+        error_ax.legend(title="judge", fontsize=7)
     axes[0, 0].set_ylabel(label)
     axes[1, 0].set_ylabel("missing or invalid field / all calls")
     fig.suptitle(
@@ -352,13 +376,21 @@ def main() -> None:
     )
     plot_overview(
         summary,
+        metric="available_mean",
+        ylabel="unpaired available-case mean",
+        mode=args.mode,
+        judges=args.judges,
+        out_path=plots_dir / f"traj_raw_rubric_available_overview_{args.mode}.png",
+    )
+    plot_overview(
+        summary,
         metric="field_error_fraction",
         ylabel="field error fraction",
         mode=args.mode,
         judges=args.judges,
         out_path=plots_dir / f"traj_raw_rubric_field_error_{args.mode}.png",
     )
-    print(f"[rubric-traj] wrote {csv_path} + {len(RAW_FIELDS) + 2} plots", flush=True)
+    print(f"[rubric-traj] wrote {csv_path} + {len(RAW_FIELDS) + 3} plots", flush=True)
 
 
 if __name__ == "__main__":
