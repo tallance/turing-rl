@@ -579,17 +579,9 @@ def plot_differences_rating_accuracy(
                 mean = judge_df["mean"].to_numpy(dtype=float)
                 color = JUDGE_COLORS.get(judge)
                 ax.plot(x, mean, marker="o", color=color, label=judge)
-                if metric != "accuracy":
-                    std = judge_df["std"].fillna(0.0).to_numpy(dtype=float)
-                    lower, upper = mean - std, mean + std
-                    if metric == "normalized_generated_rating":
-                        lower, upper = lower.clip(0.0, 1.0), upper.clip(0.0, 1.0)
-                    else:
-                        lower, upper = lower.clip(-1.0, 1.0), upper.clip(-1.0, 1.0)
-                    ax.fill_between(x, lower, upper, color=color, alpha=0.12, linewidth=0)
             if metric.endswith("_diff"):
                 ax.axhline(0.0, color="gray", linestyle="--", linewidth=1)
-                ax.set_ylim(-1.0, 1.0)
+                ax.set_ylim(-0.4, 0.2)
             else:
                 ax.axhline(0.5, color="gray", linestyle="--", linewidth=1)
                 ax.set_ylim(0.0, 1.0)
@@ -604,7 +596,7 @@ def plot_differences_rating_accuracy(
                 ax.legend(title="judge", fontsize=7)
     fig.suptitle(
         f"Generated-vs-human score differences, normalized rating, and accuracy — thinking {mode}\n"
-        "Shading = ±1 SD for score differences/rating; accuracy excludes ties",
+        "Accuracy excludes ties",
         fontsize=14,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.96))
