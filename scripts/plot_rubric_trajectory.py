@@ -44,6 +44,13 @@ COMBINED_METRICS = {
     "normalized_generated_rating": "normalized effective rating (higher = generated preferred)",
     "accuracy": "accuracy (judge picks human)",
 }
+DIFFERENCE_METRICS = {
+    "immediate_target_score_diff": "context targeting difference (generated - human)",
+    "human_goal_score_diff": "goal plausibility difference (generated - human)",
+    "communication_style_score_diff": "communication style difference (generated - human)",
+    "normalized_generated_rating": "normalized effective rating (higher = generated preferred)",
+    "accuracy": "accuracy (judge picks human)",
+}
 MODELS = [
     ("qwen35-9b", "qwen3.5-9B"),
     ("qwen3-8b", "qwen3-8B"),
@@ -111,6 +118,25 @@ def raw_generated_field(row: dict[str, Any], field: str) -> float | None:
     return value if 0.0 <= value <= 1.0 else None
 
 
+def raw_field_difference(row: dict[str, Any], field: str) -> float | None:
+    """Return generated minus human for a valid raw side-specific primitive field."""
+    parsed = parse_json_object(row.get("judge_raw_content"))
+    if parsed is None:
+        return None
+    generated_side = "b" if bool(row.get("generated_is_b")) else "a"
+    human_side = "a" if generated_side == "b" else "b"
+    values = []
+    for side in (generated_side, human_side):
+        value = parsed.get(f"{field}_{side}")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        value = float(value)
+        if not 0.0 <= value <= 1.0:
+            return None
+        values.append(value)
+    return values[0] - values[1]
+
+
 def effective_oriented_rating(row: dict[str, Any]) -> float | None:
     """Return the pipeline's effective rating, generated-oriented and normalized to 0-1."""
     rating = row.get("rating_gt_first")
@@ -140,6 +166,8 @@ def read_cell_frame(mode_dir: Path) -> pd.DataFrame:
             record: dict[str, Any] = {"pair_id": _pair_id(row)}
             for field in RAW_FIELDS:
                 record[field] = raw_generated_field(row, field)
+            for field in SCORE_FIELDS:
+                record[f"{field}_diff"] = raw_field_difference(row, field)
             normalized_rating = effective_oriented_rating(row)
             record["normalized_generated_rating"] = normalized_rating
             if normalized_rating is None or normalized_rating == 0.5:
@@ -232,6 +260,45 @@ def summarize_combined_metrics(
         "normalized_generated_rating": "normalized_generated_rating",
         "accuracy": "picked_human",
     }
+    for model_key, _ in MODELS:
+        for epoch, generator in GENERATORS[model_key].items():
+            for judge in judges:
+                frame = cells.get((model_key, epoch, judge))
+                if frame is None or frame.empty:
+                    continue
+                for metric, column in source_columns.items():
+                    values = frame[column].dropna().astype(float)
+                    records.append(
+                        {
+                            "model_key": model_key,
+                            "epoch": epoch,
+                            "generator": generator,
+                            "judge": judge,
+                            "metric": metric,
+                            "n": len(values),
+                            "mean": float(values.mean()) if len(values) else float("nan"),
+                            "std": (
+                                float(values.std(ddof=1))
+                                if metric != "accuracy" and len(values) > 1
+                                else float("nan")
+                            ),
+                        }
+                    )
+    return pd.DataFrame(records)
+
+
+def summarize_difference_metrics(
+    cells: dict[tuple[str, int, str], pd.DataFrame], *, judges: list[str]
+) -> pd.DataFrame:
+    """Summarize raw score differences plus effective rating and accuracy."""
+    source_columns = {
+        "immediate_target_score_diff": "immediate_target_score_diff",
+        "human_goal_score_diff": "human_goal_score_diff",
+        "communication_style_score_diff": "communication_style_score_diff",
+        "normalized_generated_rating": "normalized_generated_rating",
+        "accuracy": "picked_human",
+    }
+    records: list[dict[str, Any]] = []
     for model_key, _ in MODELS:
         for epoch, generator in GENERATORS[model_key].items():
             for judge in judges:
@@ -486,6 +553,65 @@ def plot_scores_rating_accuracy(
     plt.close(fig)
 
 
+def plot_differences_rating_accuracy(
+    summary: pd.DataFrame, *, mode: str, judges: list[str], out_path: Path
+) -> None:
+    """Plot generated-minus-human raw score differences, rating, and accuracy."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    metrics = list(DIFFERENCE_METRICS)
+    fig, axes = plt.subplots(
+        len(metrics), len(MODELS), figsize=(6.4 * len(MODELS), 2.9 * len(metrics)), squeeze=False
+    )
+    for row, metric in enumerate(metrics):
+        metric_df = summary[summary["metric"] == metric]
+        for col, (model_key, model_title) in enumerate(MODELS):
+            ax = axes[row, col]
+            model_df = metric_df[metric_df["model_key"] == model_key]
+            for judge in judges:
+                judge_df = model_df[model_df["judge"] == judge].sort_values("epoch")
+                if judge_df.empty:
+                    continue
+                x = judge_df["epoch"].to_numpy(dtype=float)
+                mean = judge_df["mean"].to_numpy(dtype=float)
+                color = JUDGE_COLORS.get(judge)
+                ax.plot(x, mean, marker="o", color=color, label=judge)
+                if metric != "accuracy":
+                    std = judge_df["std"].fillna(0.0).to_numpy(dtype=float)
+                    lower, upper = mean - std, mean + std
+                    if metric == "normalized_generated_rating":
+                        lower, upper = lower.clip(0.0, 1.0), upper.clip(0.0, 1.0)
+                    else:
+                        lower, upper = lower.clip(-1.0, 1.0), upper.clip(-1.0, 1.0)
+                    ax.fill_between(x, lower, upper, color=color, alpha=0.12, linewidth=0)
+            if metric.endswith("_diff"):
+                ax.axhline(0.0, color="gray", linestyle="--", linewidth=1)
+                ax.set_ylim(-1.0, 1.0)
+            else:
+                ax.axhline(0.5, color="gray", linestyle="--", linewidth=1)
+                ax.set_ylim(0.0, 1.0)
+            ax.set_xticks([0, 1, 2, 3])
+            ax.grid(alpha=0.25)
+            ax.set_title(f"{model_title}: {DIFFERENCE_METRICS[metric]}", fontsize=9)
+            if row == len(metrics) - 1:
+                ax.set_xlabel("SFT epoch (0 = base)")
+            if col == 0:
+                ax.set_ylabel("mean difference" if metric.endswith("_diff") else "mean", fontsize=8)
+            if row == 0:
+                ax.legend(title="judge", fontsize=7)
+    fig.suptitle(
+        f"Generated-vs-human score differences, normalized rating, and accuracy — thinking {mode}\n"
+        "Shading = ±1 SD for score differences/rating; accuracy excludes ties",
+        fontsize=14,
+    )
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+
+
 def main() -> None:
     repo = Path(__file__).resolve().parents[1]
     ap = argparse.ArgumentParser()
@@ -515,6 +641,11 @@ def main() -> None:
     combined_csv_path = args.out_dir / f"scores_rating_accuracy_trajectory_{args.mode}.csv"
     combined.sort_values(["metric", "model_key", "judge", "epoch"]).to_csv(
         combined_csv_path, index=False
+    )
+    differences = summarize_difference_metrics(cells, judges=args.judges)
+    differences_csv_path = args.out_dir / f"score_differences_rating_accuracy_{args.mode}.csv"
+    differences.sort_values(["metric", "model_key", "judge", "epoch"]).to_csv(
+        differences_csv_path, index=False
     )
 
     for field, label in RAW_FIELDS.items():
@@ -553,8 +684,13 @@ def main() -> None:
     plot_scores_rating_accuracy(
         combined, mode=args.mode, judges=args.judges, out_path=combined_plot
     )
+    differences_plot = plots_dir / f"traj_score_differences_rating_accuracy_{args.mode}.png"
+    plot_differences_rating_accuracy(
+        differences, mode=args.mode, judges=args.judges, out_path=differences_plot
+    )
     print(
-        f"[rubric-traj] wrote {csv_path}, {combined_csv_path} + {len(RAW_FIELDS) + 4} plots",
+        f"[rubric-traj] wrote {csv_path}, {combined_csv_path}, {differences_csv_path} "
+        f"+ {len(RAW_FIELDS) + 5} plots",
         flush=True,
     )
 

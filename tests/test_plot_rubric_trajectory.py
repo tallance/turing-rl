@@ -8,8 +8,10 @@ from scripts.plot_rubric_trajectory import (
     common_score_ylim,
     parse_json_object,
     raw_generated_field,
+    raw_field_difference,
     effective_oriented_rating,
     summarize_combined_metrics,
+    summarize_difference_metrics,
     summarize_trajectories,
 )
 
@@ -43,6 +45,16 @@ def test_raw_generated_field_rejects_invalid_values_and_parser_accepts_wrapped_j
             "judge_raw_content": _raw(immediate_target_score_a=value),
         }
         assert raw_generated_field(row, "immediate_target_score") is None
+
+
+def test_raw_field_difference_orients_generated_minus_human():
+    raw = _raw(immediate_target_score_a=0.8, immediate_target_score_b=0.3)
+    assert raw_field_difference(
+        {"generated_is_b": False, "judge_raw_content": raw}, "immediate_target_score"
+    ) == pytest.approx(0.5)
+    assert raw_field_difference(
+        {"generated_is_b": True, "judge_raw_content": raw}, "immediate_target_score"
+    ) == pytest.approx(-0.5)
 
 
 def test_effective_oriented_rating_normalizes_toward_generated_candidate():
@@ -123,3 +135,26 @@ def test_combined_summary_adds_std_for_scores_and_rating_but_not_accuracy():
     assert by_metric.loc["accuracy", "mean"] == pytest.approx(0.5)
     assert by_metric.loc["accuracy", "n"] == 2
     assert pd.isna(by_metric.loc["accuracy", "std"])
+
+
+def test_difference_summary_uses_raw_differences_and_preserves_rating_accuracy():
+    frame = pd.DataFrame(
+        {
+            "pair_id": ["a", "b"],
+            "immediate_target_score_diff": [-0.2, 0.4],
+            "human_goal_score_diff": [-0.1, 0.3],
+            "communication_style_score_diff": [0.0, 0.2],
+            "normalized_generated_rating": [0.0, 1.0],
+            "picked_human": [1.0, 0.0],
+        }
+    )
+    summary = summarize_difference_metrics(
+        {("qwen35-9b", 0, "judge"): frame}, judges=["judge"]
+    ).set_index("metric")
+
+    assert summary.loc["immediate_target_score_diff", "mean"] == pytest.approx(0.1)
+    assert summary.loc["immediate_target_score_diff", "std"] == pytest.approx(
+        0.3 * 2**0.5
+    )
+    assert summary.loc["normalized_generated_rating", "mean"] == pytest.approx(0.5)
+    assert summary.loc["accuracy", "mean"] == pytest.approx(0.5)
