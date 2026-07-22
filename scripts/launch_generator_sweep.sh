@@ -94,6 +94,14 @@ run_generator () {
   if [ -n "$GEN_ONLY" ] && [ "$GEN_ONLY" != "$gk" ]; then
     echo "skip $gk (GEN_ONLY=$GEN_ONLY)" >&2; return 0
   fi
+  # REUSE_PAIRS=1: if this generator's pairs already exist, reuse them (skip gen+build) and just
+  # run the requested judge cells. Lets us ADD a judge (e.g. JUDGES=qwen35-397b) to an already-run
+  # generator without re-generating. Only kicks in when no explicit pairs_override was passed.
+  if [ -z "$pairs_override" ] && [ "${REUSE_PAIRS:-0}" = "1" ]; then
+    local cand=$REPO/results/2026-07-15-generator-sweep/raw/pairs/gen_${gk}_880.parquet
+    if [ -f "$cand" ]; then pairs_override="$cand"; echo "REUSE_PAIRS: $gk -> $cand" >&2;
+    else echo "FATAL: REUSE_PAIRS=1 but no pairs for $gk ($cand)" >&2; exit 1; fi
+  fi
   local pairs gate=""
   if [ -n "$pairs_override" ]; then
     pairs="$pairs_override"                       # reuse existing pairs, no gen/build

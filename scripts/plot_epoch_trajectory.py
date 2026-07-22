@@ -33,8 +33,9 @@ METRICS = [
 ]
 # (model key in generator string, subplot title). Order = subplot order (left to right).
 MODELS = [("qwen35-9b", "qwen3.5-9B"), ("qwen3-8b", "qwen3-8B")]
-DEFAULT_JUDGES = ["qwen35-4b", "qwen35-9b", "qwen35-27b"]
-JUDGE_COLORS = {"qwen35-4b": "tab:blue", "qwen35-9b": "tab:orange", "qwen35-27b": "tab:green"}
+DEFAULT_JUDGES = ["qwen35-4b", "qwen35-9b", "qwen35-27b", "qwen35-397b"]
+JUDGE_COLORS = {"qwen35-4b": "tab:blue", "qwen35-9b": "tab:orange",
+                "qwen35-27b": "tab:green", "qwen35-397b": "tab:red"}
 
 
 def parse_model_epoch(gen: str) -> tuple[str | None, int | None]:
