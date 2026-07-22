@@ -5,6 +5,7 @@ import pytest
 
 from scripts.plot_rubric_trajectory import (
     RAW_FIELDS,
+    common_score_ylim,
     parse_json_object,
     raw_generated_field,
     summarize_trajectories,
@@ -72,3 +73,19 @@ def test_summary_reports_field_errors_and_uses_common_pair_support_across_epochs
     assert score["available_mean"].tolist() == pytest.approx([0.5, 1.6 / 3, 0.4, 0.6])
     assert score["paired_n"].tolist() == [2, 2, 2, 2]
     assert score["paired_mean"].tolist() == pytest.approx([0.3, 0.35, 0.4, 0.45])
+
+
+def test_common_score_ylim_spans_all_scores_and_rounds_outward():
+    summary = pd.DataFrame(
+        {
+            "field": [
+                "immediate_target_score",
+                "human_goal_score",
+                "communication_style_score",
+                "assistant_like_penalty",
+            ],
+            "available_mean": [0.82, 0.71, 0.45, 0.01],
+        }
+    )
+
+    assert common_score_ylim(summary, "available_mean") == pytest.approx((0.4, 0.9))

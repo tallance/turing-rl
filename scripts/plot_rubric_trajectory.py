@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -191,6 +192,19 @@ def _dynamic_upper(values: pd.Series, *, floor: float) -> float:
     return min(1.0, max(floor, float(finite.max()) * 1.2))
 
 
+def common_score_ylim(summary: pd.DataFrame, metric: str) -> tuple[float, float]:
+    """Return one tight, outward-rounded y-range spanning all three score fields."""
+    values = summary.loc[summary["field"].isin(SCORE_FIELDS), metric].dropna()
+    if values.empty:
+        return 0.0, 1.0
+    low, high = float(values.min()), float(values.max())
+    padding = max((high - low) * 0.1, 0.025)
+    step = 0.05
+    lower = max(0.0, math.floor((low - padding) / step) * step)
+    upper = min(1.0, math.ceil((high + padding) / step) * step)
+    return lower, upper
+
+
 def plot_field(
     summary: pd.DataFrame,
     *,
@@ -296,6 +310,11 @@ def plot_overview(
     import matplotlib.pyplot as plt
 
     fields = list(RAW_FIELDS)
+    score_ylim = (
+        common_score_ylim(summary, metric)
+        if metric in {"paired_mean", "available_mean"}
+        else None
+    )
     fig, axes = plt.subplots(
         len(fields), len(MODELS), figsize=(6.2 * len(MODELS), 2.7 * len(fields)), squeeze=False
     )
@@ -317,7 +336,7 @@ def plot_overview(
                     judge_df["epoch"], judge_df[metric], marker="o",
                     color=JUDGE_COLORS.get(judge), label=judge,
                 )
-            ax.set_ylim(0.0, upper)
+            ax.set_ylim(*(score_ylim if field in SCORE_FIELDS and score_ylim else (0.0, upper)))
             ax.set_xticks([0, 1, 2, 3])
             ax.grid(alpha=0.25)
             ax.set_title(f"{model_title}: {RAW_FIELDS[field]}", fontsize=9)
