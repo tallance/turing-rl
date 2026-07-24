@@ -103,9 +103,10 @@ frac-4-ties vs the SFT baseline. Tracked as a post-plan continuation once the ov
 
 ## 4. Arm B — Qwen3.5-9B generator (new stack, spike-gated)
 
-The 9B was previously only a **frozen judge** (served statically via a one-time LoRA→full splice).
-As a GRPO-trained **generator** it needs vLLM to serve an *updating* Gated-DeltaNet policy in the
-rollout loop. Feasibility (per the veRL/vLLM community investigation, 2026-07-24) is **works with
+Every prior 9B use in vLLM served **fixed weights** — both the frozen judge *and* the SFT-generator
+eval were one-time LoRA→full splices, then static inference. GRPO is different: vLLM must serve an
+**updating** Gated-DeltaNet policy in the rollout loop, weights changing every step (splice-once
+can't help; you'd re-splice each step). That in-the-loop weight sync is the unsolved part. Feasibility (per the veRL/vLLM community investigation, 2026-07-24) is **works with
 caveats**:
 
 - The official Qwen3.5-9B checkpoint declares `Qwen3_5ForConditionalGeneration`, which **vLLM does
