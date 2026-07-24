@@ -228,8 +228,9 @@ git commit -m "feat: proper (stop-token) checkpoint-78 path constants, distinct 
 
 ### Task 3: Arm-A grid submit script
 
-A thin, idempotent submitter that loops `ARM_A_CELLS`, pointing every run at the proper merged
-checkpoint. No new training logic — just the correct env for `rl_generator_run.sh`.
+A thin submitter that loops `ARM_A_CELLS`, pointing every run at the proper merged checkpoint. No new
+training logic — just the correct env for `rl_generator_run.sh`. (Not idempotent: re-running
+re-submits; check `squeue`/existing run dirs before re-invoking.)
 
 **Files:**
 - Create: `scripts/slurm/submit_arm_a_grid.sh`
@@ -300,7 +301,7 @@ done
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_submit_arm_a_grid.py -q`
-Expected: PASS (2 passed).
+Expected: PASS (3 passed).
 
 - [ ] **Step 5: Commit**
 
@@ -341,30 +342,34 @@ only checks **files + metadata** — it does NOT prove numerical parity. Numeric
 
 `validate_merged_artifact` is structural only; assert numerical equivalence on a fixed input so the
 merged backbone truly equals `base+adapter` (the KL reference the GRPO run recovers by disabling the
-fresh LoRA). Run on the cluster (one GPU):
+fresh LoRA). **Compare the LIVE, UNMERGED PeftModel** (`base+adapter`, no `merge_and_unload`) against
+the serialized merged model — merging in-memory first would compare merged-vs-merged and prove
+nothing. **Run inside a Slurm GPU allocation** (`.cuda()` on the login node is forbidden):
 
 ```bash
-ssh -p 2223 … lancewicki@localhost 'cd /home/lancewicki/projects/turing-rl && HF_HUB_OFFLINE=1 /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python - <<PY
+ssh -p 2223 … lancewicki@localhost 'cd /home/lancewicki/projects/turing-rl && srun --partition=a100 --account=rfai --gres=gpu:1 --time=00:20:00 \
+  bash -lc "HF_HUB_OFFLINE=1 /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python - <<PY
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from peft import PeftModel
-B="Qwen/Qwen3-8B"
-A="checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/checkpoint-78"
-M="checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3"
+B=\"Qwen/Qwen3-8B\"
+A=\"checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/checkpoint-78\"
+M=\"checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3\"
 tok=AutoTokenizer.from_pretrained(M)
-ids=tok("The quick brown fox jumps over", return_tensors="pt").input_ids
-base=AutoModelForCausalLM.from_pretrained(B, torch_dtype=torch.bfloat16, device_map="cuda")
-ref=PeftModel.from_pretrained(base, A).merge_and_unload()
-with torch.no_grad(): lo_ref=ref(ids.cuda()).logits.float()
+ids=tok(\"The quick brown fox jumps over\", return_tensors=\"pt\").input_ids.cuda()
+base=AutoModelForCausalLM.from_pretrained(B, torch_dtype=torch.bfloat16, device_map=\"cuda\")
+ref=PeftModel.from_pretrained(base, A).eval()          # LIVE base+adapter, NOT merged
+with torch.no_grad(): lo_ref=ref(ids).logits.float()
 del base, ref; torch.cuda.empty_cache()
-mer=AutoModelForCausalLM.from_pretrained(M, torch_dtype=torch.bfloat16, device_map="cuda")
-with torch.no_grad(): lo_mer=mer(ids.cuda()).logits.float()
+mer=AutoModelForCausalLM.from_pretrained(M, torch_dtype=torch.bfloat16, device_map=\"cuda\").eval()
+with torch.no_grad(): lo_mer=mer(ids).logits.float()
 d=(lo_ref-lo_mer).abs().max().item()
-print("max|Δlogits| =", d); assert d < 1e-2, f"merge parity FAILED: {d}"
-print("MERGE PARITY OK")
-PY'
+print(\"max|Δlogits| =\", d); assert d < 1e-2, f\"merge parity FAILED: {d}\"
+print(\"MERGE PARITY OK\")
+PY"'
 ```
 Expected: `max|Δlogits|` ≪ 1e-2 and `MERGE PARITY OK`. If it fails, the merge is wrong — stop.
+(Run `preflight-job-check` before the srun; the merge itself in Step 3 is CPU-only and fine on login.)
 
 - [ ] **Step 5: Sanity-check the merged dir shape**
 
@@ -644,7 +649,7 @@ export TMPDIR=/home/lancewicki/tmp/build PIP_CACHE_DIR=/home/lancewicki/tmp/pip-
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
 
 ENV=turing-rl-rl-qwen35
-VERL_SHA=c791da0b        # MUST contain #7014 (merged-weight sync) + #5599 (Qwen3.5 GDN mappings)
+VERL_SHA=c791da0bfcd7d7b560b1e461d2c188145b39c353  # FULL SHA; contains #7014 + #5599
 VERL_DIR=/home/lancewicki/src/verl
 CONDA=/home/lancewicki/miniconda3
 PY=$CONDA/envs/$ENV/bin/python
@@ -661,11 +666,12 @@ echo ">> veRL pins (install EXACTLY these next; edit the literals below if they 
 grep -iRhoE '(torch(vision|audio)?|flash-attn|vllm)[=<>~!]=[0-9][^ ]*' "$VERL_DIR"/requirements*.txt "$VERL_DIR"/setup.py 2>/dev/null | sort -u || true
 
 # 2. Torch FIRST — vLLM 0.20.2 REQUIRES torch 2.11.0 / CUDA 13 (NOT 2.6; that is an ABI mismatch).
-$PIP install "torch==2.11.0" "torchvision==0.26.0" --index-url https://download.pytorch.org/whl/cu130
+#    Include torchaudio (some veRL data utils import it). All exact, no ranges.
+$PIP install "torch==2.11.0" "torchvision==0.26.0" "torchaudio==2.11.0" --index-url https://download.pytorch.org/whl/cu130
 
-# 3. Kernels built against torch 2.11 (order matters, --no-build-isolation). flash-attn 2.8.3.
+# 3. Kernels built against torch 2.11 (order matters, --no-build-isolation). Exact versions.
 $PIP install --no-build-isolation "flash-attn==2.8.3"
-$PIP install --no-build-isolation "causal-conv1d>=1.5.0"
+$PIP install --no-build-isolation "causal-conv1d==1.5.0.post8"
 $PIP install "flash-linear-attention==0.5.1"
 
 # 4. vLLM 0.20.2 with its FULL deps (torch 2.11 already satisfied so it won't fight).
@@ -679,10 +685,19 @@ $PIP install -e "$VERL_DIR"
 #    (5.4.0 is the GDN-crash workaround, veRL #6549). This is the candidate-stack gamble — B0 validates it.
 $PIP install --no-deps --force-reinstall "transformers==5.4.0"
 
-# 7. turing-rl runtime deps not covered above (match the train env where they overlap).
-$PIP install "peft>=0.14" "openai"
-echo ">> built $ENV @ veRL $VERL_SHA — verify with Step 2."
+# 7. turing-rl runtime deps not covered above (exact, match the train env where they overlap).
+$PIP install "peft==0.17.1" "openai==1.58.1"
+
+# 8. Freeze the FULL resolved env for reproducibility (commit this artifact alongside the script).
+$PIP freeze > "/home/lancewicki/projects/turing-rl/docs/superpowers/plans/arm_b_env_freeze.txt"
+$PY -c "import torch,vllm,transformers,fla; print('VERSIONS', torch.__version__, vllm.__version__, transformers.__version__, fla.__version__)" \
+  | tee -a "/home/lancewicki/projects/turing-rl/docs/superpowers/plans/arm_b_env_freeze.txt"
+echo ">> built $ENV @ veRL $VERL_SHA — freeze saved; verify with Step 2."
 ```
+
+> Build this env **on a compute node** (`srun --partition=a100 --gres=gpu:1 --time=02:00:00 --pty bash`),
+> not the login node: flash-attn / causal-conv1d compile CUDA kernels and need the toolchain + a GPU
+> present. Commit `docs/superpowers/plans/arm_b_env_freeze.txt` so the exact resolved stack is recorded.
 
 > The `torch==2.11.0/cu130` and `flash-attn==2.8.3` literals are the vLLM-0.20.2-required stack;
 > **cross-check against step-1's printed pins** and adjust if the pinned veRL differs. A torch/vLLM
@@ -695,11 +710,28 @@ versions:
 Run: `ssh -p 2223 … lancewicki@localhost '/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/python -c "import verl,vllm,transformers,fla; print(verl.__version__, vllm.__version__, transformers.__version__)"'`
 Expected: prints veRL (≥ c791da0b build), vllm 0.20.2, transformers 5.4.0. Record in `.sdd-progress.md`.
 
-- [ ] **Step 3: Verify vLLM can serve the arch** (static, before GRPO): serve `merged_ep3` (9B) and
-hit `/v1/models`.
+- [ ] **Step 3: Verify vLLM can serve the arch** (static, before GRPO). Run **inside a Slurm GPU
+alloc** (TP=4 → 4 GPUs), with a PID + trap so the server is always killed. Confirm the 9B merged
+path first (it may have been deleted for quota — see Step 3.0).
 
-Run: `ssh … 'cd … && <env>/bin/vllm serve checkpoints/sft/<qwen35_9b_epochsave>/merged_ep3 --tensor-parallel-size 4 --enforce-eager & sleep 240; curl -s localhost:8000/v1/models'`
-Expected: the model id is listed (arch `Qwen3_5ForConditionalGeneration` served). Kill the server.
+- [ ] **Step 3.0: Confirm/rebuild the 9B merged checkpoint.** The trajectory README notes the 9B
+`merged_ep{1,2,3}` (~19GB each) may have been deleted to reclaim quota.
+Run: `ssh … 'ls -d /home/lancewicki/projects/turing-rl/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3'`
+If missing, re-splice from `checkpoint-78` via `scripts/splice_sft_into_full.py` (per the trajectory
+README repro, in env `turing-rl-sft-qwen35`), then re-check.
+
+```bash
+ssh -p 2223 … lancewicki@localhost 'cd /home/lancewicki/projects/turing-rl && srun --partition=a100 --account=rfai --gres=gpu:4 --time=00:30:00 bash -lc "
+set -e
+M=checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3
+/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/vllm serve \$M --tensor-parallel-size 4 --enforce-eager --port 8000 &
+SRV=\$!; trap \"kill \$SRV 2>/dev/null || true\" EXIT
+for i in \$(seq 1 60); do curl -sf localhost:8000/v1/models && break || sleep 10; done
+curl -s localhost:8000/v1/models
+"'
+```
+Expected: the model id is listed (arch `Qwen3_5ForConditionalGeneration` served); the trap kills the
+server on exit. If vLLM cannot load the arch, the pinned stack is wrong — fix before Task 10.
 
 - [ ] **Step 4: Commit the install script**
 
@@ -856,28 +888,37 @@ Also create `scripts/slurm/rl_generator_run_9b.sh` as a copy of `rl_generator_ru
 - [ ] **Step 3b: Write the B0 rollout-sync instrumentation hook (the data path)**
 
 The guard from Task 8 is pure logic — nothing yet *produces* its inputs. veRL's default reward dump
-does NOT contain aligned rollout/actor logprob arrays, so add an explicit hook that captures them and
-writes `rollout_sync.json`. Enable it only under an env flag so it never touches the real runs.
+does NOT contain aligned rollout/actor logprob arrays, and `run_verl_main_ppo.py` never owns the
+actor or the batch (it just builds config + launches Ray). So the hook must attach at the trainer:
 
-**Files:** Create `training/grpo/b0_rollout_sync_hook.py`; wire one call into
-`training/grpo/run_verl_main_ppo.py` (guarded by `if os.environ.get("B0_ROLLOUT_SYNC")`).
+**Integration point (concrete):** in `run_verl_main_ppo.py`, AFTER `apply_verl_runtime_patch()` and
+BEFORE `trainer.fit()`, when `os.environ.get("B0_ROLLOUT_SYNC")` is set, monkeypatch
+`verl.trainer.ppo.ray_trainer.RayPPOTrainer.update_actor` (the method that runs the optimizer step;
+confirm the exact name in the pinned veRL — it may be `_update_actor`/`update_policy`) with a wrapper
+that, for the first two calls only, captures the signals below from the `DataProto` batch it receives
+and then calls the original.
 
-What the hook does, at PPO steps 0 and 1 only:
-1. **Within-step parity:** from the rollout batch, read vLLM's generation logprobs
-   (`batch["rollout_log_probs"]`, present because `calculate_log_probs=True`) and the actor's
-   recomputed `batch["old_log_probs"]` for the SAME tokens; mask to response tokens; call
-   `logprob_parity(rollout_lp, actor_lp)` → `step0`/`step1`.
-2. **Movement (teacher-forced):** run one forward on a FIXED prompt+continuation (hard-coded token
-   ids, saved once) through the actor to get per-token logprobs `tf_lp0` (step0) and `tf_lp1` (step1)
-   — identical tokens, comparable across steps.
-3. `assert_rollout_synced(step0, step1, tf_lp0, tf_lp1)` → write `rollout_sync.json` in `RL_RUN_DIR`.
-4. Also log the IPC merged-tensor hash around veRL's `update_weights` (a few tensors, not 36GB).
+**Files:** Create `training/grpo/b0_rollout_sync_hook.py` (the wrapper + `write_rollout_sync(run_dir)`);
+add the guarded monkeypatch in `training/grpo/run_verl_main_ppo.py`.
 
-Because the exact veRL batch keys/attribute names depend on the pinned SHA, confirm them against the
-pinned veRL during this step (grep `rollout_log_probs`/`old_log_prob`/`calculate_log_probs` in
-`$VERL_DIR`) and adjust the reads; keep the guard-call semantics fixed. This hook is the concrete
-implementation the Task 8 wiring note refers to. No new unit test (it is exercised live in Step 7);
-its pure inputs are already covered by `tests/test_rollout_sync_guard.py`.
+What the wrapper captures, at update-call 0 and 1 only:
+1. **Within-step parity:** from the batch `DataProto`, read vLLM's generation logprobs
+   (`batch.batch["rollout_log_probs"]`, present because `calculate_log_probs=True`) and the actor's
+   recomputed `batch.batch["old_log_probs"]` for the SAME response tokens; mask via
+   `attention_mask`/`response_mask`; call `logprob_parity(rollout_lp, actor_lp)` → `step0`/`step1`.
+2. **Movement (teacher-forced):** call the **actor worker group's** logprob API
+   (`actor_rollout_wg.compute_log_prob` on a FIXED prompt+continuation `DataProto`, hard-coded token
+   ids saved once) at call 0 and call 1 → `tf_lp0`, `tf_lp1` — identical tokens, comparable.
+3. `assert_rollout_synced(step0, step1, tf_lp0, tf_lp1)` → `write_rollout_sync` dumps
+   `rollout_sync.json` into `RL_RUN_DIR`.
+4. **Optional** IPC fingerprint: only if a clean insertion exists in the pinned veRL's
+   `checkpoint_engine`/`update_weights` path (hash the small merged-tensor payload, not 36GB). If no
+   clean hook point, **omit it** — the logprob signals (1–2) are the gate; do not fake it.
+
+Confirm the exact veRL symbol names (`update_actor`, `rollout_log_probs`, `old_log_probs`,
+`compute_log_prob`, `apply_verl_runtime_patch`) against `$VERL_DIR` at the pinned SHA and adjust;
+keep the guard-call semantics fixed. No new unit test (exercised live in Step 7); the pure inputs are
+covered by `tests/test_rollout_sync_guard.py`.
 
 - [ ] **Step 4: Run the launcher test to verify it passes**
 
@@ -891,28 +932,40 @@ git add scripts/slurm/rl_generator_train_9b.sh scripts/slurm/rl_generator_run_9b
 git commit -m "feat: Arm-B 9B GRPO launcher + B0 rollout-sync instrumentation (logprob parity data path)"
 ```
 
-- [ ] **Step 6: Deploy + run the B0 spike (5–10 steps) on the cluster**
+- [ ] **Step 5b: Hydra composition smoke (before any GPU run).** Static substring tests do not prove
+the overrides actually compose. Dry-resolve the full config with the pinned Arm-B env and inspect the
+Qwen3.5-sensitive inherited settings:
 
-Run (Mac): `scripts/sync_to_cluster.sh` then
-`ssh … 'cd … && preflight then B0_ROLLOUT_SYNC=1 JUDGE=9b MODE=overfit OVERFIT_EPOCHS=3 RUN_TAG=9b_b0_spike sbatch --export=ALL scripts/slurm/rl_generator_run_9b.sh'`
+```bash
+ssh -p 2223 … lancewicki@localhost 'cd /home/lancewicki/projects/turing-rl && OVR="$(sed -n "s/^  \(actor_rollout_ref[^ ]*\|trainer[^ ]*\|data[^ ]*\|+[^ ]*\).*/\1/p" scripts/slurm/rl_generator_train_9b.sh)"; /home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/python -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen3_8b_grpo_turing $OVR --cfg job --resolve 2>&1 | grep -iE "lora|merge|strategy|attn_implementation|remove_padding|chunked_prefill|max_model_len|mtp|target_modules|exclude_modules|offload"'
+```
+Expected: resolves with NO Hydra error; every override present at its intended value; verify
+Qwen3.5's inherited `attn_implementation`, `use_remove_padding`, and MTP/speculative settings are sane
+(remove-padding off unless flash-attn path confirmed; MTP disabled). Fix any mis-resolved key before
+spending GPUs. (Build the `$OVR` list from the launcher, or hard-code the same override array.)
+
+- [ ] **Step 6: Deploy + run the B0 spike (5–10 updates) on the cluster**
+
+10 overfit rows at batch 10 = **1 optimizer update per epoch**, so use `OVERFIT_EPOCHS=8` (→ 8
+updates), not 3. Run (Mac): `scripts/sync_to_cluster.sh` then
+`ssh … 'cd … && preflight then B0_ROLLOUT_SYNC=1 JUDGE=9b MODE=overfit OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike sbatch --export=ALL scripts/slurm/rl_generator_run_9b.sh'`
 Expected: job queued; log shows judge endpoint + trainer banner in the Arm-B env. `B0_ROLLOUT_SYNC=1`
 turns on the Step-3b hook so `rollout_sync.json` is written.
 
-- [ ] **Step 7: Evaluate the B0 gate (ALL must hold)**
+- [ ] **Step 7: Evaluate the B0 gate**
 
-Tail the log + inspect artifacts:
+**Hard gate (both MUST hold):**
 1. Steps complete, no NaN/crash, `reward_dump/*.jsonl` populated, generations terminate
    (char lengths bounded — reuse the length check from the trajectory README).
-2. **Rollout sync (logprob parity):** `rollout_sync.json` shows `ok: true` from
-   `scripts/rollout_sync_guard.assert_rollout_synced` — i.e. the vLLM rollout logprobs match the
-   actor's recomputed `old_log_prob` (within tol) at BOTH step0 and step1 for a fixed prompt AND the
-   actor policy actually moved after the update. This needs
-   `actor_rollout_ref.rollout.calculate_log_probs=True` (set in Step 3); the B0 hook reads both
-   logprob arrays from the batch/metrics dump. Complement with the IPC-side merged-tensor hash
-   (a non-empty, changing `update_weights` payload) as independent evidence. **A large step1 parity
-   gap = the pre-#7014 stale-base symptom → gate FAILS.**
-3. Reward moves in the expected direction over the 3 epochs.
-Record the verdict in `.sdd-progress.md`.
+2. **Rollout sync (logprob parity) — the reliable gate:** `rollout_sync.json` shows `ok: true` from
+   `assert_rollout_synced` — vLLM rollout logprobs match the actor's `old_log_probs` (within tol) at
+   BOTH update 0 and update 1 AND the teacher-forced logprobs moved after the update. Needs
+   `calculate_log_probs=True` (Step 3) + the Step-3b hook. **A large parity gap = the pre-#7014
+   stale-base symptom → gate FAILS.**
+
+**Soft signal (record, do NOT hard-gate on it):** reward direction over ~8 updates — too noisy to
+gate on at this scale; a flat/negative reward with `ok: true` sync is still a PASS (optimization
+tuning, not a plumbing failure). Record the verdict + both signals in `.sdd-progress.md`.
 
 - [ ] **Step 8: Gate decision.**
    - **Pass** → proceed to Task 11.
