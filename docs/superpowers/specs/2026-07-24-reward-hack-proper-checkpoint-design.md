@@ -22,8 +22,9 @@ original probe was that the frozen 9B judge is gameable *given enough optimizati
 KL sweep (β∈{1e-3,1e-4,0}) stalled at ~0.57–0.60 win-rate (4–5/10 overfit gate), but a **10×
 learning rate (lr=1e-4)** broke through to **8/10, win-rate 0.744** — showing the plateau was an
 optimization artifact, not judge robustness. The confound: that entire conclusion rests on a
-generator that never learned to stop. **H1: the same hack (lr=1e-4 clears the ≥8/10 overfit gate,
-drives full-run win-rate > SFT baseline and toward >50%) replicates when the SFT init is clean.**
+generator that never learned to stop. **H1: the same hack (lr=1e-4 clears the ≥8/10 overfit gate
+and drives the overfit-set win-rate toward the buggy-checkpoint 0.744) replicates when the SFT init
+is clean.**
 
 **Purpose 2 — compare the 8B vs 9B generator.** With the frozen 9B judge and every other setting
 held fixed, does generator **scale/architecture** change hackability? Qwen3.5-9B is both larger
@@ -82,19 +83,23 @@ Overrides via the existing `EXTRA_OVERRIDES` passthrough:
 (`frac > 0.5`, ties excluded), pass = ≥8/10 on the final-epoch rollouts. Report last-K-epoch
 average alongside the final snapshot (the ledger flagged single-snapshot noise, swings 5–9).
 
-### 3.2 Full run (headline)
+**Headline metric (overfit set).** The primary deliverable is the overfit-10 result itself — this
+is where the original hack was measured: the buggy-checkpoint **0.744 / 8-of-10 was the overfit-set
+win-rate**, so the clean-checkpoint overfit grid is *directly* comparable, same 10 turns, same
+metric, no full run needed. Per cell report: final-epoch strict per-prompt win-rate + gate count
+(≥8/10?), last-K-epoch average (snapshot-noise guard), and the per-example rating trajectory
+(`plot_overfit_ratings.py`). **The head-to-head is clean-checkpoint vs buggy-checkpoint win-rate at
+each (KL, LR) cell** — especially lr=1e-4 vs 0.744. Replicates → the hack is real and
+checkpoint-independent; doesn't → the original hack was partly an artifact of the non-terminating
+generator (a scientifically important correction).
 
-For each cell that clears the overfit gate (expected: at least A4, lr=1e-4), run the **full grpo
-split** (4174 rows), 3 epochs, no cap, frozen 9B judge — reusing the 2026-07-15 full-run pipeline.
-Then eval on the frozen 880-target heldout set (`eval/generate_trained.py` → `build_judge_pairs.py`
-→ score with the matching 9B judge, order matched to the sweep). Report per cell: directional
-accuracy, generator win-rate (1 − acc on non-ties), frac-4-ties — **vs the SFT baseline and vs the
-buggy-checkpoint runs**.
+### 3.2 Full run (deferred to post-plan)
 
-**Headline comparison:** clean-checkpoint win-rate/accuracy at lr=1e-4 vs the buggy-checkpoint
-0.744. If it replicates → the hack is real and checkpoint-independent. If it does not → the
-original hack was partly an artifact of the non-terminating generator (a scientifically important
-correction).
+Optional follow-on, **not in scope for this plan**. For any cell that clears the overfit gate, the
+full run is straightforward reuse of the 2026-07-15 pipeline: full grpo split (4174 rows), 3 epochs,
+no cap, frozen 9B judge → eval on the frozen 880-target heldout set (`eval/generate_trained.py` →
+`build_judge_pairs.py` → 9B judge, order matched to the sweep) → directional accuracy / win-rate /
+frac-4-ties vs the SFT baseline. Tracked as a post-plan continuation once the overfit results land.
 
 ## 4. Arm B — Qwen3.5-9B generator (new stack, spike-gated)
 
@@ -130,12 +135,11 @@ frozen 9B judge, overfit-10 data. **Pass = steps complete cleanly, reward/judge 
 generations terminate, no NaN/crash.** Fall back to full-param FT if merge=True fails; if both
 fail within the time box, Arm B is deferred and reported as such.
 
-### 4.2 Steps B1–B2 (only if B0 passes)
+### 4.2 Step B1 (only if B0 passes)
 
-Mirror Arm A: the same KL×LR overfit grid (§3.1, tags `9b_proper_*`) → overfit gate → full runs
-for passing cells → eval vs the 9B SFT baseline (the checkpoint-trajectory run's 9B-generator
-accuracy is a ready baseline). Judge held fixed to the **frozen 9B judge** so 8B and 9B generator
-results are directly comparable.
+Mirror Arm A's **overfit grid** (§3.1, tags `9b_proper_*`) → overfit gate + per-cell win-rate,
+judge held fixed to the **frozen 9B judge** so 8B and 9B generator results are directly comparable.
+Full runs are the same post-plan follow-on as §3.2 (out of scope here).
 
 ## 5. Datasets, judges, reward, training config
 
@@ -162,10 +166,11 @@ the per-cell KL/LR overridden. The frozen 9B judge is served DP-8 on one node (e
 
 ## 7. Experiment structure & sequencing (user-approved)
 
-1. **Arm A first, submit now.** Merge checkpoint-78 refs → overfit-10 grid (A1–A6) → gate → full
-   runs for passing cells → eval. Existing stack, no new risk.
-2. **Then Arm B.** Build the env → B0 feasibility spike (gate) → B1–B2 grid/full/eval only if B0
-   passes. 8B does **not** wait on the 9B env work.
+1. **Arm A first, submit now.** Merge checkpoint-78 refs → overfit-10 grid (A1–A6) → gate +
+   per-cell win-rate. Existing stack, no new risk. (Full runs = post-plan, §3.2.)
+2. **Then Arm B.** Build the env → B0 feasibility spike (gate) → B1 overfit grid only if B0 passes.
+   8B does **not** wait on the 9B env work.
+3. **Post-plan (out of scope):** full-split runs + 880-heldout eval for gate-clearing cells.
 
 `preflight-job-check` before every sbatch; ≤10 concurrent jobs; 7-day wall; additive commits only;
 deploy via `sync_to_cluster.sh` (committed HEAD).
@@ -198,16 +203,14 @@ builder, eval-vs-sweep parity, split integrity) still applies. New/changed:
 
 ## 10. Success criteria
 
-1. **Arm A overfit gate:** the lr=1e-4 cell (A4) clears ≥8/10 on the proper checkpoint (replicating
-   the buggy-checkpoint hack), and the KL-only cells behave as before (KL not the limiter).
-2. **Arm A full run:** on the 880 heldout set, lr=1e-4 generator win-rate exceeds the SFT baseline
-   and approaches/exceeds 50% — reported head-to-head against the buggy-checkpoint 0.744. Either
-   outcome (replicates / doesn't) is a clean scientific result.
-3. **Arm B:** B0 spike passes → the 9B generator reproduces (or not) the same hackability pattern
-   under the frozen 9B judge.
-4. **8B vs 9B (H2):** with the frozen 9B judge and identical KL×LR grid, compare the two
-   generators head-to-head — peak win-rate, the (KL, LR) cell at which each first clears the ≥8/10
-   overfit gate, and full-run heldout win-rate. A clean statement of whether the more capable /
-   different-arch generator games the frozen judge more readily.
-5. Every setting traceable to the 2026-07-15 design + paper except the documented deltas (proper
+1. **Arm A overfit gate (headline):** the lr=1e-4 cell (A4) clears ≥8/10 on the proper checkpoint,
+   reported head-to-head against the buggy-checkpoint overfit win-rate (0.744); the KL-only cells
+   behave as before (KL not the limiter). Either outcome (replicates / doesn't) is a clean result.
+2. **Arm B:** B0 spike passes → the 9B generator reproduces (or not) the same overfit hackability
+   pattern under the frozen 9B judge.
+3. **8B vs 9B (H2):** with the frozen 9B judge and identical KL×LR overfit grid, compare the two
+   generators head-to-head — peak overfit win-rate and the (KL, LR) cell at which each first clears
+   the ≥8/10 gate. A clean statement of whether the more capable / different-arch generator games
+   the frozen judge more readily.
+4. Every setting traceable to the 2026-07-15 design + paper except the documented deltas (proper
    checkpoint, KL×LR grid, 9B arm).
