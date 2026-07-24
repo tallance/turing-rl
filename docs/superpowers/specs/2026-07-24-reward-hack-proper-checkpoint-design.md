@@ -112,14 +112,29 @@ caveats**:
 - The official Qwen3.5-9B checkpoint declares `Qwen3_5ForConditionalGeneration`, which **vLLM does
   support** (native GDN/MTP since vLLM 0.17) — even though literal `Qwen3_5ForCausalLM` is not
   registered. So the rollout engine *can* serve the arch.
-- Requires a **dedicated upgraded env** (must not disturb `turing-rl-train`), built in veRL's
-  Docker build order, not free-pip: **veRL 0.8.0+/main, vLLM ≥0.18 (0.20.2 recommended),
-  transformers 5.4.0** (fixes the open 9B GDN actor crash, veRL #6549), **FLA 0.5.1**, causal-conv1d,
-  flash-attn from the veRL image.
-- **Rollout weight-sync: LoRA r64 + `lora.merge=True`** (merges the adapter into dense weights and
-  syncs those to vLLM each step). This keeps **methodological parity with the 8B LoRA r64 recipe**
-  *and* avoids native adapter-only DeltaNet LoRA (still broken/experimental). Full-param FSDP2 FT is
-  the **fallback** only if merge=True misbehaves.
+- Requires a **dedicated candidate env** (must not disturb `turing-rl-train`), built in veRL's
+  Docker build order, not free-pip. **This whole stack is a candidate, validated only by B0** — no
+  released tag is known-good. Pin, do not float `main`:
+  - **veRL: a pinned SHA ≥ `c791da0b`**, audited to contain both **#7014** (corrected merged-weight
+    → rollout synchronization — without it vLLM silently serves the base policy) and **#5599**
+    (Qwen3.5 split/fused GDN weight mappings). No released veRL tag (incl. 0.8.0) contains both.
+  - **vLLM 0.20.2** (or veRL's pinned Docker version; ≥0.18 can serve the arch).
+  - **transformers 5.4.0** — community-reported **workaround** for the 9B GDN actor crash (veRL
+    #6549), *not* an upstream-confirmed fix. B0 validates it.
+  - **FLA 0.5.1**, causal-conv1d, flash-attn from the veRL image.
+- **Rollout weight-sync: LoRA + `lora.merge=True`** (merges adapter into dense weights, syncs those
+  to vLLM each step) — avoids native adapter-only DeltaNet LoRA (still broken/experimental). LoRA
+  target set explicit and matched to the SFT recipe (arch-safe):
+  - `lora_rank=64`, `lora_alpha=32`, `lora.merge=True`
+  - `target_modules` = **attention + MLP only** (`q/k/v/o_proj`, `gate/up/down_proj`) —
+    **NOT `all-linear`**: `all-linear` would LoRA the Gated-DeltaNet backbone (`in_proj_*`,
+    `out_proj`), which our SFT recipe proved destructive (arXiv:2604.22127).
+  - `exclude_modules='.*visual.*'` — the merged checkpoint is multimodal; skip the vision tower so
+    no adapter weights land where the text-only rollout ignores/mis-maps them.
+  This keeps **methodological parity with the 8B LoRA r64 recipe** (both LoRA, same target family).
+  Full-param FSDP2 FT is a **fallback only** — and see §4.1: switching the 9B to full-FT while the
+  8B stays LoRA breaks the controlled H2, so a full-FT 9B is reported as **exploratory**, not part
+  of the H2 comparison, unless an 8B full-FT comparator is added.
 - Fits 8×A100-40GB with `enable_gradient_checkpointing`, param+optimizer offload,
   `rollout.free_cache_engine=True`, `enforce_eager=True`, `enable_prefix_caching=False`,
   mem-util ≈0.40, GEN_TP=4/FSDP_SIZE=8. ~18GB full-weight sync/step; offload costs throughput.
@@ -132,9 +147,21 @@ caveats**:
 
 Build the dedicated env, then run **one clean multi-step (~5–10 step) GRPO** on Qwen3.5-9B init
 from the already-spliced `merged_ep3` full checkpoint (from run 10716), LoRA r64 + `merge=True`,
-frozen 9B judge, overfit-10 data. **Pass = steps complete cleanly, reward/judge scores logged,
-generations terminate, no NaN/crash.** Fall back to full-param FT if merge=True fails; if both
-fail within the time box, Arm B is deferred and reported as such.
+frozen 9B judge, overfit-10 data.
+
+**Pass requires ALL of:**
+1. Steps complete cleanly — no NaN/crash, reward/judge scores logged, generations terminate.
+2. **Rollout weights actually track the actor** (the critical check — "no crash" is not enough; the
+   pre-#7014 bug ran clean while vLLM kept serving the *base* policy). Verify per weight-update via
+   **either** an actor-vs-rollout parameter checksum **or** deterministic logprob parity on a fixed
+   prompt (rollout logprobs must match a direct actor forward, and must *change* after an optimizer
+   step). This directly guards #7014 being present and working.
+3. Reward moves in the expected direction over the ~5–10 steps (sanity that optimization is live).
+
+**Fallback ladder:** if `merge=True` fails → full-param FSDP2 FT. But a full-FT 9B is **exploratory
+only** — it breaks the controlled H2 (9B full-FT vs 8B LoRA confounds tuning method with
+scale/arch); to keep H2 valid, either stay on LoRA merge=True or add an 8B full-FT comparator. If
+neither LoRA nor full-FT passes within the time box, Arm B is **deferred** and reported as such.
 
 ### 4.2 Step B1 (only if B0 passes)
 
@@ -156,11 +183,15 @@ the per-cell KL/LR overridden. The frozen 9B judge is served DP-8 on one node (e
   checkpoint-78. No code change expected beyond config/path.
 - **Merged-SFT reference:** `scripts/merge_sft_adapter.py` on checkpoint-78 (both models) → the
   standalone backbone used as `actor_rollout_ref.model.path`, `lora_adapter_path=null`.
-- **Arm B env:** new `turing-rl-rl-qwen35` conda/Docker env (veRL main + vLLM 0.20.2 + transformers
-  5.4.0 + FLA 0.5.1), documented like the SFT env recipe. **Do not touch `turing-rl-train`.**
+- **Arm B env:** new `turing-rl-rl-qwen35` env, **veRL pinned SHA ≥ `c791da0b`** (must contain
+  #7014 + #5599) + vLLM 0.20.2 + transformers 5.4.0 + FLA 0.5.1, built in veRL Docker order,
+  documented like the SFT env recipe. Candidate stack — validated by B0. **Do not touch
+  `turing-rl-train`.**
 - **Arm B launcher:** a 9B variant of `rl_generator_run.sh` starting from veRL's 27B FSDP2 GRPO
-  recipe, adapted to 9B (GEN_TP=4, FSDP_SIZE=8, offload, merge=True, cache-clear). New file;
-  additive.
+  recipe, adapted to 9B (GEN_TP=4, FSDP_SIZE=8, offload, merge=True, attn+MLP LoRA excl. visual,
+  cache-clear). New file; additive.
+- **B0 weight-sync check:** small script/hook asserting rollout weights track the actor (param
+  checksum or logprob parity across an optimizer step) — the B0 gate's core assertion.
 - **Eval/analysis:** reuse `eval/generate_trained.py`, `build_judge_pairs.py`,
   `overfit_gate_check.py`, `plot_overfit_ratings.py`. A small analyzer tabulating
   clean-vs-buggy-checkpoint win-rate/accuracy per cell per arm.
@@ -186,14 +217,18 @@ builder, eval-vs-sweep parity, split integrity) still applies. New/changed:
 | 1 | Checkpoint-78 init resolves | unit | The stop-token-supervised checkpoint-78 path exists and is loadable; PEFT config r64/α32; distinct from the buggy `_final` path. |
 | 2 | Grid config integrity | unit | Each of A1–A6 (and 9b_ tags) resolves with the intended (KL, LR) and no-cap; RUN_TAGs unique; merged-SFT ref set + `lora_adapter_path=null`. |
 | 3 | Merged-SFT ref parity | regression | `base+SFT(ckpt-78) adapter` logits ≈ merged backbone; step-0 KL ≈ 0; only the fresh RL LoRA is trainable. |
-| 4 | (Arm B) 9B rollout smoke | integration (spike) | B0: N GRPO steps complete, judge scores logged, gens terminate, no NaN. Gate for B1–B2. |
+| 4 | (Arm B) 9B rollout smoke + **weight-sync parity** | integration (spike) | B0: N GRPO steps complete, judge scores logged, gens terminate, no NaN — **AND** rollout weights track the actor (checksum or logprob parity after each update; must change post-optimizer-step). Guards the silent pre-#7014 stale-base-policy bug. Gate for B1. |
 
 ## 9. Risks & open items
 
-- **Arm B env pinning** — the dominant risk; time-boxed (~1–2 days happy path). Fallback ladder:
-  LoRA merge=True → full-param FSDP2 FT → defer Arm B (report as deferred). Loader-bug tail 3–7 days.
-- **8B/9B methodological parity** — kept by using LoRA r64 on both; the only difference is the 9B's
-  dense rollout weight-sync (merge=True). Note this deviation explicitly in results.
+- **Arm B env pinning** — the dominant risk; time-boxed (~1–2 days happy path). Pin veRL SHA
+  (≥`c791da0b`, must contain #7014+#5599), don't float `main`. Fallback ladder: LoRA merge=True →
+  full-param FSDP2 FT (**exploratory only** — see H2 caveat) → defer Arm B. Loader-bug tail 3–7 days.
+- **Silent stale-rollout-weights (pre-#7014)** — vLLM can serve the base policy while GRPO runs
+  crash-free. B0 must assert rollout-vs-actor weight parity (checksum/logprob), not just "no crash".
+- **8B/9B methodological parity** — kept by LoRA r64 attn+MLP on both; only difference is the 9B's
+  dense rollout weight-sync (merge=True). A full-FT 9B fallback would confound H2 → reported
+  exploratory unless an 8B full-FT comparator is added. Note the deviation explicitly in results.
 - **Hybrid cache/reload correctness** (vLLM #48312) — clear KV/GDN state after every weight update
   in the Arm B launcher; validate reward stability across steps in B0.
 - **Overfit-gate snapshot noise** — report last-K-epoch average, not just the final snapshot.
