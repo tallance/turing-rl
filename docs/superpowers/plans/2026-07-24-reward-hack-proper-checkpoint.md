@@ -30,9 +30,15 @@ conda envs `turing-rl-train` (Arm A) and a new `turing-rl-rl-qwen35` (Arm B).
 - **SFT init + KL ref:** the **stop-token-supervised checkpoint-78** (ep3) — NOT the buggy
   `.../qwen3_8b_prism_full_s42_bf16_fsdp_nopack/final`. Merged into a standalone backbone;
   `lora_adapter_path=null`; fresh RL LoRA **r64 / α32**.
-- **LoRA target (both arms):** attention + MLP only (`q/k/v/o_proj`, `gate/up/down_proj`).
-  **Never `all-linear`** — it hits the Gated-DeltaNet backbone (`in_proj_*`, `out_proj`), which is
-  destructive (arXiv:2604.22127). Arm B additionally `exclude_modules='.*visual.*'`.
+- **LoRA target (both arms, set EXPLICITLY for H2 parity):**
+  `target_modules=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]` (attention + MLP).
+  Set it on **Arm A too** — do NOT rely on the inherited `all-linear` from `qwen3_8b_grpo.yaml`; the
+  two arms' configs must match literally. (On full-attention Qwen3-8B, `all-linear` expands to the
+  same 7 modules, so this is a clarifying override, not a behavior change for 8B.) For Arm B, the
+  explicit list matters: it **excludes the Gated-DeltaNet backbone** (`in_proj_*`, `out_proj`),
+  which our SFT recipe found destructive (arXiv:2604.22127). Arm B additionally
+  `exclude_modules='.*visual.*'`. (Note: veRL #6782's Qwen3.5-27B GRPO ran `all-linear` without
+  crashing — so this is a parity + our-own-SFT-quality choice, not a hard upstream blocker.)
 - **Arm B env:** pinned veRL SHA **≥ `c791da0b`** (must contain #7014 merged-weight sync + #5599
   Qwen3.5 GDN mappings) + vLLM 0.20.2 + transformers 5.4.0 + FLA 0.5.1, built in veRL Docker order.
   Candidate stack — validated only by B0. **Do not touch `turing-rl-train`.**
@@ -249,6 +255,11 @@ def test_uses_proper_merged_checkpoint_and_no_early_stop():
 def test_drives_grid_from_rl_grid_module():
     assert "rl_grid" in S                          # loops the SSOT cells, no hardcoded 6x copy-paste
     assert "rl_generator_run.sh" in S
+
+def test_explicit_lora_target_for_h2_parity():
+    # Arm A must set the target explicitly, not inherit all-linear (matches Arm B literally).
+    assert "target_modules=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]" in S
+    assert "all-linear" not in S
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -267,6 +278,9 @@ REPO=/home/lancewicki/projects/turing-rl
 cd "$REPO"
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 MERGED=checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3
+# Explicit LoRA target (H2 parity) — override the config's inherited all-linear so Arm A/B match
+# literally. On full-attn Qwen3-8B this is the same 7 modules all-linear expands to.
+TARGET='actor_rollout_ref.model.target_modules=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]'
 
 # Emit "tag<TAB>overrides" per cell from the SSOT grid module.
 $PY - <<'PYEOF' | while IFS=$'\t' read -r TAG OVR; do
@@ -274,11 +288,11 @@ from scripts.rl_grid import ARM_A_CELLS, cell_overrides
 for c in ARM_A_CELLS:
     print(f"{c['tag']}\t{cell_overrides(c)}")
 PYEOF
-  echo ">> submitting $TAG :: $OVR"
+  echo ">> submitting $TAG :: $OVR $TARGET"
   JUDGE=9b MODE=overfit OVERFIT_EPOCHS=50 \
     RUN_TAG="$TAG" \
     MERGED_SFT_MODEL_PATH="$MERGED" \
-    EXTRA_OVERRIDES="$OVR" \
+    EXTRA_OVERRIDES="$OVR $TARGET" \
     sbatch --export=ALL scripts/slurm/rl_generator_run.sh
 done
 ```
@@ -320,16 +334,45 @@ from `qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave`, update the constants 
 
 Run: `ssh -p 2223 … lancewicki@localhost 'cd /home/lancewicki/projects/turing-rl && HF_HUB_OFFLINE=1 /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python scripts/merge_sft_adapter.py --base-model Qwen/Qwen3-8B --adapter-dir checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/checkpoint-78 --output-dir checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3'`
 Expected: writes `merged_ep3/` with `config.json`, `tokenizer_config.json`,
-`sft_merge_metadata.json`, and `model*.safetensors`; the script's `validate_merged_artifact` prints
-OK. (This is the merged-SFT-ref parity guard — the merge script validates the artifact.)
+`sft_merge_metadata.json`, and `model*.safetensors`. NOTE: the script's `validate_merged_artifact`
+only checks **files + metadata** — it does NOT prove numerical parity. Numerical parity is Step 4.
 
-- [ ] **Step 4: Sanity-check the merged dir shape**
+- [ ] **Step 4: Verify logits parity (base+adapter ≈ merged) — the real merged-SFT-ref guard**
+
+`validate_merged_artifact` is structural only; assert numerical equivalence on a fixed input so the
+merged backbone truly equals `base+adapter` (the KL reference the GRPO run recovers by disabling the
+fresh LoRA). Run on the cluster (one GPU):
+
+```bash
+ssh -p 2223 … lancewicki@localhost 'cd /home/lancewicki/projects/turing-rl && HF_HUB_OFFLINE=1 /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python - <<PY
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
+B="Qwen/Qwen3-8B"
+A="checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/checkpoint-78"
+M="checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3"
+tok=AutoTokenizer.from_pretrained(M)
+ids=tok("The quick brown fox jumps over", return_tensors="pt").input_ids
+base=AutoModelForCausalLM.from_pretrained(B, torch_dtype=torch.bfloat16, device_map="cuda")
+ref=PeftModel.from_pretrained(base, A).merge_and_unload()
+with torch.no_grad(): lo_ref=ref(ids.cuda()).logits.float()
+del base, ref; torch.cuda.empty_cache()
+mer=AutoModelForCausalLM.from_pretrained(M, torch_dtype=torch.bfloat16, device_map="cuda")
+with torch.no_grad(): lo_mer=mer(ids.cuda()).logits.float()
+d=(lo_ref-lo_mer).abs().max().item()
+print("max|Δlogits| =", d); assert d < 1e-2, f"merge parity FAILED: {d}"
+print("MERGE PARITY OK")
+PY'
+```
+Expected: `max|Δlogits|` ≪ 1e-2 and `MERGE PARITY OK`. If it fails, the merge is wrong — stop.
+
+- [ ] **Step 5: Sanity-check the merged dir shape**
 
 Run: `ssh -p 2223 … lancewicki@localhost 'ls /home/lancewicki/projects/turing-rl/checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3'`
 Expected: contains `config.json tokenizer_config.json sft_merge_metadata.json` + `model-*.safetensors`.
 (This is exactly what `rl_generator_train.sh` asserts before launching.)
 
-- [ ] **Step 5: (No commit — cluster artifact.)** Record the confirmed path in the run ledger
+- [ ] **Step 6: (No commit — cluster artifact.)** Record the confirmed path in the run ledger
 `.sdd-progress.md` (untracked).
 
 ---
@@ -425,11 +468,11 @@ each cell's clean-checkpoint win-rate/gate **next to the buggy-checkpoint number
 (kl1e3/lr1e5 → 5/10 ~0.60; kl1e4 → 4/10 0.590; kl0 → 4/10 0.575; **kl1e3/lr1e4 → 8/10 0.744**).
 State the H1 verdict: does lr=1e-4 replicate the ≥8/10 hack on the clean checkpoint?
 
-- [ ] **Step 5: Commit the README + plots** (per project convention: `results/` is gitignored on
-the cluster, but the local plan-results dir + README are committed for the record).
+- [ ] **Step 5: Commit the README + plots.** `results/` is gitignored — use `git add -f` so the
+plan-results dir + README are committed for the record.
 
 ```bash
-git add results/2026-07-24-reward-hack-proper-checkpoint/README.txt
+git add -f results/2026-07-24-reward-hack-proper-checkpoint/README.txt results/2026-07-24-reward-hack-proper-checkpoint/*.png
 git commit -m "results: Arm-A proper-checkpoint overfit grid (H1 verdict + buggy-vs-clean table)"
 ```
 
@@ -440,104 +483,123 @@ git commit -m "results: Arm-A proper-checkpoint overfit grid (H1 verdict + buggy
 > Do NOT start Phase 2 until Arm A jobs are submitted (Task 6). Arm A does not depend on any Phase-2
 > work. Phase 2 gates on the B0 spike (Task 10).
 
-### Task 8: B0 weight-sync parity helper + unit test
+### Task 8: B0 rollout-sync guard via LOGPROB parity + unit test
 
-The critical B0 assertion: rollout weights must track the actor (the pre-#7014 bug ran crash-free
-while vLLM served the base policy). Build a pure helper now (unit-testable offline); wire it into
-the spike in Task 10.
+The critical B0 assertion: the rollout policy must track the actor (the pre-#7014 bug ran crash-free
+while vLLM served the *base* policy). **Do NOT compare raw weights** — vLLM does not expose an actor-
+comparable weight API, its params are TP-sharded and fused (HF actor weights are split), and hashing
+all 9B params as float32 would move ~36GB through CPU. Instead compare **per-token logprobs on a
+fixed prompt**: veRL already logs both the rollout logprobs (from vLLM at generation) and the actor's
+recomputed logprobs (`old_log_prob`) for the same tokens. The guard uses those. Build a pure helper
+now (unit-testable offline); wire it into the spike in Task 10.
 
 **Files:**
-- Create: `scripts/rollout_weight_parity.py`
-- Test: `tests/test_rollout_weight_parity.py`
+- Create: `scripts/rollout_sync_guard.py`
+- Test: `tests/test_rollout_sync_guard.py`
 
 **Interfaces:**
 - Produces:
-  `param_fingerprint(named_tensors: Iterable[tuple[str, "Tensor"]]) -> str` — order-independent
-  hash of parameter values (float32 bytes), used to compare an actor state-dict vs the weights the
-  rollout engine reports.
-  `assert_weights_tracked(before_fp, after_fp, actor_after_fp) -> dict` — returns
-  `{"changed": bool, "matches_actor": bool, "ok": bool}` where `ok = changed and matches_actor`
-  (rollout weights changed after the optimizer step AND equal the post-step actor).
+  `logprob_parity(rollout_lp, actor_lp, atol=0.1) -> dict` — compares two per-token logprob arrays
+  for the same generated tokens; returns `{"max_abs_diff": float, "close": bool}`
+  (`close` = max abs diff ≤ atol). If rollout and actor disagree, vLLM is serving different weights
+  than the actor holds (the stale-base symptom).
+  `assert_rollout_synced(step0: dict, step1: dict, actor_lp0, actor_lp1) -> dict` — given the
+  logprob-parity dict at two steps plus the actor logprobs before/after one optimizer update, returns
+  `{"synced": bool, "policy_moved": bool, "ok": bool}` where `synced` = rollout≈actor at BOTH steps
+  and `policy_moved` = the actor logprobs actually changed after the update (not a frozen no-op);
+  `ok = synced and policy_moved`.
 
 - [ ] **Step 1: Write the failing test**
 
 ```python
-# tests/test_rollout_weight_parity.py
+# tests/test_rollout_sync_guard.py
 import numpy as np
-from scripts.rollout_weight_parity import param_fingerprint, assert_weights_tracked
+from scripts.rollout_sync_guard import logprob_parity, assert_rollout_synced
 
-class T:  # minimal tensor stand-in: .detach().cpu().float().numpy() chain
-    def __init__(self, a): self._a = np.asarray(a, dtype=np.float32)
-    def detach(self): return self
-    def cpu(self): return self
-    def float(self): return self
-    def numpy(self): return self._a
+def test_parity_close_and_far():
+    a = np.array([-0.10, -1.20, -0.03])
+    assert logprob_parity(a, a + 0.02, atol=0.1)["close"] is True      # within tol
+    r = logprob_parity(a, a + 0.5, atol=0.1)
+    assert r["close"] is False and r["max_abs_diff"] > 0.4             # rollout != actor
 
-def test_fingerprint_order_independent_and_value_sensitive():
-    a = [("w2", T([3.0, 4.0])), ("w1", T([1.0, 2.0]))]
-    b = [("w1", T([1.0, 2.0])), ("w2", T([3.0, 4.0]))]
-    assert param_fingerprint(a) == param_fingerprint(b)          # order-independent
-    c = [("w1", T([1.0, 2.0])), ("w2", T([3.0, 4.001]))]
-    assert param_fingerprint(a) != param_fingerprint(c)          # value-sensitive
+def test_ok_when_synced_both_steps_and_policy_moved():
+    lp0 = np.array([-0.1, -0.2]); lp1 = np.array([-0.4, -0.9])         # actor moved after update
+    s0 = logprob_parity(lp0, lp0 + 0.01)                               # rollout tracks actor @ step0
+    s1 = logprob_parity(lp1, lp1 + 0.01)                              #  ... and @ step1
+    out = assert_rollout_synced(s0, s1, lp0, lp1)
+    assert out == {"synced": True, "policy_moved": True, "ok": True}
 
-def test_ok_only_when_changed_and_matches_actor():
-    before, after, actor = "aaa", "bbb", "bbb"
-    r = assert_weights_tracked(before, after, actor)
-    assert r == {"changed": True, "matches_actor": True, "ok": True}
+def test_stale_base_flagged():           # rollout frozen at base while actor trains -> desync grows
+    lp0 = np.array([-0.1, -0.2]); lp1 = np.array([-0.4, -0.9])
+    s0 = logprob_parity(lp0, lp0 + 0.01)                              # ok at step0
+    s1 = logprob_parity(lp1, lp0 + 0.01)                             # step1 rollout still ~base -> far
+    out = assert_rollout_synced(s0, s1, lp0, lp1)
+    assert out["synced"] is False and out["ok"] is False
 
-def test_stale_rollout_flagged():   # the pre-#7014 bug: rollout never changed
-    r = assert_weights_tracked("aaa", "aaa", "bbb")
-    assert r["changed"] is False and r["ok"] is False
-
-def test_desync_flagged():          # rollout changed but not to the actor's weights
-    r = assert_weights_tracked("aaa", "ccc", "bbb")
-    assert r["matches_actor"] is False and r["ok"] is False
+def test_frozen_policy_flagged():        # rollout tracks actor but actor never moved -> no-op run
+    lp = np.array([-0.1, -0.2])
+    s = logprob_parity(lp, lp + 0.01)
+    out = assert_rollout_synced(s, s, lp, lp)                         # actor_lp0 == actor_lp1
+    assert out["policy_moved"] is False and out["ok"] is False
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `python -m pytest tests/test_rollout_weight_parity.py -q`
-Expected: FAIL — `ModuleNotFoundError: No module named 'scripts.rollout_weight_parity'`.
+Run: `python -m pytest tests/test_rollout_sync_guard.py -q`
+Expected: FAIL — `ModuleNotFoundError: No module named 'scripts.rollout_sync_guard'`.
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-# scripts/rollout_weight_parity.py
-"""B0 guard: verify GRPO rollout weights actually track the actor (catches pre-#7014 stale base)."""
+# scripts/rollout_sync_guard.py
+"""B0 guard: verify the vLLM rollout policy tracks the actor via per-token LOGPROB parity.
+
+Weight hashing is unusable here (vLLM weights are TP-sharded/fused, no actor-comparable API, ~36GB).
+veRL logs rollout logprobs (vLLM) and the actor's recomputed old_log_prob for the same tokens;
+if they diverge, vLLM is serving different weights than the actor holds (the pre-#7014 stale base).
+"""
 from __future__ import annotations
 
-import hashlib
-from typing import Iterable, Tuple
+import numpy as np
 
 
-def param_fingerprint(named_tensors: Iterable[Tuple[str, "object"]]) -> str:
-    """Order-independent, value-sensitive hash of (name -> tensor) params."""
-    h = hashlib.sha256()
-    for name, t in sorted(named_tensors, key=lambda kv: kv[0]):
-        arr = t.detach().cpu().float().numpy()
-        h.update(name.encode())
-        h.update(arr.tobytes())
-    return h.hexdigest()
+def logprob_parity(rollout_lp, actor_lp, atol: float = 0.1) -> dict:
+    """Max abs diff between rollout and actor per-token logprobs for the same tokens."""
+    r = np.asarray(rollout_lp, dtype=np.float64)
+    a = np.asarray(actor_lp, dtype=np.float64)
+    max_abs_diff = float(np.max(np.abs(r - a))) if r.size else float("inf")
+    return {"max_abs_diff": max_abs_diff, "close": max_abs_diff <= atol}
 
 
-def assert_weights_tracked(before_fp: str, after_fp: str, actor_after_fp: str) -> dict:
-    """ok iff rollout weights CHANGED after the optimizer step AND equal the post-step actor."""
-    changed = before_fp != after_fp
-    matches_actor = after_fp == actor_after_fp
-    return {"changed": changed, "matches_actor": matches_actor, "ok": changed and matches_actor}
+def assert_rollout_synced(step0: dict, step1: dict, actor_lp0, actor_lp1, move_atol: float = 1e-3) -> dict:
+    """ok iff rollout≈actor at BOTH steps (synced) AND the actor policy actually moved after update."""
+    synced = bool(step0["close"] and step1["close"])
+    a0 = np.asarray(actor_lp0, dtype=np.float64)
+    a1 = np.asarray(actor_lp1, dtype=np.float64)
+    policy_moved = bool(a0.size and float(np.max(np.abs(a0 - a1))) > move_atol)
+    return {"synced": synced, "policy_moved": policy_moved, "ok": synced and policy_moved}
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `python -m pytest tests/test_rollout_weight_parity.py -q`
+Run: `python -m pytest tests/test_rollout_sync_guard.py -q`
 Expected: PASS (4 passed).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/rollout_weight_parity.py tests/test_rollout_weight_parity.py
-git commit -m "feat: B0 rollout-vs-actor weight-parity guard (catches pre-#7014 stale rollout)"
+git add scripts/rollout_sync_guard.py tests/test_rollout_sync_guard.py
+git commit -m "feat: B0 rollout-sync guard via logprob parity (catches pre-#7014 stale rollout)"
 ```
+
+> **Wiring note (Task 10):** veRL already computes both signals per step —
+> `actor_rollout_ref.rollout.calculate_log_probs=true` makes vLLM return its generation logprobs,
+> and the actor's `old_log_prob` is computed every PPO step. The B0 hook reads both from the batch
+> (or the reward/metrics dump) for a fixed prompt at step 0 and step 1 and calls
+> `assert_rollout_synced`, writing `weight_parity.json`. Also complement with the cheap
+> **IPC-side fingerprint**: log a hash of the small set of merged tensors veRL pushes to vLLM in
+> `update_weights` (not all 9B params) to confirm non-empty, changing payloads — a second,
+> independent line of evidence.
 
 ---
 
@@ -549,22 +611,65 @@ Cluster op. Mirrors the `turing-rl-sft-qwen35` pattern: a dedicated env, never t
 **Files:**
 - Create: `scripts/slurm/rl_qwen35_env_install.sh` (documents the exact build, like `train_env_install.sh`)
 
-- [ ] **Step 1: Write the install script** capturing the pinned stack (veRL Docker build order):
+- [ ] **Step 1: Write the install script** — executable, ordered, no free pip-resolve:
 
 ```bash
 #!/bin/bash
 # Build the dedicated Arm-B GRPO env for Qwen3.5-9B. CANDIDATE STACK — validated only by B0.
-# Never modify turing-rl-train. Follow veRL's Docker build order; do NOT let pip free-resolve.
+# Never modify turing-rl-train. Ordered install; --no-deps where noted to stop vllm/transformers
+# metadata from clobbering our pins. V3: unset stale proxy vars; use ~/tmp for builds.
 set -euo pipefail
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export TMPDIR=/home/lancewicki/tmp/build PIP_CACHE_DIR=/home/lancewicki/tmp/pip-cache
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
+
 ENV=turing-rl-rl-qwen35
-VERL_SHA=c791da0b   # MUST contain #7014 (merged-weight sync) + #5599 (Qwen3.5 GDN mappings)
-# 1. clone env base, 2. pin: transformers==5.4.0, vllm==0.20.2, flash-linear-attention==0.5.1,
-#    causal-conv1d, flash-attn (from veRL image), 3. install veRL @ $VERL_SHA from source.
-# (Fill exact conda/pip lines per the SFT-env recipe in results/2026-07-15-generator-sweep/README.txt.)
-echo "See docstring — build $ENV with veRL@$VERL_SHA, vllm 0.20.2, transformers 5.4.0, FLA 0.5.1."
+VERL_SHA=c791da0b        # MUST contain #7014 (merged-weight sync) + #5599 (Qwen3.5 GDN mappings)
+VERL_DIR=/home/lancewicki/src/verl
+CONDA=/home/lancewicki/miniconda3
+PY=$CONDA/envs/$ENV/bin/python
+PIP="$PY -m pip"
+
+# 0. Fresh env (Python 3.11; do NOT clone turing-rl-train — keep it pristine).
+$CONDA/bin/conda create -y -n "$ENV" python=3.11
+$PIP install -U pip setuptools wheel packaging ninja
+
+# 1. Clone veRL at the pinned SHA and read ITS torch/CUDA pin (source of truth — do not guess).
+[ -d "$VERL_DIR" ] || git clone https://github.com/verl-project/verl "$VERL_DIR"
+git -C "$VERL_DIR" fetch --all && git -C "$VERL_DIR" checkout "$VERL_SHA"
+echo ">> veRL requirements pin torch/cuda as follows (install EXACTLY this next):"
+grep -iE '^torch(vision|audio)?[=<>]' "$VERL_DIR"/requirements*.txt || true
+
+# 2. Torch FIRST, exactly as veRL's requirements pin it (edit the line below to match step-1 output).
+$PIP install "torch==2.6.0" "torchvision==0.21.0" --index-url https://download.pytorch.org/whl/cu124
+
+# 3. Kernels that must build against the installed torch (order matters, --no-build-isolation).
+$PIP install --no-build-isolation "flash-attn==2.7.4.post1"
+$PIP install --no-build-isolation "causal-conv1d>=1.4.0"
+$PIP install "flash-linear-attention==0.5.1"
+
+# 4. transformers pin BEFORE vllm; then vllm with --no-deps so it can't downgrade transformers.
+$PIP install "transformers==5.4.0"
+$PIP install --no-deps "vllm==0.20.2"
+$PIP install "$($PY - <<'PY'
+# print vllm's runtime deps EXCEPT transformers, to install them without the transformers pin fight
+import importlib.metadata as m
+reqs=[r.split(';')[0].strip() for r in (m.requires('vllm') or [])]
+print(' '.join(r for r in reqs if r and not r.lower().startswith('transformers')))
+PY
+)"
+
+# 5. veRL itself from source, --no-deps (we've already pinned its heavy deps above).
+$PIP install --no-deps -e "$VERL_DIR"
+
+# 6. Remaining turing-rl runtime deps (peft/datasets/pyarrow/wandb/openai/ray) — pin to match train env.
+$PIP install "peft>=0.14" "datasets" "pyarrow" "wandb" "openai" "ray[default]"
+echo ">> built $ENV @ veRL $VERL_SHA — verify with Step 2."
 ```
+
+> The `torch`/`flash-attn` version literals above are the expected veRL-`c791da0b`-era pins; **replace
+> them with the exact lines printed by step 1** if they differ. This is the one place a mismatch will
+> silently break GDN kernels (veRL #6549) — get it from veRL's own requirements, not from memory.
 
 - [ ] **Step 2: Build the env on the cluster** following the script, then record exact installed
 versions:
@@ -598,10 +703,11 @@ into one task — a reviewer accepts/rejects "can we GRPO the 9B at all" as a un
 - Test: `tests/test_rl_9b_launcher.py` (static assertions on the launcher text)
 
 **Interfaces:**
-- Consumes: the merged 9B checkpoint (`merged_ep3`), `scripts/rollout_weight_parity.py`,
+- Consumes: the merged 9B checkpoint (`merged_ep3`), `scripts/rollout_sync_guard.py`,
   `scripts/slurm/judge_serve_9b_replicas.sh` (same frozen 9B judge).
 - Produces: reward dumps under `results/grpo/rl-generator/9b_b0_spike/reward_dump/` + a
-  `weight_parity.json` written by the spike (the B0 gate artifact).
+  `rollout_sync.json` written by the spike (the B0 gate artifact: logprob parity @ step0/step1 +
+  policy-moved).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -617,10 +723,29 @@ def test_lora_target_is_attn_mlp_not_all_linear_excludes_visual():
     assert "visual" in S                               # exclude the vision tower
     assert "lora_rank=64" in S and "lora_alpha=32" in S
 
-def test_merge_true_and_offload_and_cache_clear():
-    assert "merge=true" in S.lower() or "lora.merge=true" in S.lower()
-    assert "param_offload=true" in S.lower() or "param_offload=True" in S
-    assert "free_cache_engine" in S and "enforce_eager" in S
+def test_merge_key_is_model_lora_merge():
+    # correct veRL key is model.lora.merge (Hydra-appended), NOT rollout.lora.merge
+    assert "actor_rollout_ref.model.lora.merge=True" in S
+    assert "rollout.lora.merge" not in S
+
+def test_offload_and_cache_clear():
+    assert "param_offload=True" in S
+    assert "optimizer_offload=True" in S
+    assert "free_cache_engine=True" in S and "enforce_eager=True" in S
+
+def test_required_fsdp2_and_qwen35_overrides():
+    for k in (
+        "actor_rollout_ref.actor.strategy=fsdp2",
+        "actor_rollout_ref.ref.strategy=fsdp2",
+        "actor_rollout_ref.actor.fsdp_config.fsdp_size=8",
+        "actor_rollout_ref.actor.use_dynamic_bsz=False",
+        "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1",
+        "actor_rollout_ref.rollout.enable_chunked_prefill=True",
+        "actor_rollout_ref.rollout.max_model_len=13524",
+        "actor_rollout_ref.rollout.calculate_log_probs=True",   # feeds the B0 logprob guard
+        "checkpoint_engine.update_weights_bucket_megabytes=3072",
+    ):
+        assert k in S, f"missing required override: {k}"
 
 def test_uses_merged_9b_and_no_cap():
     assert "merged_ep3" in S
@@ -634,14 +759,19 @@ Expected: FAIL — `FileNotFoundError: scripts/slurm/rl_generator_train_9b.sh`.
 
 - [ ] **Step 3: Write the 9B trainer launcher**
 
-Adapt `rl_generator_train.sh` (copy it) with these concrete changes — start from veRL's 27B FSDP2
-GRPO example, keep the reward-env inheritance identical:
+Copy `rl_generator_train.sh` → `rl_generator_train_9b.sh` and make exactly these edits (do NOT keep
+the 8B `OVR=(...)` array or its trainer invocation — **replace** them with the block below, so there
+is a single `OVR` and a single `run_verl_main_ppo` call). Keep the header, the merged-dir existence
+guards, `DATA_BASE`/`TRAIN_FILE`/`VAL_FILE`, and the `MODE=overfit` branch identical to the 8B
+version; keep the reward-env inheritance identical. Change `PY` and `MERGED_SFT_MODEL_PATH` at top:
 
 ```bash
-# scripts/slurm/rl_generator_train_9b.sh  (delta from the 8B version)
+# scripts/slurm/rl_generator_train_9b.sh  — edits vs the 8B version
 PY=/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/python   # pinned Arm-B env
 MERGED_SFT_MODEL_PATH=${MERGED_SFT_MODEL_PATH:-checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}
-# ... same merged-dir existence guards, DATA_BASE, overfit branch as the 8B version ...
+
+# ---- REPLACES the 8B OVR array (single definition) ----
+# `+key=...` appends keys not present in qwen3_8b_grpo_turing.yaml (lora.merge, strategy, chunked).
 OVR=(
   actor_rollout_ref.model.path="$MERGED_SFT_MODEL_PATH"
   actor_rollout_ref.model.lora_adapter_path=null
@@ -649,17 +779,31 @@ OVR=(
   actor_rollout_ref.model.lora_alpha=32
   actor_rollout_ref.model.target_modules=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]
   actor_rollout_ref.model.exclude_modules='.*visual.*'
-  actor_rollout_ref.rollout.lora.merge=true
-  actor_rollout_ref.model.enable_gradient_checkpointing=true
-  actor_rollout_ref.actor.fsdp_config.param_offload=true
-  actor_rollout_ref.actor.fsdp_config.optimizer_offload=true
-  actor_rollout_ref.ref.fsdp_config.param_offload=true
+  +actor_rollout_ref.model.lora.merge=True                 # merged dense sync (NOT rollout.lora.merge)
+  actor_rollout_ref.model.enable_gradient_checkpointing=True
+  # FSDP2 + Qwen3.5/GDN requirements (from veRL's 27B FSDP2 recipe) --------------------------------
+  actor_rollout_ref.actor.strategy=fsdp2
+  actor_rollout_ref.ref.strategy=fsdp2
+  actor_rollout_ref.actor.fsdp_config.fsdp_size=8
+  actor_rollout_ref.actor.fsdp_config.param_offload=True
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
+  actor_rollout_ref.ref.fsdp_config.param_offload=True
+  actor_rollout_ref.actor.use_dynamic_bsz=False
+  actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1
+  actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
+  actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
+  # rollout (vLLM) --------------------------------------------------------------------------------
   actor_rollout_ref.rollout.tensor_model_parallel_size=4
-  actor_rollout_ref.rollout.free_cache_engine=true
-  actor_rollout_ref.rollout.enforce_eager=true
-  actor_rollout_ref.rollout.enable_prefix_caching=false
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.40
+  actor_rollout_ref.rollout.free_cache_engine=True
+  actor_rollout_ref.rollout.enforce_eager=True
+  actor_rollout_ref.rollout.enable_prefix_caching=False
+  actor_rollout_ref.rollout.enable_chunked_prefill=True   # REQUIRED: prompts ~12.5k > 4096 batch cap
+  actor_rollout_ref.rollout.max_model_len=13524
   actor_rollout_ref.rollout.max_num_batched_tokens=4096
+  actor_rollout_ref.rollout.gpu_memory_utilization=0.40
+  actor_rollout_ref.rollout.calculate_log_probs=True       # feeds the B0 logprob-parity guard
+  +actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072
+  # trainer / data --------------------------------------------------------------------------------
   trainer.default_local_dir="$CKPT_DIR"
   trainer.n_gpus_per_node=8
   trainer.nnodes=1
@@ -674,10 +818,16 @@ $PY -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs \
 Also create `scripts/slurm/rl_generator_run_9b.sh` as a copy of `rl_generator_run.sh` that srun-launches
 `rl_generator_train_9b.sh` (trainer) alongside `judge_serve_9b_replicas.sh` (frozen judge, unchanged).
 
+> **Validate the exact Hydra key names against the pinned veRL SHA** (Task 9 Step 3): if the pinned
+> veRL renamed any of `lora.merge`, `strategy`, `enable_chunked_prefill`,
+> `checkpoint_engine.update_weights_bucket_megabytes`, adjust the key while keeping the semantics.
+> The `+` prefix is required only for keys absent from the base yaml — drop it for keys already
+> present (Hydra errors on `+` for an existing key).
+
 - [ ] **Step 4: Run the launcher test to verify it passes**
 
 Run: `python -m pytest tests/test_rl_9b_launcher.py -q`
-Expected: PASS (3 passed).
+Expected: PASS (5 passed).
 
 - [ ] **Step 5: Commit the launcher**
 
@@ -697,11 +847,14 @@ Expected: job queued; log shows judge endpoint + trainer banner in the Arm-B env
 Tail the log + inspect artifacts:
 1. Steps complete, no NaN/crash, `reward_dump/*.jsonl` populated, generations terminate
    (char lengths bounded — reuse the length check from the trajectory README).
-2. **Weight parity:** `weight_parity.json` shows `ok: true` (rollout weights changed after an
-   optimizer step AND match the actor — via `scripts/rollout_weight_parity.py` fingerprints logged
-   by the trainer at step N vs N+1). If the trainer does not yet emit fingerprints, add a small
-   hook logging `param_fingerprint(...)` for the actor and the vLLM-reported weights around
-   `update_weights`, and re-run.
+2. **Rollout sync (logprob parity):** `rollout_sync.json` shows `ok: true` from
+   `scripts/rollout_sync_guard.assert_rollout_synced` — i.e. the vLLM rollout logprobs match the
+   actor's recomputed `old_log_prob` (within tol) at BOTH step0 and step1 for a fixed prompt AND the
+   actor policy actually moved after the update. This needs
+   `actor_rollout_ref.rollout.calculate_log_probs=True` (set in Step 3); the B0 hook reads both
+   logprob arrays from the batch/metrics dump. Complement with the IPC-side merged-tensor hash
+   (a non-empty, changing `update_weights` payload) as independent evidence. **A large step1 parity
+   gap = the pre-#7014 stale-base symptom → gate FAILS.**
 3. Reward moves in the expected direction over the 3 epochs.
 Record the verdict in `.sdd-progress.md`.
 
@@ -763,7 +916,8 @@ larger/DeltaNet 9B game the frozen judge more readily?).
 - [ ] **Step 8: Commit**
 
 ```bash
-git add scripts/slurm/submit_arm_b_grid.sh tests/test_submit_arm_b_grid.py results/2026-07-24-reward-hack-proper-checkpoint/README.txt
+git add scripts/slurm/submit_arm_b_grid.sh tests/test_submit_arm_b_grid.py
+git add -f results/2026-07-24-reward-hack-proper-checkpoint/README.txt results/2026-07-24-reward-hack-proper-checkpoint/*.png
 git commit -m "results: Arm-B 9B overfit grid + 8B-vs-9B H2 comparison"
 ```
 
@@ -771,7 +925,7 @@ git commit -m "results: Arm-B 9B overfit grid + 8B-vs-9B H2 comparison"
 
 ## Final: PR
 
-- [ ] Run the full local test suite: `python -m pytest tests/test_rl_grid.py tests/test_proper_checkpoint.py tests/test_submit_arm_a_grid.py tests/test_rollout_weight_parity.py tests/test_rl_9b_launcher.py tests/test_submit_arm_b_grid.py -q` → all PASS.
+- [ ] Run the full local test suite: `python -m pytest tests/test_rl_grid.py tests/test_proper_checkpoint.py tests/test_submit_arm_a_grid.py tests/test_rollout_sync_guard.py tests/test_rl_9b_launcher.py tests/test_submit_arm_b_grid.py -q` → all PASS.
 - [ ] Push the branch and open a **draft** PR (`gh pr create --draft`) with a summary linking the
   spec + this plan. Never push to `main`/`lancewicki/main` directly; additive commits only.
 
@@ -784,8 +938,9 @@ git commit -m "results: Arm-B 9B overfit grid + 8B-vs-9B H2 comparison"
   cluster op is the checkpoint-78 merge (Task 4). If a run misbehaves, the decisions doc
   `2026-07-15-rl-generator-vs-fixed-judge/decisions.md` documents every prior gotcha (PYTHONPATH,
   wandb .env, epoch-end checkpoint quota, KL-ref merge).
-- **Arm B is the risk.** Time-box the env pinning (~1–2 days). The B0 weight-parity gate is
-  non-negotiable — "no crash" is not enough (pre-#7014 served the base policy silently).
+- **Arm B is the risk.** Time-box the env pinning (~1–2 days). The B0 rollout-sync gate (logprob
+  parity, Task 8) is non-negotiable — "no crash" is not enough (pre-#7014 served the base policy
+  silently, crash-free). Do NOT weight-hash: vLLM weights are TP-sharded/fused and ~36GB.
 - **veRL override names** (`lora.merge`, `target_modules`, `exclude_modules`, offload flags) must be
   validated against the pinned veRL SHA's config schema during Task 10 Step 3 — adjust the exact
   Hydra keys if the pinned veRL uses different names, keeping the semantics fixed.
