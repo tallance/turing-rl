@@ -720,6 +720,24 @@ Run: `ssh … 'ls -d /home/lancewicki/projects/turing-rl/checkpoints/sft/qwen35_
 If missing, re-splice from `checkpoint-78` via `scripts/splice_sft_into_full.py` (per the trajectory
 README repro, in env `turing-rl-sft-qwen35`), then re-check.
 
+- [ ] **Step 3.1: Disable MTP in the merged checkpoint config (single source of truth).** The 9B
+`config.json` has `text_config.mtp_num_hidden_layers=1`; MTP is unresolved under FSDP (veRL #6483)
+and must be off. Patch the on-disk config so **actor, ref, AND the vLLM rollout** (all load from this
+dir) see 0 — the launcher's `override_config` (Step 3) is only a belt for the actor:
+
+```bash
+ssh -p 2223 … lancewicki@localhost 'cd /home/lancewicki/projects/turing-rl && M=checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3 && python - <<PY
+import json, pathlib
+p=pathlib.Path("'"'"'$M'"'"'")/"config.json"; c=json.loads(p.read_text())
+tc=c.get("text_config", c)
+tc["mtp_num_hidden_layers"]=0
+if "num_nextn_predict_layers" in tc: tc["num_nextn_predict_layers"]=0   # alt key name, if present
+p.write_text(json.dumps(c, indent=2)); print("MTP layers set to 0 in", p)
+PY'
+```
+Expected: prints the patched path. (Confirm the exact key name in the checkpoint's `config.json`
+first — it is `mtp_num_hidden_layers` or `num_nextn_predict_layers` depending on the arch version.)
+
 ```bash
 ssh -p 2223 … lancewicki@localhost 'cd /home/lancewicki/projects/turing-rl && srun --partition=a100 --account=rfai --gres=gpu:4 --time=00:30:00 bash -lc "
 set -e
@@ -768,12 +786,15 @@ into one task — a reviewer accepts/rejects "can we GRPO the 9B at all" as a un
 import pathlib
 S = pathlib.Path("scripts/slurm/rl_generator_train_9b.sh").read_text()
 
-def test_lora_target_is_attn_mlp_not_all_linear_excludes_visual():
+def test_lora_target_is_attn_mlp_not_all_linear_excludes_visual_and_mtp():
     assert "all-linear" not in S                       # never LoRA the GDN backbone
     for m in ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"):
         assert m in S
-    assert "visual" in S                               # exclude the vision tower
+    assert "visual" in S and "mtp" in S                # exclude vision tower AND MTP head
     assert "lora_rank=64" in S and "lora_alpha=32" in S
+
+def test_mtp_disabled_via_override_config():
+    assert "override_config.text_config.mtp_num_hidden_layers=0" in S
 
 def test_merge_key_is_model_lora_merge():
     # correct veRL key is model.lora.merge (Hydra-appended), NOT rollout.lora.merge
@@ -837,7 +858,8 @@ OVR=(
   actor_rollout_ref.model.lora_rank=64
   actor_rollout_ref.model.lora_alpha=32
   actor_rollout_ref.model.target_modules=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]
-  actor_rollout_ref.model.exclude_modules='.*visual.*'
+  actor_rollout_ref.model.exclude_modules='.*(visual|mtp).*'   # skip vision tower AND MTP head
+  +actor_rollout_ref.model.override_config.text_config.mtp_num_hidden_layers=0  # belt: disable MTP on actor/ref
   +actor_rollout_ref.model.lora.merge=True                 # merged dense sync (NOT rollout.lora.merge)
   actor_rollout_ref.model.enable_gradient_checkpointing=True
   # FSDP2 + Qwen3.5/GDN requirements (from veRL's 27B FSDP2 recipe) --------------------------------
@@ -923,7 +945,7 @@ covered by `tests/test_rollout_sync_guard.py`.
 - [ ] **Step 4: Run the launcher test to verify it passes**
 
 Run: `python -m pytest tests/test_rl_9b_launcher.py -q`
-Expected: PASS (6 passed).
+Expected: PASS (7 passed).
 
 - [ ] **Step 5: Commit the launcher + instrumentation**
 
@@ -940,9 +962,24 @@ Qwen3.5-sensitive inherited settings:
 ssh -p 2223 … lancewicki@localhost 'cd /home/lancewicki/projects/turing-rl && OVR="$(sed -n "s/^  \(actor_rollout_ref[^ ]*\|trainer[^ ]*\|data[^ ]*\|+[^ ]*\).*/\1/p" scripts/slurm/rl_generator_train_9b.sh)"; /home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/python -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen3_8b_grpo_turing $OVR --cfg job --resolve 2>&1 | grep -iE "lora|merge|strategy|attn_implementation|remove_padding|chunked_prefill|max_model_len|mtp|target_modules|exclude_modules|offload"'
 ```
 Expected: resolves with NO Hydra error; every override present at its intended value; verify
-Qwen3.5's inherited `attn_implementation`, `use_remove_padding`, and MTP/speculative settings are sane
-(remove-padding off unless flash-attn path confirmed; MTP disabled). Fix any mis-resolved key before
-spending GPUs. (Build the `$OVR` list from the launcher, or hard-code the same override array.)
+Qwen3.5's inherited `attn_implementation` and `use_remove_padding` are sane (remove-padding off unless
+flash-attn path confirmed). Fix any mis-resolved key before spending GPUs.
+
+- [ ] **Step 5c: Verify MTP is actually off in the INSTANTIATED config** (Hydra grep does NOT inspect
+the loaded HF config — MTP lives there). Confirm the patched checkpoint reports 0:
+
+```bash
+ssh -p 2223 … lancewicki@localhost 'cd /home/lancewicki/projects/turing-rl && /home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/python - <<PY
+from transformers import AutoConfig
+c=AutoConfig.from_pretrained("checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3", trust_remote_code=True)
+tc=getattr(c,"text_config",c)
+n=getattr(tc,"mtp_num_hidden_layers", getattr(tc,"num_nextn_predict_layers", None))
+print("mtp layers =", n); assert n in (0, None), f"MTP still on: {n}"
+print("MTP OFF OK")
+PY'
+```
+Expected: `mtp layers = 0` (or None) and `MTP OFF OK`. If nonzero, re-run Step 3.1 with the correct
+key name before B0.
 
 - [ ] **Step 6: Deploy + run the B0 spike (5–10 updates) on the cluster**
 
