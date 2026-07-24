@@ -503,11 +503,14 @@ now (unit-testable offline); wire it into the spike in Task 10.
   for the same generated tokens; returns `{"max_abs_diff": float, "close": bool}`
   (`close` = max abs diff ≤ atol). If rollout and actor disagree, vLLM is serving different weights
   than the actor holds (the stale-base symptom).
-  `assert_rollout_synced(step0: dict, step1: dict, actor_lp0, actor_lp1) -> dict` — given the
-  logprob-parity dict at two steps plus the actor logprobs before/after one optimizer update, returns
-  `{"synced": bool, "policy_moved": bool, "ok": bool}` where `synced` = rollout≈actor at BOTH steps
-  and `policy_moved` = the actor logprobs actually changed after the update (not a frozen no-op);
-  `ok = synced and policy_moved`.
+  `assert_rollout_synced(step0: dict, step1: dict, tf_lp0, tf_lp1) -> dict` — `step0`/`step1` are the
+  within-step logprob-parity dicts (rollout vs actor on the SAME generated tokens, valid).
+  `tf_lp0`/`tf_lp1` are the actor's **teacher-forced** logprobs on a **FIXED prompt+continuation**
+  evaluated at step0 and step1 — identical tokens, so a cross-step diff is meaningful (unlike sampled
+  rollouts, which differ every step). Returns `{"synced": bool, "policy_moved": bool, "ok": bool}`:
+  `synced` = rollout≈actor at BOTH steps; `policy_moved` = the teacher-forced logprobs changed after
+  the update; `ok = synced and policy_moved`. Raises if `tf_lp0`/`tf_lp1` shapes differ (that would
+  mean the "fixed" sequence wasn't actually fixed).
 
 - [ ] **Step 1: Write the failing test**
 
@@ -523,24 +526,33 @@ def test_parity_close_and_far():
     assert r["close"] is False and r["max_abs_diff"] > 0.4             # rollout != actor
 
 def test_ok_when_synced_both_steps_and_policy_moved():
-    lp0 = np.array([-0.1, -0.2]); lp1 = np.array([-0.4, -0.9])         # actor moved after update
-    s0 = logprob_parity(lp0, lp0 + 0.01)                               # rollout tracks actor @ step0
-    s1 = logprob_parity(lp1, lp1 + 0.01)                              #  ... and @ step1
-    out = assert_rollout_synced(s0, s1, lp0, lp1)
+    # within-step parity dicts (rollout vs actor, same sampled tokens — may differ per step)
+    s0 = logprob_parity(np.array([-0.1, -0.2]), np.array([-0.11, -0.19]))   # close @ step0
+    s1 = logprob_parity(np.array([-0.4, -0.9, -0.3]), np.array([-0.41, -0.9, -0.29]))  # close @ step1
+    # teacher-forced logprobs on a FIXED 4-token continuation, evaluated at both steps (same shape)
+    tf0 = np.array([-0.10, -0.20, -0.30, -0.40])
+    tf1 = np.array([-0.50, -0.60, -0.70, -0.80])                            # actor moved
+    out = assert_rollout_synced(s0, s1, tf0, tf1)
     assert out == {"synced": True, "policy_moved": True, "ok": True}
 
-def test_stale_base_flagged():           # rollout frozen at base while actor trains -> desync grows
-    lp0 = np.array([-0.1, -0.2]); lp1 = np.array([-0.4, -0.9])
-    s0 = logprob_parity(lp0, lp0 + 0.01)                              # ok at step0
-    s1 = logprob_parity(lp1, lp0 + 0.01)                             # step1 rollout still ~base -> far
-    out = assert_rollout_synced(s0, s1, lp0, lp1)
+def test_stale_base_flagged():           # rollout frozen at base while actor trains -> step1 desync
+    s0 = logprob_parity(np.array([-0.1, -0.2]), np.array([-0.11, -0.19]))   # ok @ step0
+    s1 = logprob_parity(np.array([-0.4, -0.9]), np.array([-0.4, -0.2]))     # rollout != actor @ step1
+    tf0 = np.array([-0.1, -0.2, -0.3, -0.4]); tf1 = np.array([-0.5, -0.6, -0.7, -0.8])
+    out = assert_rollout_synced(s0, s1, tf0, tf1)
     assert out["synced"] is False and out["ok"] is False
 
-def test_frozen_policy_flagged():        # rollout tracks actor but actor never moved -> no-op run
-    lp = np.array([-0.1, -0.2])
-    s = logprob_parity(lp, lp + 0.01)
-    out = assert_rollout_synced(s, s, lp, lp)                         # actor_lp0 == actor_lp1
+def test_frozen_policy_flagged():        # rollout tracks actor but teacher-forced logprobs unchanged
+    s = logprob_parity(np.array([-0.1, -0.2]), np.array([-0.11, -0.19]))
+    tf = np.array([-0.1, -0.2, -0.3, -0.4])
+    out = assert_rollout_synced(s, s, tf, tf.copy())                        # no movement on fixed seq
     assert out["policy_moved"] is False and out["ok"] is False
+
+def test_teacher_forced_shape_must_match():
+    s = logprob_parity(np.array([-0.1]), np.array([-0.1]))
+    import pytest
+    with pytest.raises((ValueError, AssertionError)):
+        assert_rollout_synced(s, s, np.array([-0.1, -0.2]), np.array([-0.1]))  # not a fixed seq
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -571,11 +583,19 @@ def logprob_parity(rollout_lp, actor_lp, atol: float = 0.1) -> dict:
     return {"max_abs_diff": max_abs_diff, "close": max_abs_diff <= atol}
 
 
-def assert_rollout_synced(step0: dict, step1: dict, actor_lp0, actor_lp1, move_atol: float = 1e-3) -> dict:
-    """ok iff rollout≈actor at BOTH steps (synced) AND the actor policy actually moved after update."""
+def assert_rollout_synced(step0: dict, step1: dict, tf_lp0, tf_lp1, move_atol: float = 1e-3) -> dict:
+    """ok iff rollout≈actor at BOTH steps (synced) AND the actor moved on a FIXED teacher-forced seq.
+
+    step0/step1 : within-step logprob_parity dicts (rollout vs actor on the SAME sampled tokens).
+    tf_lp0/tf_lp1: actor teacher-forced logprobs on ONE fixed prompt+continuation at step0 & step1 —
+                   identical tokens, so the cross-step delta is meaningful. (Do NOT diff sampled
+                   rollout logprobs across steps: different tokens/shapes -> meaningless.)
+    """
+    a0 = np.asarray(tf_lp0, dtype=np.float64)
+    a1 = np.asarray(tf_lp1, dtype=np.float64)
+    if a0.shape != a1.shape:
+        raise ValueError(f"teacher-forced logprobs must be the same fixed sequence: {a0.shape} vs {a1.shape}")
     synced = bool(step0["close"] and step1["close"])
-    a0 = np.asarray(actor_lp0, dtype=np.float64)
-    a1 = np.asarray(actor_lp1, dtype=np.float64)
     policy_moved = bool(a0.size and float(np.max(np.abs(a0 - a1))) > move_atol)
     return {"synced": synced, "policy_moved": policy_moved, "ok": synced and policy_moved}
 ```
@@ -583,7 +603,7 @@ def assert_rollout_synced(step0: dict, step1: dict, actor_lp0, actor_lp1, move_a
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `python -m pytest tests/test_rollout_sync_guard.py -q`
-Expected: PASS (4 passed).
+Expected: PASS (5 passed).
 
 - [ ] **Step 5: Commit**
 
@@ -592,14 +612,14 @@ git add scripts/rollout_sync_guard.py tests/test_rollout_sync_guard.py
 git commit -m "feat: B0 rollout-sync guard via logprob parity (catches pre-#7014 stale rollout)"
 ```
 
-> **Wiring note (Task 10):** veRL already computes both signals per step —
-> `actor_rollout_ref.rollout.calculate_log_probs=true` makes vLLM return its generation logprobs,
-> and the actor's `old_log_prob` is computed every PPO step. The B0 hook reads both from the batch
-> (or the reward/metrics dump) for a fixed prompt at step 0 and step 1 and calls
-> `assert_rollout_synced`, writing `weight_parity.json`. Also complement with the cheap
-> **IPC-side fingerprint**: log a hash of the small set of merged tensors veRL pushes to vLLM in
-> `update_weights` (not all 9B params) to confirm non-empty, changing payloads — a second,
-> independent line of evidence.
+> **Wiring note:** these arrays are NOT in veRL's default reward dump — an explicit instrumentation
+> hook (Task 10, Step 3b) must capture them. `calculate_log_probs=True` attaches vLLM's generation
+> logprobs to the batch and the actor's `old_log_prob` is computed every PPO step (same tokens →
+> within-step parity); the hook additionally runs a teacher-forced pass on ONE fixed
+> prompt+continuation at step0 & step1 (→ movement) and writes `rollout_sync.json` via this helper.
+> Complement with the cheap **IPC-side fingerprint**: a hash of the small set of merged tensors veRL
+> pushes to vLLM in `update_weights` (not all 9B params) — independent evidence the payload is
+> non-empty and changing.
 
 ---
 
@@ -634,42 +654,40 @@ PIP="$PY -m pip"
 $CONDA/bin/conda create -y -n "$ENV" python=3.11
 $PIP install -U pip setuptools wheel packaging ninja
 
-# 1. Clone veRL at the pinned SHA and read ITS torch/CUDA pin (source of truth — do not guess).
+# 1. Clone veRL at the pinned SHA and read ITS torch/CUDA + flash-attn pins (source of truth).
 [ -d "$VERL_DIR" ] || git clone https://github.com/verl-project/verl "$VERL_DIR"
 git -C "$VERL_DIR" fetch --all && git -C "$VERL_DIR" checkout "$VERL_SHA"
-echo ">> veRL requirements pin torch/cuda as follows (install EXACTLY this next):"
-grep -iE '^torch(vision|audio)?[=<>]' "$VERL_DIR"/requirements*.txt || true
+echo ">> veRL pins (install EXACTLY these next; edit the literals below if they differ):"
+grep -iRhoE '(torch(vision|audio)?|flash-attn|vllm)[=<>~!]=[0-9][^ ]*' "$VERL_DIR"/requirements*.txt "$VERL_DIR"/setup.py 2>/dev/null | sort -u || true
 
-# 2. Torch FIRST, exactly as veRL's requirements pin it (edit the line below to match step-1 output).
-$PIP install "torch==2.6.0" "torchvision==0.21.0" --index-url https://download.pytorch.org/whl/cu124
+# 2. Torch FIRST — vLLM 0.20.2 REQUIRES torch 2.11.0 / CUDA 13 (NOT 2.6; that is an ABI mismatch).
+$PIP install "torch==2.11.0" "torchvision==0.26.0" --index-url https://download.pytorch.org/whl/cu130
 
-# 3. Kernels that must build against the installed torch (order matters, --no-build-isolation).
-$PIP install --no-build-isolation "flash-attn==2.7.4.post1"
-$PIP install --no-build-isolation "causal-conv1d>=1.4.0"
+# 3. Kernels built against torch 2.11 (order matters, --no-build-isolation). flash-attn 2.8.3.
+$PIP install --no-build-isolation "flash-attn==2.8.3"
+$PIP install --no-build-isolation "causal-conv1d>=1.5.0"
 $PIP install "flash-linear-attention==0.5.1"
 
-# 4. transformers pin BEFORE vllm; then vllm with --no-deps so it can't downgrade transformers.
-$PIP install "transformers==5.4.0"
-$PIP install --no-deps "vllm==0.20.2"
-$PIP install "$($PY - <<'PY'
-# print vllm's runtime deps EXCEPT transformers, to install them without the transformers pin fight
-import importlib.metadata as m
-reqs=[r.split(';')[0].strip() for r in (m.requires('vllm') or [])]
-print(' '.join(r for r in reqs if r and not r.lower().startswith('transformers')))
-PY
-)"
+# 4. vLLM 0.20.2 with its FULL deps (torch 2.11 already satisfied so it won't fight).
+$PIP install "vllm==0.20.2"
 
-# 5. veRL itself from source, --no-deps (we've already pinned its heavy deps above).
-$PIP install --no-deps -e "$VERL_DIR"
+# 5. veRL from source with its complete requirements (do NOT --no-deps here — install the full set).
+$PIP install -r "$VERL_DIR/requirements.txt"
+$PIP install -e "$VERL_DIR"
 
-# 6. Remaining turing-rl runtime deps (peft/datasets/pyarrow/wandb/openai/ray) — pin to match train env.
-$PIP install "peft>=0.14" "datasets" "pyarrow" "wandb" "openai" "ray[default]"
+# 6. Force transformers==5.4.0 LAST, --no-deps, so it overrides whatever vllm/veRL resolved
+#    (5.4.0 is the GDN-crash workaround, veRL #6549). This is the candidate-stack gamble — B0 validates it.
+$PIP install --no-deps --force-reinstall "transformers==5.4.0"
+
+# 7. turing-rl runtime deps not covered above (match the train env where they overlap).
+$PIP install "peft>=0.14" "openai"
 echo ">> built $ENV @ veRL $VERL_SHA — verify with Step 2."
 ```
 
-> The `torch`/`flash-attn` version literals above are the expected veRL-`c791da0b`-era pins; **replace
-> them with the exact lines printed by step 1** if they differ. This is the one place a mismatch will
-> silently break GDN kernels (veRL #6549) — get it from veRL's own requirements, not from memory.
+> The `torch==2.11.0/cu130` and `flash-attn==2.8.3` literals are the vLLM-0.20.2-required stack;
+> **cross-check against step-1's printed pins** and adjust if the pinned veRL differs. A torch/vLLM
+> ABI mismatch here is the #1 silent failure mode; the transformers-5.4.0 force-reinstall (step 6)
+> is deliberately last so vLLM's own transformers pin can't win.
 
 - [ ] **Step 2: Build the env on the cluster** following the script, then record exact installed
 versions:
@@ -700,6 +718,8 @@ into one task — a reviewer accepts/rejects "can we GRPO the 9B at all" as a un
 **Files:**
 - Create: `scripts/slurm/rl_generator_train_9b.sh` (9B variant of `rl_generator_train.sh`)
 - Create: `scripts/slurm/rl_generator_run_9b.sh` (2-node driver; or parameterize the existing driver)
+- Create: `training/grpo/b0_rollout_sync_hook.py` (Step 3b — captures the logprob-parity data path)
+- Modify: `training/grpo/run_verl_main_ppo.py` (guarded `if os.environ.get("B0_ROLLOUT_SYNC")` call)
 - Test: `tests/test_rl_9b_launcher.py` (static assertions on the launcher text)
 
 **Interfaces:**
@@ -731,7 +751,14 @@ def test_merge_key_is_model_lora_merge():
 def test_offload_and_cache_clear():
     assert "param_offload=True" in S
     assert "optimizer_offload=True" in S
+    assert "actor.fsdp_config.offload_policy=True" in S       # FSDP2-specific offload policy
+    assert "ref.fsdp_config.offload_policy=True" in S
     assert "free_cache_engine=True" in S and "enforce_eager=True" in S
+
+def test_checkpoint_engine_override_has_no_plus_prefix():
+    # key already exists in current veRL -> `+` would error "already exists"
+    assert "checkpoint_engine.update_weights_bucket_megabytes=3072" in S
+    assert "+actor_rollout_ref.rollout.checkpoint_engine" not in S
 
 def test_required_fsdp2_and_qwen35_overrides():
     for k in (
@@ -787,7 +814,9 @@ OVR=(
   actor_rollout_ref.actor.fsdp_config.fsdp_size=8
   actor_rollout_ref.actor.fsdp_config.param_offload=True
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
+  actor_rollout_ref.actor.fsdp_config.offload_policy=True    # FSDP2 offload policy (official 27B recipe)
   actor_rollout_ref.ref.fsdp_config.param_offload=True
+  actor_rollout_ref.ref.fsdp_config.offload_policy=True
   actor_rollout_ref.actor.use_dynamic_bsz=False
   actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
@@ -802,7 +831,7 @@ OVR=(
   actor_rollout_ref.rollout.max_num_batched_tokens=4096
   actor_rollout_ref.rollout.gpu_memory_utilization=0.40
   actor_rollout_ref.rollout.calculate_log_probs=True       # feeds the B0 logprob-parity guard
-  +actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072
+  actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072   # no + (key exists)
   # trainer / data --------------------------------------------------------------------------------
   trainer.default_local_dir="$CKPT_DIR"
   trainer.n_gpus_per_node=8
@@ -824,23 +853,50 @@ Also create `scripts/slurm/rl_generator_run_9b.sh` as a copy of `rl_generator_ru
 > The `+` prefix is required only for keys absent from the base yaml — drop it for keys already
 > present (Hydra errors on `+` for an existing key).
 
+- [ ] **Step 3b: Write the B0 rollout-sync instrumentation hook (the data path)**
+
+The guard from Task 8 is pure logic — nothing yet *produces* its inputs. veRL's default reward dump
+does NOT contain aligned rollout/actor logprob arrays, so add an explicit hook that captures them and
+writes `rollout_sync.json`. Enable it only under an env flag so it never touches the real runs.
+
+**Files:** Create `training/grpo/b0_rollout_sync_hook.py`; wire one call into
+`training/grpo/run_verl_main_ppo.py` (guarded by `if os.environ.get("B0_ROLLOUT_SYNC")`).
+
+What the hook does, at PPO steps 0 and 1 only:
+1. **Within-step parity:** from the rollout batch, read vLLM's generation logprobs
+   (`batch["rollout_log_probs"]`, present because `calculate_log_probs=True`) and the actor's
+   recomputed `batch["old_log_probs"]` for the SAME tokens; mask to response tokens; call
+   `logprob_parity(rollout_lp, actor_lp)` → `step0`/`step1`.
+2. **Movement (teacher-forced):** run one forward on a FIXED prompt+continuation (hard-coded token
+   ids, saved once) through the actor to get per-token logprobs `tf_lp0` (step0) and `tf_lp1` (step1)
+   — identical tokens, comparable across steps.
+3. `assert_rollout_synced(step0, step1, tf_lp0, tf_lp1)` → write `rollout_sync.json` in `RL_RUN_DIR`.
+4. Also log the IPC merged-tensor hash around veRL's `update_weights` (a few tensors, not 36GB).
+
+Because the exact veRL batch keys/attribute names depend on the pinned SHA, confirm them against the
+pinned veRL during this step (grep `rollout_log_probs`/`old_log_prob`/`calculate_log_probs` in
+`$VERL_DIR`) and adjust the reads; keep the guard-call semantics fixed. This hook is the concrete
+implementation the Task 8 wiring note refers to. No new unit test (it is exercised live in Step 7);
+its pure inputs are already covered by `tests/test_rollout_sync_guard.py`.
+
 - [ ] **Step 4: Run the launcher test to verify it passes**
 
 Run: `python -m pytest tests/test_rl_9b_launcher.py -q`
-Expected: PASS (5 passed).
+Expected: PASS (6 passed).
 
-- [ ] **Step 5: Commit the launcher**
+- [ ] **Step 5: Commit the launcher + instrumentation**
 
 ```bash
-git add scripts/slurm/rl_generator_train_9b.sh scripts/slurm/rl_generator_run_9b.sh tests/test_rl_9b_launcher.py
-git commit -m "feat: Arm-B 9B GRPO launcher (LoRA merge=true, attn+MLP excl visual, TP4/offload)"
+git add scripts/slurm/rl_generator_train_9b.sh scripts/slurm/rl_generator_run_9b.sh training/grpo/b0_rollout_sync_hook.py training/grpo/run_verl_main_ppo.py tests/test_rl_9b_launcher.py
+git commit -m "feat: Arm-B 9B GRPO launcher + B0 rollout-sync instrumentation (logprob parity data path)"
 ```
 
 - [ ] **Step 6: Deploy + run the B0 spike (5–10 steps) on the cluster**
 
 Run (Mac): `scripts/sync_to_cluster.sh` then
-`ssh … 'cd … && preflight then JUDGE=9b MODE=overfit OVERFIT_EPOCHS=3 RUN_TAG=9b_b0_spike sbatch --export=ALL scripts/slurm/rl_generator_run_9b.sh'`
-Expected: job queued; log shows judge endpoint + trainer banner in the Arm-B env.
+`ssh … 'cd … && preflight then B0_ROLLOUT_SYNC=1 JUDGE=9b MODE=overfit OVERFIT_EPOCHS=3 RUN_TAG=9b_b0_spike sbatch --export=ALL scripts/slurm/rl_generator_run_9b.sh'`
+Expected: job queued; log shows judge endpoint + trainer banner in the Arm-B env. `B0_ROLLOUT_SYNC=1`
+turns on the Step-3b hook so `rollout_sync.json` is written.
 
 - [ ] **Step 7: Evaluate the B0 gate (ALL must hold)**
 
