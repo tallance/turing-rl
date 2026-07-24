@@ -15,17 +15,27 @@ checkpoint and repeat the experiment on it, for **two generators**:
 - **Arm A — Qwen3-8B** (existing stack): the direct repeat.
 - **Arm B — Qwen3.5-9B** (new stack, spike-gated): the new generator axis.
 
-**Hypothesis.** The headline finding of the original probe was that the frozen 9B judge is
-gameable *given enough optimization pressure*: the KL sweep (β∈{1e-3,1e-4,0}) stalled at
-~0.57–0.60 win-rate (4–5/10 overfit gate), but a **10× learning rate (lr=1e-4)** broke through to
-**8/10, win-rate 0.744** — showing the plateau was an optimization artifact, not judge robustness.
-The confound: that entire conclusion rests on a generator that never learned to stop. **This
-experiment tests whether the same hack (lr=1e-4 clears the ≥8/10 overfit gate, drives full-run
-win-rate > SFT baseline and toward >50%) replicates when the SFT init is clean** — for both an 8B
-and a 9B generator.
+This experiment has **two purposes**:
 
-Success is *demonstrating (or refuting) the hack on a clean checkpoint*, not building a good
-simulator. It de-risks the adversarial (trainable-discriminator) extension.
+**Purpose 1 — replicate (or refute) the hack on a clean checkpoint.** The headline finding of the
+original probe was that the frozen 9B judge is gameable *given enough optimization pressure*: the
+KL sweep (β∈{1e-3,1e-4,0}) stalled at ~0.57–0.60 win-rate (4–5/10 overfit gate), but a **10×
+learning rate (lr=1e-4)** broke through to **8/10, win-rate 0.744** — showing the plateau was an
+optimization artifact, not judge robustness. The confound: that entire conclusion rests on a
+generator that never learned to stop. **H1: the same hack (lr=1e-4 clears the ≥8/10 overfit gate,
+drives full-run win-rate > SFT baseline and toward >50%) replicates when the SFT init is clean.**
+
+**Purpose 2 — compare the 8B vs 9B generator.** With the frozen 9B judge and every other setting
+held fixed, does generator **scale/architecture** change hackability? Qwen3.5-9B is both larger
+and a different backbone (hybrid Gated-DeltaNet vs Qwen3-8B's full attention). **H2: a stronger/
+different-arch generator reaches a *higher* win-rate and/or clears the overfit gate with *less*
+optimization pressure (lower lr / stronger KL) than the 8B** — i.e. the frozen judge is more
+easily gamed by a more capable simulator. The KL×LR grid, run identically on both generators
+against the *same* judge, makes this a controlled comparison rather than an afterthought.
+
+Success is *demonstrating (or refuting) H1 and H2 on a clean checkpoint*, not building a good
+simulator. It de-risks the adversarial (trainable-discriminator) extension — including whether the
+discriminator must scale with the generator.
 
 ## 2. Relation to the original probe (what changes, what doesn't)
 
@@ -194,6 +204,10 @@ builder, eval-vs-sweep parity, split integrity) still applies. New/changed:
    and approaches/exceeds 50% — reported head-to-head against the buggy-checkpoint 0.744. Either
    outcome (replicates / doesn't) is a clean scientific result.
 3. **Arm B:** B0 spike passes → the 9B generator reproduces (or not) the same hackability pattern
-   under the frozen 9B judge, directly comparable to Arm A.
-4. Every setting traceable to the 2026-07-15 design + paper except the documented deltas (proper
+   under the frozen 9B judge.
+4. **8B vs 9B (H2):** with the frozen 9B judge and identical KL×LR grid, compare the two
+   generators head-to-head — peak win-rate, the (KL, LR) cell at which each first clears the ≥8/10
+   overfit gate, and full-run heldout win-rate. A clean statement of whether the more capable /
+   different-arch generator games the frozen judge more readily.
+5. Every setting traceable to the 2026-07-15 design + paper except the documented deltas (proper
    checkpoint, KL×LR grid, 9B arm).
