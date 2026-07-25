@@ -23,6 +23,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASE_MODEL = "Qwen/Qwen3-8B"
 DEFAULT_ADAPTER_DIR = REPO_ROOT / "checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack/final"
 DEFAULT_OUTPUT_DIR = REPO_ROOT / "checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack/merged"
+# Stop-token-supervised (proper) SFT checkpoint from the 2026-07-21 trajectory run (job 10715),
+# ep3. Distinct from the buggy DEFAULT_* above (whose completion mask excluded <|im_end|>).
+PROPER_ADAPTER_DIR_8B = (
+    REPO_ROOT / "checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/checkpoint-78"
+)
+PROPER_MERGED_DIR_8B = (
+    REPO_ROOT / "checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3"
+)
 MERGE_METADATA_NAME = "sft_merge_metadata.json"
 
 
