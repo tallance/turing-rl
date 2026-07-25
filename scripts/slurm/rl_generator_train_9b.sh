@@ -90,7 +90,7 @@ OVR=(
   # FSDP2 + Qwen3.5/GDN requirements (from veRL's 27B FSDP2 recipe) --------------------------------
   actor_rollout_ref.actor.strategy=fsdp2
   actor_rollout_ref.ref.strategy=fsdp2
-  actor_rollout_ref.actor.fsdp_config.fsdp_size=8
+  actor_rollout_ref.actor.fsdp_config.fsdp_size=${RL_NGPUS:-8}
   actor_rollout_ref.actor.fsdp_config.param_offload=True
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
   actor_rollout_ref.actor.fsdp_config.offload_policy=True    # FSDP2 offload policy (official 27B recipe)
@@ -101,7 +101,7 @@ OVR=(
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
   # rollout (vLLM) --------------------------------------------------------------------------------
-  actor_rollout_ref.rollout.tensor_model_parallel_size=4
+  actor_rollout_ref.rollout.tensor_model_parallel_size=${RL_ROLLOUT_TP:-4}
   actor_rollout_ref.rollout.free_cache_engine=True
   actor_rollout_ref.rollout.enforce_eager=True
   actor_rollout_ref.rollout.enable_prefix_caching=False
@@ -116,7 +116,7 @@ OVR=(
   trainer.experiment_name="$EXP"
   trainer.project_name="${WANDB_PROJECT:-2026-07-15-rl-generator-vs-fixed-judge}"
   trainer.resume_mode=auto
-  trainer.n_gpus_per_node=8
+  trainer.n_gpus_per_node=${RL_NGPUS:-8}
   trainer.nnodes=1
   data.train_files="$TRAIN_FILE"
   data.val_files="$VAL_FILE"

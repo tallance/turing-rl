@@ -33,7 +33,7 @@ def test_required_fsdp2_and_qwen35_overrides():
     for k in (
         "actor_rollout_ref.actor.strategy=fsdp2",
         "actor_rollout_ref.ref.strategy=fsdp2",
-        "actor_rollout_ref.actor.fsdp_config.fsdp_size=8",
+        "actor_rollout_ref.actor.fsdp_config.fsdp_size=${RL_NGPUS:-8}",   # env-overridable NGPUS
         "actor_rollout_ref.actor.use_dynamic_bsz=False",
         "actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1",
         "actor_rollout_ref.rollout.enable_chunked_prefill=True",

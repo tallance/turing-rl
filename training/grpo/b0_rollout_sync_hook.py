@@ -54,10 +54,13 @@ logger = logging.getLogger(__name__)
 
 # Confirm against the pinned veRL SHA before B0 (see module docstring).
 _ACTOR_UPDATE_METHOD = "_update_actor"           # RayPPOTrainer method that runs the optimizer step
-_ROLLOUT_LOGPROB_KEY = "rollout_log_probs"       # vLLM generation logprobs (calculate_log_probs=True)
-_ACTOR_LOGPROB_KEY = "old_log_probs"             # actor's recomputed logprobs for the same tokens
+# veRL-0.9 batch key aliases; the real key varies by version, so try each in order and use the
+# first present in the DataProto's .batch (TensorDict). See _first_present_key().
+_ROLLOUT_LOGPROB_KEYS = ["rollout_log_probs", "rollout_log_prob"]  # vLLM generation logprobs (calculate_log_probs=True)
+_ACTOR_LOGPROB_KEYS = ["old_log_prob", "old_log_probs"]            # actor's recomputed logprobs for the same tokens
 _RESPONSE_MASK_KEY = "response_mask"
 _ATTENTION_MASK_KEY = "attention_mask"
+_TF_LOGPROB_KEYS = ["old_log_prob", "old_log_probs", "log_probs"]  # compute_log_prob output logprobs
 _ACTOR_WG_ATTR = "actor_rollout_wg"              # trainer attr holding the actor worker group
 _WG_LOGPROB_METHOD = "compute_log_prob"          # worker-group teacher-forced logprob API
 
@@ -66,6 +69,18 @@ _MAX_CAPTURES = 2                                 # update-call 0 and 1 only
 
 def _run_dir() -> str:
     return os.environ.get("RL_RUN_DIR") or os.environ.get("PERSONA_REWARD_DUMP_DIR") or os.getcwd()
+
+
+def _first_present_key(tensordict: Any, candidates: list[str]) -> str:
+    """Return the first candidate key present in a DataProto's .batch (TensorDict).
+
+    Raises KeyError (caught by the wrapper's try/except -> ok:false+error) if none match.
+    """
+    keys = set(tensordict.keys())
+    for k in candidates:
+        if k in keys:
+            return k
+    raise KeyError(f"none of {candidates} present in batch; keys={sorted(keys)}")
 
 
 def _to_np(tensor: Any) -> np.ndarray:
@@ -94,10 +109,10 @@ def _masked_flat(values: Any, mask: Any) -> np.ndarray:
 def _within_step_parity(batch: Any) -> dict:
     """logprob_parity(rollout_lp, actor_lp) over the masked response tokens of this batch."""
     tensordict = batch.batch
-    rollout = tensordict[_ROLLOUT_LOGPROB_KEY]
-    actor = tensordict[_ACTOR_LOGPROB_KEY]
+    rollout = tensordict[_first_present_key(tensordict, _ROLLOUT_LOGPROB_KEYS)]
+    actor = tensordict[_first_present_key(tensordict, _ACTOR_LOGPROB_KEYS)]
     mask = None
-    keys = tensordict.keys()
+    keys = set(tensordict.keys())
     if _RESPONSE_MASK_KEY in keys:
         mask = tensordict[_RESPONSE_MASK_KEY]
     elif _ATTENTION_MASK_KEY in keys:
@@ -125,13 +140,8 @@ def _teacher_forced_logprob(trainer: Any, fixed_dp: Any) -> np.ndarray:
     compute = getattr(worker_group, _WG_LOGPROB_METHOD)
     out = compute(copy.deepcopy(fixed_dp))
     tensordict = out.batch
-    keys = tensordict.keys()
-    if _ACTOR_LOGPROB_KEY in keys:
-        lp = tensordict[_ACTOR_LOGPROB_KEY]
-    elif "log_probs" in keys:
-        lp = tensordict["log_probs"]
-    else:
-        raise KeyError(f"compute_log_prob output has no logprob key; keys={list(keys)}")
+    lp = tensordict[_first_present_key(tensordict, _TF_LOGPROB_KEYS)]
+    keys = set(tensordict.keys())
     mask = tensordict[_RESPONSE_MASK_KEY] if _RESPONSE_MASK_KEY in keys else None
     return _masked_flat(lp, mask)
 
