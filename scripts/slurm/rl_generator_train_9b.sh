@@ -74,8 +74,8 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 echo "============================================"
 
 # ---- 9B OVR array (single definition; REPLACES the 8B OVR + trainer call) ----
-# `+key=...` appends keys not present in qwen3_8b_grpo_turing.yaml (lora.merge, override_config,
-# mtp). Keys already present in the base yaml (strategy, chunked_prefill, checkpoint_engine,
+# `+key=...` appends keys not present in qwen3_8b_grpo_turing.yaml (override_config/mtp).
+# Keys already present in the base yaml (lora.merge, strategy, chunked_prefill, checkpoint_engine,
 # max_model_len, calculate_log_probs) take NO `+` — Hydra errors on `+` for an existing key.
 OVR=(
   actor_rollout_ref.model.path="$MERGED_SFT_MODEL_PATH"
@@ -83,9 +83,9 @@ OVR=(
   actor_rollout_ref.model.lora_rank=64
   actor_rollout_ref.model.lora_alpha=32
   actor_rollout_ref.model.target_modules=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]
-  actor_rollout_ref.model.exclude_modules='.*(visual|mtp).*'   # skip vision tower AND MTP head
+  "actor_rollout_ref.model.exclude_modules='.*(visual|mtp).*'" # preserve regex quotes for Hydra
   +actor_rollout_ref.model.override_config.text_config.mtp_num_hidden_layers=0  # belt: disable MTP on actor/ref
-  +actor_rollout_ref.model.lora.merge=True                 # merged dense sync (model.lora.merge, NOT the rollout block)
+  actor_rollout_ref.model.lora.merge=True                  # key already exists; merged dense sync
   actor_rollout_ref.model.enable_gradient_checkpointing=True
   # FSDP2 + Qwen3.5/GDN requirements (from veRL's 27B FSDP2 recipe) --------------------------------
   actor_rollout_ref.actor.strategy=fsdp2

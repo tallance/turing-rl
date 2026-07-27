@@ -106,9 +106,17 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _find_optional_module_spec(module_name: str) -> Any:
+    """Return a module spec, treating a missing parent package as unavailable."""
+    try:
+        return importlib.util.find_spec(module_name)
+    except ModuleNotFoundError:
+        return None
+
+
 def _patch_actor_elbo_sft_source() -> None:
     """Patch veRL actor config for optional ELBO/SFT loss."""
-    spec = importlib.util.find_spec("verl.workers.actor.dp_actor")
+    spec = _find_optional_module_spec("verl.workers.actor.dp_actor")
     if spec is None or spec.origin is None:
         return
     path = Path(spec.origin)
@@ -175,7 +183,7 @@ def _patch_actor_elbo_sft_source() -> None:
 
 
 def _patch_actor_config_elbo_sft_source() -> None:
-    spec = importlib.util.find_spec("verl.workers.config.actor")
+    spec = _find_optional_module_spec("verl.workers.config.actor")
     if spec is None or spec.origin is None:
         return
     path = Path(spec.origin)
@@ -202,7 +210,7 @@ def _patch_actor_config_elbo_sft_source() -> None:
 
 def _patch_peft_meta_adapter_load_source() -> None:
     """Patch PEFT adapter loading on meta tensors."""
-    spec = importlib.util.find_spec("verl.workers.fsdp_workers")
+    spec = _find_optional_module_spec("verl.workers.fsdp_workers")
     if spec is None or spec.origin is None:
         return
     path = Path(spec.origin)

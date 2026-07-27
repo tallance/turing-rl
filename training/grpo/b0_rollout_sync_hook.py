@@ -16,8 +16,8 @@ At update-call 0 and 1 only, the wrapper captures:
   1. Within-step parity: vLLM's generation logprobs (``rollout_log_probs``, present because
      ``rollout.calculate_log_probs=True``) vs the actor's recomputed ``old_log_probs`` for the
      SAME response tokens, masked by ``response_mask`` -> ``logprob_parity`` -> step0/step1.
-  2. Movement (teacher-forced): the actor worker group's logprob API
-     (``actor_rollout_wg.compute_log_prob``) evaluated on ONE FIXED prompt+continuation
+  2. Movement (teacher-forced): the trainer's ``_compute_old_log_prob`` adapter evaluated on ONE
+     FIXED prompt+continuation
      ``DataProto`` (captured once at call 0 and reused at call 1 so the tokens are identical) ->
      tf_lp0, tf_lp1.
   3. ``assert_rollout_synced(step0, step1, tf_lp0, tf_lp1)`` -> ``write_rollout_sync`` dumps
@@ -32,7 +32,7 @@ match the pinned-tree persona patch in ``training/grpo/verl_runtime_patch.py`` (
 against ``$VERL_DIR`` at the pinned SHA (>= c791da0b):
   - the actor-update method name         (``_update_actor``; may be ``update_actor``/``update_policy``)
   - batch keys                           (``rollout_log_probs``, ``old_log_probs``, ``response_mask``)
-  - the actor worker-group logprob API   (``actor_rollout_wg.compute_log_prob`` -> ``old_log_probs``)
+  - the trainer logprob adapter          (``_compute_old_log_prob`` -> ``old_log_probs``)
 All capture is wrapped in try/except so instrumentation NEVER crashes the training step; a failure
 is recorded in ``rollout_sync.json`` (``ok: false`` + an ``error`` field) so the gate fails loudly
 rather than silently.
@@ -60,10 +60,6 @@ _ROLLOUT_LOGPROB_KEYS = ["rollout_log_probs", "rollout_log_prob"]  # vLLM genera
 _ACTOR_LOGPROB_KEYS = ["old_log_prob", "old_log_probs"]            # actor's recomputed logprobs for the same tokens
 _RESPONSE_MASK_KEY = "response_mask"
 _ATTENTION_MASK_KEY = "attention_mask"
-_TF_LOGPROB_KEYS = ["old_log_prob", "old_log_probs", "log_probs"]  # compute_log_prob output logprobs
-_ACTOR_WG_ATTR = "actor_rollout_wg"              # trainer attr holding the actor worker group
-_WG_LOGPROB_METHOD = "compute_log_prob"          # worker-group teacher-forced logprob API
-
 _MAX_CAPTURES = 2                                 # update-call 0 and 1 only
 
 
@@ -135,12 +131,10 @@ def _capture_fixed_dataproto(batch: Any) -> Any:
 
 
 def _teacher_forced_logprob(trainer: Any, fixed_dp: Any) -> np.ndarray:
-    """Actor teacher-forced logprobs on the FIXED sequence via the worker-group logprob API."""
-    worker_group = getattr(trainer, _ACTOR_WG_ATTR)
-    compute = getattr(worker_group, _WG_LOGPROB_METHOD)
-    out = compute(copy.deepcopy(fixed_dp))
+    """Actor logprobs on the fixed sequence via veRL's DataProto compatibility adapter."""
+    out, _mfu = trainer._compute_old_log_prob(copy.deepcopy(fixed_dp))
     tensordict = out.batch
-    lp = tensordict[_first_present_key(tensordict, _TF_LOGPROB_KEYS)]
+    lp = tensordict[_first_present_key(tensordict, _ACTOR_LOGPROB_KEYS)]
     keys = set(tensordict.keys())
     mask = tensordict[_RESPONSE_MASK_KEY] if _RESPONSE_MASK_KEY in keys else None
     return _masked_flat(lp, mask)

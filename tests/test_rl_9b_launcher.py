@@ -7,14 +7,16 @@ def test_lora_target_is_attn_mlp_not_all_linear_excludes_visual_and_mtp():
     for m in ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"):
         assert m in S
     assert "visual" in S and "mtp" in S                # exclude vision tower AND MTP head
+    assert '"actor_rollout_ref.model.exclude_modules=\'.*(visual|mtp).*\'"' in S
     assert "lora_rank=64" in S and "lora_alpha=32" in S
 
 def test_mtp_disabled_via_override_config():
     assert "override_config.text_config.mtp_num_hidden_layers=0" in S
 
 def test_merge_key_is_model_lora_merge():
-    # correct veRL key is model.lora.merge (Hydra-appended), NOT rollout.lora.merge
+    # The key exists at the pinned veRL SHA, so Hydra requires an ordinary override.
     assert "actor_rollout_ref.model.lora.merge=True" in S
+    assert "+actor_rollout_ref.model.lora.merge=True" not in S
     assert "rollout.lora.merge" not in S
 
 def test_offload_and_cache_clear():
