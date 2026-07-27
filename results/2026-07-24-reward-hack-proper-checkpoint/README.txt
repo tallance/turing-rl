@@ -44,6 +44,11 @@ VERDICT (H1): THE HACK REPLICATES on the clean checkpoint.
 
 FILES
 -----
+  winrate_over_time_proper.png - 6-subplot overall win-rate vs epoch (per-epoch pooled, win=Likert>=5,
+                               ties/parse-fails excluded; red = 3-epoch rolling mean; gray = 0.5).
+                               HEADLINE: lr=1e-5 rows stay flat ~0.5 all 50 epochs (all 3 KL); lr=1e-4
+                               rows ramp over epochs ~10-40 then plateau ~0.6-0.72 (genuine convergence,
+                               not a lucky final epoch). Same script/style as the 2026-07-15 plot.
   <cell>_rating_scatter.png  - 10-subplot per-example judge Likert vs epoch (blue=per-rollout,
                                red=epoch mean; green line = win Likert>=5, gray = tie 4).
 
