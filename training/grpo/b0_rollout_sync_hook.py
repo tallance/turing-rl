@@ -119,15 +119,20 @@ def _within_step_parity(batch: Any) -> dict:
     return logprob_parity(rollout_lp, actor_lp)
 
 
-def _capture_fixed_dataproto(batch: Any) -> Any:
-    """Deep-copy a single-row slice of the first batch as the FIXED teacher-forced sequence.
+def _capture_fixed_dataproto(trainer: Any, batch: Any) -> Any:
+    """Deep-copy one actor-DP-sized slice as the fixed teacher-forced batch.
 
-    Reusing a real (prompt+continuation) row keeps all keys/meta the actor's compute_log_prob
-    expects, and deep-copying detaches it from the live batch so the tokens stay identical across
-    both update calls (a fixed sequence -> the cross-step logprob delta is meaningful).
+    veRL dispatch requires the input length to be divisible by actor data parallelism. Reusing the
+    first DP-sized slice keeps all keys/meta the actor expects, while deep-copying keeps the exact
+    same prompt+continuation tokens across both update calls.
     """
-    single = batch[0:1]
-    return copy.deepcopy(single)
+    fsdp_config = trainer.config.actor_rollout_ref.actor.fsdp_config
+    dp_size = int(fsdp_config.get("fsdp_size", -1) or -1)
+    if dp_size <= 0:
+        dp_size = int(trainer.config.trainer.n_gpus_per_node) * int(trainer.config.trainer.nnodes)
+    if len(batch) < dp_size:
+        raise ValueError(f"B0 fixed batch needs at least actor DP size {dp_size}, got {len(batch)}")
+    return copy.deepcopy(batch[0:dp_size])
 
 
 def _teacher_forced_logprob(trainer: Any, fixed_dp: Any) -> np.ndarray:
@@ -176,7 +181,7 @@ def install_b0_rollout_sync_hook() -> bool:
                 parity = _within_step_parity(batch)
                 state[f"step{call_index}"] = parity
                 if state["fixed_dp"] is None:
-                    state["fixed_dp"] = _capture_fixed_dataproto(batch)
+                    state["fixed_dp"] = _capture_fixed_dataproto(self, batch)
                 tf_lp = _teacher_forced_logprob(self, state["fixed_dp"])
                 state["tf"].append(tf_lp)
                 print(

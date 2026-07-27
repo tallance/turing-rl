@@ -44,6 +44,30 @@ def test_teacher_forced_logprob_uses_trainer_dataproto_adapter():
     np.testing.assert_allclose(result, [-0.2, -0.3])
 
 
+def test_b0_fixed_teacher_forced_batch_matches_actor_dp_size():
+    class Batch:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def __len__(self):
+            return len(self.rows)
+
+        def __getitem__(self, item):
+            return Batch(self.rows[item])
+
+    trainer = SimpleNamespace(
+        config=SimpleNamespace(
+            actor_rollout_ref=SimpleNamespace(
+                actor=SimpleNamespace(fsdp_config={"fsdp_size": 7})
+            ),
+            trainer=SimpleNamespace(n_gpus_per_node=7, nnodes=1),
+        )
+    )
+    fixed = b0_rollout_sync_hook._capture_fixed_dataproto(trainer, Batch(list(range(28))))
+
+    assert fixed.rows == list(range(7))
+
+
 def test_runtime_env_wrapper_forwards_verl_09_config_argument():
     calls = []
 
