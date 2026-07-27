@@ -101,6 +101,10 @@ export EXTRA_OVERRIDES="${EXTRA_OVERRIDES:-}"   # extra Hydra overrides (e.g. kl
 export RL_MODE="$MODE" RL_JUDGE="$JUDGE" RL_RUN_TAG="$RUN_TAG" RL_RUN_DIR="$RUN_DIR" RL_CKPT_DIR="$CKPT_DIR"
 export RL_JUDGE_JOB_ID=""   # no separate judge job; teardown handled here by killing the judge process
 export OVERFIT_EPOCHS="${OVERFIT_EPOCHS:-8}"   # short B0 spike (train script reads OVERFIT_EPOCHS)
+# veRL requires train_batch_size * rollout.n to be divisible by actor DP size. The single-node
+# layout gives the trainer 7 GPUs, so 7 prompts * n=4 = 28 is divisible by 7.
+export OVERFIT_TRAIN_BATCH="${OVERFIT_TRAIN_BATCH:-7}"
+export OVERFIT_PPO_MINI="${OVERFIT_PPO_MINI:-7}"
 
 # --- trainer step on GPUs 1-7 (foreground). RL_NGPUS/RL_ROLLOUT_TP make the 9B
 #     trainer use 7 GPUs + rollout TP=1 (env-overridable in rl_generator_train_9b.sh). ---

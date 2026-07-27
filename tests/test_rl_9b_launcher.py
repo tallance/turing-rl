@@ -1,6 +1,7 @@
 # tests/test_rl_9b_launcher.py
 import pathlib
 S = pathlib.Path("scripts/slurm/rl_generator_train_9b.sh").read_text()
+SINGLE_NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b_1node.sh").read_text()
 
 def test_lora_target_is_attn_mlp_not_all_linear_excludes_visual_and_mtp():
     assert "all-linear" not in S                       # never LoRA the GDN backbone
@@ -48,3 +49,8 @@ def test_required_fsdp2_and_qwen35_overrides():
 def test_uses_merged_9b_and_no_cap():
     assert "merged_ep3" in S
     assert "TURING_JUDGE_SCORE_CLIP_MAX=7" in S or "cap" in S.lower()
+
+
+def test_single_node_batch_is_divisible_by_seven_gpu_actor_dp():
+    assert 'OVERFIT_TRAIN_BATCH="${OVERFIT_TRAIN_BATCH:-7}"' in SINGLE_NODE
+    assert 'OVERFIT_PPO_MINI="${OVERFIT_PPO_MINI:-7}"' in SINGLE_NODE
