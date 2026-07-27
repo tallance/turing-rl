@@ -8,6 +8,7 @@ from unittest.mock import patch
 import numpy as np
 
 from training.grpo import b0_rollout_sync_hook
+from training.grpo import hf_compat_patches
 from training.grpo import verl_runtime_patch
 
 
@@ -70,3 +71,22 @@ def test_runtime_env_adds_repo_pythonpath_without_repo_root_env():
         result = verl_runtime_patch._with_repo_root_pythonpath({})
 
     assert result["PYTHONPATH"] == expected_root
+
+
+def test_vllm_qwen35_rope_ignore_keys_list_is_accepted():
+    import pytest
+
+    pytest.importorskip("transformers")
+    qwen35_config = pytest.importorskip("vllm.transformers_utils.configs.qwen3_5")
+    assert hf_compat_patches.apply_rope_ignore_keys_compat_patch()
+
+    config = qwen35_config.Qwen3_5TextConfig(
+        rope_parameters={
+            "rope_type": "default",
+            "rope_theta": 10_000_000,
+            "mrope_interleaved": True,
+            "mrope_section": [11, 11, 10],
+        }
+    )
+
+    assert config.ignore_keys_at_rope_validation == ["mrope_section", "mrope_interleaved"]
