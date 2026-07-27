@@ -112,7 +112,7 @@ OVR=(
   actor_rollout_ref.rollout.enable_chunked_prefill=True   # REQUIRED: prompts ~12.5k > 4096 batch cap
   actor_rollout_ref.rollout.max_model_len=13524
   actor_rollout_ref.rollout.max_num_batched_tokens=4096
-  actor_rollout_ref.rollout.gpu_memory_utilization=0.40
+  actor_rollout_ref.rollout.gpu_memory_utilization=${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.40}
   actor_rollout_ref.rollout.calculate_log_probs=True       # feeds the B0 logprob-parity guard
   actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072   # no + (key exists)
   # trainer / data --------------------------------------------------------------------------------

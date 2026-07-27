@@ -56,3 +56,8 @@ def test_uses_merged_9b_and_no_cap():
 def test_single_node_batch_is_divisible_by_seven_gpu_actor_dp():
     assert 'OVERFIT_TRAIN_BATCH="${OVERFIT_TRAIN_BATCH:-7}"' in SINGLE_NODE
     assert 'OVERFIT_PPO_MINI="${OVERFIT_PPO_MINI:-7}"' in SINGLE_NODE
+
+
+def test_single_node_tp1_reserves_enough_memory_for_rollout_model_and_cache():
+    assert "gpu_memory_utilization=${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.40}" in S
+    assert 'RL_ROLLOUT_GPU_MEMORY_UTILIZATION="${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}"' in SINGLE_NODE

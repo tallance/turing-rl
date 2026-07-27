@@ -105,6 +105,8 @@ export OVERFIT_EPOCHS="${OVERFIT_EPOCHS:-8}"   # short B0 spike (train script re
 # layout gives the trainer 7 GPUs, so 7 prompts * n=4 = 28 is divisible by 7.
 export OVERFIT_TRAIN_BATCH="${OVERFIT_TRAIN_BATCH:-7}"
 export OVERFIT_PPO_MINI="${OVERFIT_PPO_MINI:-7}"
+# TP=1 places the full ~17.7GB rollout model on each GPU, so 0.40 cannot leave any KV/GDN cache.
+export RL_ROLLOUT_GPU_MEMORY_UTILIZATION="${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}"
 
 # --- trainer step on GPUs 1-7 (foreground). RL_NGPUS/RL_ROLLOUT_TP make the 9B
 #     trainer use 7 GPUs + rollout TP=1 (env-overridable in rl_generator_train_9b.sh). ---
