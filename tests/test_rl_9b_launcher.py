@@ -45,6 +45,7 @@ def test_required_fsdp2_and_qwen35_overrides():
         "checkpoint_engine.update_weights_bucket_megabytes=3072",
         "reward.custom_reward_function.path=training/grpo/reward.py",
         "reward.custom_reward_function.name=compute_score",
+        "trainer.use_v1=False",
     ):
         assert k in S, f"missing required override: {k}"
 
@@ -52,6 +53,10 @@ def test_required_fsdp2_and_qwen35_overrides():
 def test_verl_v1_reward_function_uses_new_nested_config_path():
     assert "reward.custom_reward_function.path=training/grpo/reward.py" in S
     assert "reward.custom_reward_function.name=compute_score" in S
+
+
+def test_arm_b_uses_dataproto_controller_targeted_by_runtime_and_b0_hooks():
+    assert "trainer.use_v1=False" in S
 
 def test_uses_merged_9b_and_no_cap():
     assert "merged_ep3" in S

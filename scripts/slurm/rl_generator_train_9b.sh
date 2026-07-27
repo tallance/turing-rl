@@ -123,6 +123,10 @@ OVR=(
   trainer.experiment_name="$EXP"
   trainer.project_name="${WANDB_PROJECT:-2026-07-15-rl-generator-vs-fixed-judge}"
   trainer.resume_mode=auto
+  # veRL 0.9 keeps the V0 DataProto controller on the new unified engine workers.
+  # turing-rl's runtime patches and B0 parity hook target that controller, while
+  # V1 uses a separate TransferQueue/KVBatchMeta update path.
+  trainer.use_v1=False
   trainer.n_gpus_per_node=${RL_NGPUS:-8}
   trainer.nnodes=1
   data.train_files="$TRAIN_FILE"
