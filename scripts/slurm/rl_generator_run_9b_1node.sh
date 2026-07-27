@@ -12,8 +12,10 @@
 #
 # SINGLE-NODE B0 smoke for the RL-generator-vs-fixed-judge probe: judge + trainer
 # share ONE 8-GPU node (fits the 8-GPU headroom under a 24-GPU QOS cap while a
-# separate 16-GPU job runs). Judge (frozen 9B, vLLM TP=1) is pinned to GPU 0 and
-# backgrounded; the veRL 9B trainer runs on GPUs 1-7 (RL_NGPUS=7, rollout TP=1).
+# separate 16-GPU job runs). Judge (frozen 9B, vLLM TP=1) is pinned to GPU 7 and
+# backgrounded; the veRL 9B trainer runs on GPUs 0-6 (RL_NGPUS=7, rollout TP=1).
+# Ray assigns its seven logical GPU resources as physical ordinals 0-6, so keeping
+# that mapping literal avoids silently placing trainer rank 0 on top of the judge.
 # Endpoint handed off via a shared file on FSx home + OPENAI_API_BASE; the judge
 # process is killed when the trainer exits (trap). 1-node analogue of
 # rl_generator_run_9b.sh (which splits judge/trainer across 2 nodes).
@@ -44,17 +46,17 @@ CKPT_DIR=$RUN_DIR/checkpoints
 mkdir -p "$RUN_DIR" "$REWARD_DUMP_DIR" "$CKPT_DIR" "$REPO/logs"
 rm -f "$ENDPOINT_FILE"
 
-# Judge on GPU 0 uses the EXISTING turing-rl-train env vllm (0.18, same as the Arm A
-# judge). Trainer on GPUs 1-7 uses the Arm-B env that rl_generator_train_9b.sh points at.
+# Judge on GPU 7 uses the EXISTING turing-rl-train env vllm (0.18, same as the Arm A
+# judge). Trainer on GPUs 0-6 uses the Arm-B env that rl_generator_train_9b.sh points at.
 JUDGE_VLLM=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/vllm
 PORT=${PORT:-$((8300 + ${SLURM_JOB_ID:-0} % 400))}
 
 echo ">> RL-gen 1-node B0 run: JUDGE=$JUDGE MODEL=$JUDGE_MODEL MODE=$MODE job=${SLURM_JOB_ID:-none}"
-echo ">> node=$(hostname) judge=GPU0 trainer=GPU1-7 port=$PORT run_dir=$RUN_DIR"
+echo ">> node=$(hostname) judge=GPU7 trainer=GPU0-6 port=$PORT run_dir=$RUN_DIR"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
-# --- judge step on GPU 0 (concurrent, backgrounded; frozen 9B judge, thinking-on) ---
-CUDA_VISIBLE_DEVICES=0 \
+# --- judge step on GPU 7 (concurrent, backgrounded; frozen 9B judge, thinking-on) ---
+CUDA_VISIBLE_DEVICES=7 \
   HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache \
   HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
   "$JUDGE_VLLM" serve "$JUDGE_MODEL" \
@@ -108,9 +110,9 @@ export OVERFIT_PPO_MINI="${OVERFIT_PPO_MINI:-7}"
 # TP=1 places the full ~17.7GB rollout model on each GPU, so 0.40 cannot leave any KV/GDN cache.
 export RL_ROLLOUT_GPU_MEMORY_UTILIZATION="${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}"
 
-# --- trainer step on GPUs 1-7 (foreground). RL_NGPUS/RL_ROLLOUT_TP make the 9B
+# --- trainer step on GPUs 0-6 (foreground). RL_NGPUS/RL_ROLLOUT_TP make the 9B
 #     trainer use 7 GPUs + rollout TP=1 (env-overridable in rl_generator_train_9b.sh). ---
-CUDA_VISIBLE_DEVICES=1,2,3,4,5,6,7 RL_NGPUS=7 RL_ROLLOUT_TP=1 B0_ROLLOUT_SYNC="${B0_ROLLOUT_SYNC:-1}" \
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6 RL_NGPUS=7 RL_ROLLOUT_TP=1 B0_ROLLOUT_SYNC="${B0_ROLLOUT_SYNC:-1}" \
   bash scripts/slurm/rl_generator_train_9b.sh
 RC=$?
 echo "=== trainer step exit: $RC ; tearing down judge process ==="

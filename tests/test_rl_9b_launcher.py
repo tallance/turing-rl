@@ -61,3 +61,11 @@ def test_single_node_batch_is_divisible_by_seven_gpu_actor_dp():
 def test_single_node_tp1_reserves_enough_memory_for_rollout_model_and_cache():
     assert "gpu_memory_utilization=${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.40}" in S
     assert 'RL_ROLLOUT_GPU_MEMORY_UTILIZATION="${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}"' in SINGLE_NODE
+
+
+def test_single_node_judge_does_not_overlap_ray_trainer_gpu_ordinals():
+    # Ray renumbers the seven trainer resources to physical ordinals 0-6. Keep
+    # the judge on the remaining GPU instead of relying on an outer CVD offset.
+    assert "CUDA_VISIBLE_DEVICES=7 \\" in SINGLE_NODE
+    assert "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6 RL_NGPUS=7" in SINGLE_NODE
+    assert "judge=GPU7 trainer=GPU0-6" in SINGLE_NODE
