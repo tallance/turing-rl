@@ -1177,8 +1177,8 @@ def _patch_ppo_ray_runtime_env(constants_ppo_mod: Any) -> None:
 
     original_get_ppo_ray_runtime_env = constants_ppo_mod.get_ppo_ray_runtime_env
 
-    def patched_get_ppo_ray_runtime_env():
-        return _merge_propagated_runtime_env_vars(original_get_ppo_ray_runtime_env())
+    def patched_get_ppo_ray_runtime_env(*args, **kwargs):
+        return _merge_propagated_runtime_env_vars(original_get_ppo_ray_runtime_env(*args, **kwargs))
 
     constants_ppo_mod.get_ppo_ray_runtime_env = patched_get_ppo_ray_runtime_env
     constants_ppo_mod._persona_runtime_env_vars_patch_applied = True
