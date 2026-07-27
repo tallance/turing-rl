@@ -1146,6 +1146,25 @@ def _with_repo_root_pythonpath(env_vars: dict[str, str]) -> dict[str, str]:
     return env_vars
 
 
+def _agent_loop_score_context(args: tuple[Any, ...], call_kwargs: Mapping[str, Any]) -> tuple[Any, Mapping[str, Any]]:
+    """Extract the final output and sample kwargs across veRL agent-loop APIs."""
+    if not args:
+        raise TypeError("AgentLoopWorker._compute_score called without an output")
+
+    first_arg = args[0]
+    if isinstance(first_arg, (list, tuple)):
+        if not first_arg:
+            raise ValueError("AgentLoopWorker._compute_score called with no trajectory outputs")
+        output = first_arg[-1]
+        score_kwargs = call_kwargs.get("kwargs", args[1] if len(args) > 1 else {})
+    else:
+        # Legacy veRL passed output plus five tensors and the sample kwargs mapping.
+        output = first_arg
+        score_kwargs = args[6] if len(args) > 6 else call_kwargs.get("kwargs", {})
+
+    return output, _coerce_mapping(score_kwargs)
+
+
 def _merge_propagated_runtime_env_vars(runtime_env: Mapping[str, Any] | None) -> dict[str, Any]:
     merged_runtime_env = dict(runtime_env or {})
     propagated_env_vars = _collect_propagated_runtime_env_vars()
@@ -2040,11 +2059,15 @@ def apply_verl_runtime_patch() -> bool:
         finally:
             self.server_class = original_server_class
 
-    async def patched_compute_score(self, output, prompts, responses, attention_mask, input_ids, position_ids, kwargs):
+    async def patched_compute_score(self, *args, **call_kwargs):
         metric = os.environ.get("REWARD_METRIC", "turing")
+        if metric != "logprob" or not _current_policy_logprob_enabled():
+            return await original_compute_score(self, *args, **call_kwargs)
+
+        output, score_kwargs = _agent_loop_score_context(args, call_kwargs)
         output.extra_fields = dict(output.extra_fields or {})
 
-        if output.reward_score is None and metric == "logprob" and _current_policy_logprob_enabled():
+        if output.reward_score is None:
             from shared.prompt_utils import (
                 build_messages_for_prompt_mode,
                 get_chat_template_kwargs_for_prompt_mode,
@@ -2057,9 +2080,9 @@ def apply_verl_runtime_patch() -> bool:
                 parse_response_for_prompt_mode,
             )
 
-            extra_info = _coerce_mapping(kwargs.get("extra_info"))
+            extra_info = _coerce_mapping(score_kwargs.get("extra_info"))
             _rewritten_messages, extra_info = _maybe_override_prompt_messages_for_runtime_conditioning(extra_info)
-            ground_truth = _extract_logprob_ground_truth(kwargs, extra_info)
+            ground_truth = _extract_logprob_ground_truth(score_kwargs, extra_info)
             context = str(extra_info.get("context", "") or "")
             user_history = str(extra_info.get("user_history", "") or "")
             persona = str(extra_info.get("persona", extra_info.get("persona_memory", "")) or "")
@@ -2134,16 +2157,7 @@ def apply_verl_runtime_patch() -> bool:
             output.extra_fields.setdefault("server_sticky_request_id", sticky_request_id)
             return
 
-        return await original_compute_score(
-            self,
-            output,
-            prompts,
-            responses,
-            attention_mask,
-            input_ids,
-            position_ids,
-            kwargs,
-        )
+        return await original_compute_score(self, *args, **call_kwargs)
 
     def patched_compute_rm_score(self, data):
         if not _should_route_grouped_sim_rewards(self.config, len(self.reward_loop_workers)):

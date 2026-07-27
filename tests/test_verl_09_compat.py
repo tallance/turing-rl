@@ -73,6 +73,31 @@ def test_runtime_env_adds_repo_pythonpath_without_repo_root_env():
     assert result["PYTHONPATH"] == expected_root
 
 
+def test_agent_loop_score_context_accepts_verl_09_trajectory_signature():
+    outputs = [SimpleNamespace(name="first"), SimpleNamespace(name="final")]
+    sample_kwargs = {"extra_info": {"post_id": "p1"}}
+
+    output, kwargs = verl_runtime_patch._agent_loop_score_context(
+        (outputs,), {"kwargs": sample_kwargs}
+    )
+
+    assert output is outputs[-1]
+    assert kwargs == sample_kwargs
+
+
+def test_agent_loop_score_context_keeps_legacy_signature_compatible():
+    output = SimpleNamespace(name="legacy")
+    sample_kwargs = {"extra_info": {"post_id": "p2"}}
+
+    resolved_output, kwargs = verl_runtime_patch._agent_loop_score_context(
+        (output, "prompts", "responses", "attention_mask", "input_ids", "position_ids", sample_kwargs),
+        {},
+    )
+
+    assert resolved_output is output
+    assert kwargs == sample_kwargs
+
+
 def test_vllm_qwen35_rope_ignore_keys_list_is_accepted():
     import pytest
 
