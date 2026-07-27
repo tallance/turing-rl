@@ -67,6 +67,8 @@ _PROPAGATED_RUNTIME_ENV_VARS = (
     "LOGPROB_CLIP_MIN",
     "LOGPROB_CLIP_MAX",
     "PERSONA_ELBO_SFT_MAX_LENGTH",
+    "B0_ROLLOUT_SYNC",
+    "RL_RUN_DIR",
 )
 _PERSONA_WORKER_PROCESS_SETUP_HOOK = "training.grpo.ray_worker_setup.persona_worker_process_setup"
 _UPSTREAM_WORKER_PROCESS_SETUP_HOOK_ENV = "PERSONA_UPSTREAM_WORKER_PROCESS_SETUP_HOOK"
@@ -138,6 +140,44 @@ def _patch_verl_attention_utils_without_flash_attn() -> bool:
     attention_utils._rearrange = rearrange
     attention_utils._unpad_input = _unpad_input
     return True
+
+
+def _insert_pre_resume_cache_clear(text: str) -> str:
+    marker = "# Persona compatibility: release trainer allocator cache before rollout wake-up."
+    if marker in text:
+        return text
+    anchor = (
+        "        set_expandable_segments(False)\n"
+        '        log_gpu_memory_usage("Before resume weights", logger=logger)\n'
+    )
+    if anchor not in text:
+        return text
+    return text.replace(
+        anchor,
+        anchor
+        + f"        {marker}\n"
+        + "        aggressive_empty_cache(force_sync=True)\n",
+        1,
+    )
+
+
+def _patch_engine_worker_pre_resume_cache_clear_source() -> None:
+    """Patch veRL's colocated sync order so offloaded actor cache cannot block vLLM wake-up."""
+    spec = _find_optional_module_spec("verl.workers.engine_workers")
+    if spec is None or spec.origin is None:
+        return
+    path = Path(spec.origin)
+    try:
+        text = path.read_text()
+    except OSError:
+        return
+    patched = _insert_pre_resume_cache_clear(text)
+    if patched == text:
+        return
+    try:
+        path.write_text(patched)
+    except OSError:
+        logger.warning("Failed to patch veRL pre-resume cache clear at %s", path, exc_info=True)
 
 
 def _patch_actor_elbo_sft_source() -> None:
@@ -1201,6 +1241,9 @@ def _merge_propagated_runtime_env_vars(runtime_env: Mapping[str, Any] | None) ->
 
     if _worker_process_setup_hook_enabled():
         env_vars = dict(merged_runtime_env.get("env_vars") or {})
+        for name in ("B0_ROLLOUT_SYNC", "RL_RUN_DIR"):
+            if os.environ.get(name) is not None:
+                env_vars[name] = os.environ[name]
         existing_hook = merged_runtime_env.get("worker_process_setup_hook")
         if existing_hook and existing_hook != _worker_process_setup_hook_path():
             if isinstance(existing_hook, str):
@@ -1707,6 +1750,7 @@ def _should_route_grouped_sim_rewards(config: Any, num_workers: int) -> bool:
 def apply_verl_runtime_patch() -> bool:
     _patch_ray_loopback_advertise()
     _patch_verl_attention_utils_without_flash_attn()
+    _patch_engine_worker_pre_resume_cache_clear_source()
     _patch_peft_meta_adapter_load_source()
     _patch_fsdp1_lora_checkpointing()
     _patch_actor_config_elbo_sft_source()

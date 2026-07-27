@@ -70,6 +70,28 @@ def test_agent_loop_postprocess_wrapper_forwards_verl_09_validate_argument():
     assert "return original_postprocess(self, inputs, *args, **kwargs)" in source
 
 
+def test_weight_sync_clears_trainer_cache_before_rollout_wakeup():
+    source = (
+        "        set_expandable_segments(False)\n"
+        '        log_gpu_memory_usage("Before resume weights", logger=logger)\n'
+        "        if self.config.rollout.free_cache_engine:\n"
+        '            await self.rollout.resume(tags=["weights"])\n'
+    )
+    patched = verl_runtime_patch._insert_pre_resume_cache_clear(source)
+
+    assert "aggressive_empty_cache(force_sync=True)" in patched
+    assert patched.index("aggressive_empty_cache") < patched.index("await self.rollout.resume")
+    assert verl_runtime_patch._insert_pre_resume_cache_clear(patched) == patched
+
+
+def test_b0_env_is_injected_into_ray_runtime_env():
+    with patch.dict(os.environ, {"B0_ROLLOUT_SYNC": "1", "RL_RUN_DIR": "/tmp/b0"}, clear=False):
+        result = verl_runtime_patch._merge_propagated_runtime_env_vars({})
+
+    assert result["env_vars"]["B0_ROLLOUT_SYNC"] == "1"
+    assert result["env_vars"]["RL_RUN_DIR"] == "/tmp/b0"
+
+
 def test_runtime_env_adds_repo_pythonpath_without_repo_root_env():
     expected_root = str(Path(verl_runtime_patch.__file__).resolve().parents[2])
     with patch.dict(os.environ, {"PYTHONPATH": ""}, clear=False):
