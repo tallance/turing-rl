@@ -2237,9 +2237,9 @@ def apply_verl_runtime_patch() -> bool:
             if self.reward_model_manager is not None:
                 self.reward_model_manager.sleep()
 
-    def patched_postprocess(self, inputs, input_non_tensor_batch=None):
+    def patched_postprocess(self, inputs, *args, **kwargs):
         _normalize_reward_extra_info_keys(inputs)
-        return original_postprocess(self, inputs, input_non_tensor_batch=input_non_tensor_batch)
+        return original_postprocess(self, inputs, *args, **kwargs)
 
     SingleTurnAgentLoop.run = patched_single_turn_run
     RayPPOTrainer.__init__ = patched_trainer_init

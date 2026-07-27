@@ -64,6 +64,12 @@ def test_runtime_env_wrapper_forwards_verl_09_config_argument():
     assert result == {"env_vars": {"UPSTREAM": "1"}}
 
 
+def test_agent_loop_postprocess_wrapper_forwards_verl_09_validate_argument():
+    source = Path(verl_runtime_patch.__file__).read_text()
+    assert "def patched_postprocess(self, inputs, *args, **kwargs):" in source
+    assert "return original_postprocess(self, inputs, *args, **kwargs)" in source
+
+
 def test_runtime_env_adds_repo_pythonpath_without_repo_root_env():
     expected_root = str(Path(verl_runtime_patch.__file__).resolve().parents[2])
     with patch.dict(os.environ, {"PYTHONPATH": ""}, clear=False):
