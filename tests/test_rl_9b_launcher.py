@@ -86,3 +86,8 @@ def test_single_node_judge_does_not_overlap_ray_trainer_gpu_ordinals():
     assert "CUDA_VISIBLE_DEVICES=7 \\" in SINGLE_NODE
     assert "CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6 RL_NGPUS=7" in SINGLE_NODE
     assert "judge=GPU7 trainer=GPU0-6" in SINGLE_NODE
+
+
+def test_single_node_judge_cost_controls_keep_defaults_but_allow_debug_overrides():
+    assert 'PERSONA_JUDGE_ENABLE_THINKING="${PERSONA_JUDGE_ENABLE_THINKING:-1}"' in SINGLE_NODE
+    assert 'PERSONA_JUDGE_MAX_COMPLETION_TOKENS="${PERSONA_JUDGE_MAX_COMPLETION_TOKENS:-8192}"' in SINGLE_NODE
