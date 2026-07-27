@@ -104,8 +104,11 @@ def main() -> None:
             roll = [sum(wr[max(0, j - 2):j + 1]) / len(wr[max(0, j - 2):j + 1]) for j in range(len(wr))]
             ax.plot(ep, roll, color="tab:red", lw=1.8, alpha=0.9, label="3-epoch rolling mean")
         ax.axhline(0.5, ls="--", color="gray", lw=0.9)
+        # step-0 baseline = epoch-1 win-rate (rollouts from the initial SFT policy, pre-update)
+        step0 = wr[0] if wr else 0.0
+        ax.axhline(step0, ls=":", color="tab:green", lw=1.4, label="step-0 baseline (epoch 1)")
         ax.set_ylim(-0.02, 1.02)
-        ax.set_title(f"{label}   final={final:.2f}  ({len(ep)} epochs, {nrows} rows)", fontsize=10)
+        ax.set_title(f"{label}   step0={step0:.2f} → final={final:.2f}  ({len(ep)} epochs, {nrows} rows)", fontsize=10)
         ax.grid(True, alpha=0.25)
 
     for j in range(n, len(axes)):
