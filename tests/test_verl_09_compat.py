@@ -121,3 +121,25 @@ def test_vllm_qwen35_rope_ignore_keys_list_is_accepted():
     )
 
     assert config.ignore_keys_at_rope_validation == ["mrope_section", "mrope_interleaved"]
+
+
+def test_attention_padding_falls_back_to_transformers_without_flash_attn():
+    import importlib.util
+    import pytest
+
+    if importlib.util.find_spec("flash_attn") is not None:
+        pytest.skip("standalone flash-attn is installed")
+    torch = pytest.importorskip("torch")
+    attention_utils = pytest.importorskip("verl.utils.attention_utils")
+    pytest.importorskip("transformers.modeling_flash_attention_utils")
+
+    assert verl_runtime_patch._patch_verl_attention_utils_without_flash_attn()
+    values = torch.arange(8).reshape(2, 4, 1)
+    mask = torch.tensor([[0, 1, 1, 1], [1, 1, 0, 0]])
+    unpadded, indices, cu_seqlens, max_seqlen, seqlens = attention_utils.unpad_input(values, mask)
+
+    assert unpadded.flatten().tolist() == [1, 2, 3, 4, 5]
+    assert indices.tolist() == [1, 2, 3, 4, 5]
+    assert cu_seqlens.tolist() == [0, 3, 5]
+    assert int(max_seqlen) == 3
+    assert seqlens.tolist() == [3, 2]

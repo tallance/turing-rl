@@ -114,6 +114,32 @@ def _find_optional_module_spec(module_name: str) -> Any:
         return None
 
 
+def _patch_verl_attention_utils_without_flash_attn() -> bool:
+    """Use Transformers' padding helpers when the standalone flash-attn package is absent."""
+    try:
+        import flash_attn.bert_padding  # noqa: F401
+        return False
+    except ImportError:
+        pass
+
+    try:
+        from einops import rearrange
+        from transformers.modeling_flash_attention_utils import _index_first_axis, _pad_input, _unpad_input
+        from verl.utils import attention_utils
+    except ImportError:
+        return False
+
+    def get_attention_functions():
+        return _index_first_axis, _pad_input, rearrange, _unpad_input
+
+    attention_utils._get_attention_functions = get_attention_functions
+    attention_utils._index_first_axis = _index_first_axis
+    attention_utils._pad_input = _pad_input
+    attention_utils._rearrange = rearrange
+    attention_utils._unpad_input = _unpad_input
+    return True
+
+
 def _patch_actor_elbo_sft_source() -> None:
     """Patch veRL actor config for optional ELBO/SFT loss."""
     spec = _find_optional_module_spec("verl.workers.actor.dp_actor")
@@ -1680,6 +1706,7 @@ def _should_route_grouped_sim_rewards(config: Any, num_workers: int) -> bool:
 
 def apply_verl_runtime_patch() -> bool:
     _patch_ray_loopback_advertise()
+    _patch_verl_attention_utils_without_flash_attn()
     _patch_peft_meta_adapter_load_source()
     _patch_fsdp1_lora_checkpointing()
     _patch_actor_config_elbo_sft_source()
