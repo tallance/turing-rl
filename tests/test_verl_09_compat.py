@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -59,3 +61,12 @@ def test_runtime_env_wrapper_forwards_verl_09_config_argument():
 
     assert calls == [(("config",), {"mode": "sync"})]
     assert result == {"env_vars": {"UPSTREAM": "1"}}
+
+
+def test_runtime_env_adds_repo_pythonpath_without_repo_root_env():
+    expected_root = str(Path(verl_runtime_patch.__file__).resolve().parents[2])
+    with patch.dict(os.environ, {"PYTHONPATH": ""}, clear=False):
+        os.environ.pop("REPO_ROOT", None)
+        result = verl_runtime_patch._with_repo_root_pythonpath({})
+
+    assert result["PYTHONPATH"] == expected_root

@@ -1134,7 +1134,7 @@ def _worker_process_setup_hook_path() -> str:
 def _with_repo_root_pythonpath(env_vars: dict[str, str]) -> dict[str, str]:
     repo_root = os.environ.get("REPO_ROOT", "").strip()
     if not repo_root:
-        return env_vars
+        repo_root = str(Path(__file__).resolve().parents[2])
 
     existing_pythonpath = env_vars.get("PYTHONPATH")
     if existing_pythonpath is None:

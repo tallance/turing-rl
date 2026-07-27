@@ -49,6 +49,8 @@ def test_required_fsdp2_and_qwen35_overrides():
 def test_uses_merged_9b_and_no_cap():
     assert "merged_ep3" in S
     assert "TURING_JUDGE_SCORE_CLIP_MAX=7" in S or "cap" in S.lower()
+    assert "import transfer_queue" in S
+    assert "TransferQueue==0.1.8" in S
 
 
 def test_single_node_batch_is_divisible_by_seven_gpu_actor_dp():

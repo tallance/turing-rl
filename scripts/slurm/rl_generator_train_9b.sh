@@ -30,6 +30,10 @@ cd "$REPO"
 # package (custom reward + worker_process_setup_hook) via PYTHONPATH. (Repo is not pip-installed.)
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 PY=/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/python   # pinned Arm-B env
+$PY -c 'import transfer_queue' || {
+  echo "ERROR: Arm-B veRL 0.9 env requires TransferQueue==0.1.8" >&2
+  exit 2
+}
 
 # Teardown the judge when training ends (success or failure).
 JUDGE_JOB_ID=${RL_JUDGE_JOB_ID:-}
