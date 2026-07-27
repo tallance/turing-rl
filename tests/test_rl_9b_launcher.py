@@ -43,6 +43,7 @@ def test_required_fsdp2_and_qwen35_overrides():
         "actor_rollout_ref.rollout.max_model_len=13524",
         "actor_rollout_ref.rollout.calculate_log_probs=True",   # feeds the B0 logprob guard
         "checkpoint_engine.update_weights_bucket_megabytes=3072",
+        "actor_rollout_ref.rollout.agent.num_workers=${RL_NGPUS:-8}",
         "reward.custom_reward_function.path=training/grpo/reward.py",
         "reward.custom_reward_function.name=compute_score",
         "trainer.use_v1=False",
@@ -57,6 +58,10 @@ def test_verl_v1_reward_function_uses_new_nested_config_path():
 
 def test_arm_b_uses_dataproto_controller_targeted_by_runtime_and_b0_hooks():
     assert "trainer.use_v1=False" in S
+
+
+def test_rollout_batch_chunks_evenly_across_single_node_agent_workers():
+    assert "actor_rollout_ref.rollout.agent.num_workers=${RL_NGPUS:-8}" in S
 
 def test_uses_merged_9b_and_no_cap():
     assert "merged_ep3" in S
