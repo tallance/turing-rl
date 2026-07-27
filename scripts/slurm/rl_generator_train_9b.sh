@@ -115,6 +115,9 @@ OVR=(
   actor_rollout_ref.rollout.gpu_memory_utilization=${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.40}
   actor_rollout_ref.rollout.calculate_log_probs=True       # feeds the B0 logprob-parity guard
   actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072   # no + (key exists)
+  # veRL 0.9 V1 does not migrate the legacy top-level custom_reward_function block.
+  reward.custom_reward_function.path=training/grpo/reward.py
+  reward.custom_reward_function.name=compute_score
   # trainer / data --------------------------------------------------------------------------------
   trainer.default_local_dir="$CKPT_DIR"
   trainer.experiment_name="$EXP"

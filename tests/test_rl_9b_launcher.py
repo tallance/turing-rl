@@ -43,8 +43,15 @@ def test_required_fsdp2_and_qwen35_overrides():
         "actor_rollout_ref.rollout.max_model_len=13524",
         "actor_rollout_ref.rollout.calculate_log_probs=True",   # feeds the B0 logprob guard
         "checkpoint_engine.update_weights_bucket_megabytes=3072",
+        "reward.custom_reward_function.path=training/grpo/reward.py",
+        "reward.custom_reward_function.name=compute_score",
     ):
         assert k in S, f"missing required override: {k}"
+
+
+def test_verl_v1_reward_function_uses_new_nested_config_path():
+    assert "reward.custom_reward_function.path=training/grpo/reward.py" in S
+    assert "reward.custom_reward_function.name=compute_score" in S
 
 def test_uses_merged_9b_and_no_cap():
     assert "merged_ep3" in S
