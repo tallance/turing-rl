@@ -56,6 +56,9 @@ def test_fixed_sequence_delta_ignores_constant_engine_offset():
     assert out["policy_moved"] is True
     assert out["rollout_moved"] is True
     assert out["delta_error_p99_abs"] < 1e-12
+    assert out["actor_move_mean_abs"] == pytest.approx(0.275)
+    assert out["rollout_move_mean_abs"] == pytest.approx(0.275)
+    assert out["actor_move_p99_abs"] > 0.39
 
 
 def test_fixed_sequence_delta_flags_stale_rollout():

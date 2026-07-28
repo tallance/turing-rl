@@ -70,8 +70,10 @@ def assert_fixed_sequence_delta_synced(
     actor_delta = arrays[1] - arrays[0]
     rollout_delta = arrays[3] - arrays[2]
     delta_error = np.abs(actor_delta - rollout_delta)
-    actor_move_max = float(np.max(np.abs(actor_delta)))
-    rollout_move_max = float(np.max(np.abs(rollout_delta)))
+    actor_move = np.abs(actor_delta)
+    rollout_move = np.abs(rollout_delta)
+    actor_move_max = float(np.max(actor_move))
+    rollout_move_max = float(np.max(rollout_move))
     error_p = float(np.quantile(delta_error, delta_quantile))
     synced = bool(error_p <= delta_atol)
     policy_moved = bool(actor_move_max > move_atol)
@@ -89,7 +91,11 @@ def assert_fixed_sequence_delta_synced(
         "ok": bool(synced and policy_moved and rollout_moved),
         "num_tokens": int(actor_delta.size),
         "actor_move_max_abs": actor_move_max,
+        "actor_move_mean_abs": float(np.mean(actor_move)),
+        "actor_move_p99_abs": float(np.quantile(actor_move, 0.99)),
         "rollout_move_max_abs": rollout_move_max,
+        "rollout_move_mean_abs": float(np.mean(rollout_move)),
+        "rollout_move_p99_abs": float(np.quantile(rollout_move, 0.99)),
         "delta_error_max_abs": float(np.max(delta_error)),
         "delta_error_mean_abs": float(np.mean(delta_error)),
         "delta_error_p99_abs": error_p,
