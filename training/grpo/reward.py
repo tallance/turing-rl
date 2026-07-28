@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+import contextvars
 import hashlib
 import json
 import os
@@ -354,7 +355,13 @@ _REWARD_DUMP_KEYS = ("generated_is_b", "human_side", "rating_gt_first", "rating_
     "judge_model", "judge_usage", "final_reward", "turing_judge_score_raw", "turing_judge_score_clipped",
     "source_copy_penalty", "assistant_like_penalty", "wrong_target_or_role_penalty",
     "unsupported_adversarial_reframing_penalty", "call_id", "user_id", "post_id", "target_idx",
-    "persona", "ts", "worker_pid")
+    "persona", "ts", "worker_pid", "split")
+
+# Per-sample train/val tag for the reward dump. veRL passes no split flag to the reward fn, so
+# compute_score sets this from extra_info["split"] (default "train"); the deep dump call reads it.
+# A ContextVar is async-safe: each compute_score runs in its own asyncio task, so concurrent
+# train/val reward calls can't clobber each other's value.
+_DUMP_SPLIT: "contextvars.ContextVar[str]" = contextvars.ContextVar("dump_split", default="train")
 
 
 def _build_reward_dump_row(**f) -> dict:
@@ -790,6 +797,7 @@ async def _score_pairwise_likert_with_info(
         persona=persona,
         ts=time.time(),
         worker_pid=os.getpid(),
+        split=_DUMP_SPLIT.get(),
     ))
     return {
         "score": likert_score,
@@ -897,6 +905,8 @@ async def compute_score(
 
     metric = os.environ.get("REWARD_METRIC", "turing")
     extra_info = extra_info or {}
+    # Tag this sample's reward-dump rows train/val (default train). Read at the deep dump call.
+    _DUMP_SPLIT.set(str(extra_info.get("split", "train")))
     prompt_mode = str(extra_info.get("prompt_mode", "") or "")
     cot, response = parse_response_for_prompt_mode(solution_str, prompt_mode)
     response_components = response_format_components(solution_str)
