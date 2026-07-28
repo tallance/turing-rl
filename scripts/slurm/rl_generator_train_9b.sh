@@ -133,6 +133,12 @@ OVR=(
   data.train_files="$TRAIN_FILE"
   data.val_files="$VAL_FILE"
 )
+# The B0 fixed-sequence delta probe captures the first actor-DP-sized rows before
+# and after the trainer assembles its batch. Disable length balancing so those
+# rows remain identical across the vLLM and HF scoring paths.
+if [ "${B0_ROLLOUT_SYNC:-0}" = "1" ]; then
+  OVR+=( trainer.balance_batch=False )
+fi
 # TURING_JUDGE_SCORE_CLIP_MAX=7 (no cap) and PERSONA_* inherited from the driver, unchanged.
 case "$MODE" in
   overfit)

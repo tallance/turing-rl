@@ -91,3 +91,8 @@ def test_single_node_judge_does_not_overlap_ray_trainer_gpu_ordinals():
 def test_single_node_judge_cost_controls_keep_defaults_but_allow_debug_overrides():
     assert 'PERSONA_JUDGE_ENABLE_THINKING="${PERSONA_JUDGE_ENABLE_THINKING:-1}"' in SINGLE_NODE
     assert 'PERSONA_JUDGE_MAX_COMPLETION_TOKENS="${PERSONA_JUDGE_MAX_COMPLETION_TOKENS:-8192}"' in SINGLE_NODE
+
+
+def test_b0_fixed_sequence_probe_disables_batch_reordering():
+    assert 'if [ "${B0_ROLLOUT_SYNC:-0}" = "1" ]; then' in S
+    assert "OVR+=( trainer.balance_batch=False )" in S

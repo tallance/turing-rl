@@ -33,3 +33,67 @@ def assert_rollout_synced(step0: dict, step1: dict, tf_lp0, tf_lp1, move_atol: f
     synced = bool(step0["close"] and step1["close"])
     policy_moved = bool(a0.size and float(np.max(np.abs(a0 - a1))) > move_atol)
     return {"synced": synced, "policy_moved": policy_moved, "ok": synced and policy_moved}
+
+
+def assert_fixed_sequence_delta_synced(
+    actor_lp0,
+    actor_lp1,
+    rollout_lp0,
+    rollout_lp1,
+    *,
+    delta_atol: float = 0.1,
+    delta_quantile: float = 0.99,
+    move_atol: float = 1e-3,
+) -> dict:
+    """Check live weight sync from before/after changes on one fixed token sequence.
+
+    Absolute HF/vLLM logprobs can carry a stable engine-specific offset. Comparing each engine's
+    change on identical tokens cancels that offset. The high-quantile error is the gate; maxima and
+    means remain in the artifact for diagnosis without letting one numerical outlier dominate.
+    """
+    arrays = [
+        np.asarray(values, dtype=np.float64)
+        for values in (actor_lp0, actor_lp1, rollout_lp0, rollout_lp1)
+    ]
+    shapes = {values.shape for values in arrays}
+    if len(shapes) != 1:
+        raise ValueError(
+            "actor and rollout logprobs must score the same fixed sequence: "
+            f"actor0={arrays[0].shape} actor1={arrays[1].shape} "
+            f"rollout0={arrays[2].shape} rollout1={arrays[3].shape}"
+        )
+    if not arrays[0].size:
+        raise ValueError("fixed-sequence logprobs must not be empty")
+    if not 0.0 <= delta_quantile <= 1.0:
+        raise ValueError(f"delta_quantile must be in [0, 1], got {delta_quantile}")
+
+    actor_delta = arrays[1] - arrays[0]
+    rollout_delta = arrays[3] - arrays[2]
+    delta_error = np.abs(actor_delta - rollout_delta)
+    actor_move_max = float(np.max(np.abs(actor_delta)))
+    rollout_move_max = float(np.max(np.abs(rollout_delta)))
+    error_p = float(np.quantile(delta_error, delta_quantile))
+    synced = bool(error_p <= delta_atol)
+    policy_moved = bool(actor_move_max > move_atol)
+    rollout_moved = bool(rollout_move_max > move_atol)
+
+    if actor_delta.size > 1 and np.std(actor_delta) > 0 and np.std(rollout_delta) > 0:
+        delta_correlation = float(np.corrcoef(actor_delta, rollout_delta)[0, 1])
+    else:
+        delta_correlation = None
+
+    return {
+        "synced": synced,
+        "policy_moved": policy_moved,
+        "rollout_moved": rollout_moved,
+        "ok": bool(synced and policy_moved and rollout_moved),
+        "num_tokens": int(actor_delta.size),
+        "actor_move_max_abs": actor_move_max,
+        "rollout_move_max_abs": rollout_move_max,
+        "delta_error_max_abs": float(np.max(delta_error)),
+        "delta_error_mean_abs": float(np.mean(delta_error)),
+        "delta_error_p99_abs": error_p,
+        "delta_quantile": float(delta_quantile),
+        "delta_atol": float(delta_atol),
+        "delta_correlation": delta_correlation,
+    }

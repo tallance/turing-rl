@@ -1,6 +1,12 @@
 # tests/test_rollout_sync_guard.py
 import numpy as np
-from scripts.rollout_sync_guard import logprob_parity, assert_rollout_synced
+import pytest
+
+from scripts.rollout_sync_guard import (
+    assert_fixed_sequence_delta_synced,
+    assert_rollout_synced,
+    logprob_parity,
+)
 
 def test_parity_close_and_far():
     a = np.array([-0.10, -1.20, -0.03])
@@ -33,6 +39,44 @@ def test_frozen_policy_flagged():        # rollout tracks actor but teacher-forc
 
 def test_teacher_forced_shape_must_match():
     s = logprob_parity(np.array([-0.1]), np.array([-0.1]))
-    import pytest
     with pytest.raises((ValueError, AssertionError)):
         assert_rollout_synced(s, s, np.array([-0.1, -0.2]), np.array([-0.1]))  # not a fixed seq
+
+
+def test_fixed_sequence_delta_ignores_constant_engine_offset():
+    actor0 = np.array([-1.0, -2.0, -3.0, -4.0])
+    actor1 = np.array([-1.2, -1.7, -3.4, -3.8])
+    rollout0 = actor0 + 0.7
+    rollout1 = actor1 + 0.7
+
+    out = assert_fixed_sequence_delta_synced(actor0, actor1, rollout0, rollout1)
+
+    assert out["ok"] is True
+    assert out["synced"] is True
+    assert out["policy_moved"] is True
+    assert out["rollout_moved"] is True
+    assert out["delta_error_p99_abs"] < 1e-12
+
+
+def test_fixed_sequence_delta_flags_stale_rollout():
+    actor0 = np.array([-1.0, -2.0, -3.0, -4.0])
+    actor1 = np.array([-1.2, -1.7, -3.4, -3.8])
+    rollout0 = actor0 + 0.7
+    rollout1 = rollout0.copy()
+
+    out = assert_fixed_sequence_delta_synced(actor0, actor1, rollout0, rollout1)
+
+    assert out["ok"] is False
+    assert out["synced"] is False
+    assert out["policy_moved"] is True
+    assert out["rollout_moved"] is False
+
+
+def test_fixed_sequence_delta_requires_identical_shapes():
+    with pytest.raises(ValueError, match="same fixed sequence"):
+        assert_fixed_sequence_delta_synced(
+            np.array([-1.0, -2.0]),
+            np.array([-1.1]),
+            np.array([-1.0, -2.0]),
+            np.array([-1.1, -2.1]),
+        )

@@ -38,7 +38,8 @@ def test_teacher_forced_logprob_uses_trainer_dataproto_adapter():
             return Output(), 0.0
 
     trainer = Trainer()
-    result = b0_rollout_sync_hook._teacher_forced_logprob(trainer, {"fixed": True})
+    specs = [{"selected_response_offsets": [1, 2]}]
+    result = b0_rollout_sync_hook._teacher_forced_logprob(trainer, {"fixed": True}, specs)
 
     assert trainer.calls == 1
     np.testing.assert_allclose(result, [-0.2, -0.3])
@@ -189,3 +190,56 @@ def test_attention_padding_falls_back_to_transformers_without_flash_attn():
     assert cu_seqlens.tolist() == [0, 3, 5]
     assert int(max_seqlen) == 3
     assert seqlens.tolist() == [3, 2]
+
+
+def test_b0_fixed_sequence_specs_preserve_prompt_and_selected_response_tokens():
+    import numpy as np
+
+    from training.grpo import b0_rollout_sync_hook
+
+    batch = SimpleNamespace(
+        batch={
+            "prompts": np.array([[0, 0, 11, 12], [0, 21, 22, 23]]),
+            "responses": np.array([[31, 32, 0], [41, 42, 43]]),
+            "attention_mask": np.array(
+                [[0, 0, 1, 1, 1, 1, 0], [0, 1, 1, 1, 1, 1, 1]]
+            ),
+            "response_mask": np.array([[1, 1, 0], [1, 0, 1]]),
+        }
+    )
+
+    specs = b0_rollout_sync_hook._extract_fixed_sequence_specs(batch, dp_size=2)
+
+    assert specs == [
+        {
+            "sequence_ids": [11, 12, 31, 32],
+            "prompt_length": 2,
+            "selected_response_offsets": [0, 1],
+        },
+        {
+            "sequence_ids": [21, 22, 23, 41, 42, 43],
+            "prompt_length": 3,
+            "selected_response_offsets": [0, 2],
+        },
+    ]
+
+
+def test_b0_prompt_logprobs_align_to_fixed_response_tokens():
+    from training.grpo import b0_rollout_sync_hook
+
+    spec = {
+        "sequence_ids": [11, 12, 31, 32],
+        "prompt_length": 2,
+        "selected_response_offsets": [0, 1],
+    }
+    output = SimpleNamespace(
+        extra_fields={
+            # veRL maps each entry to the next token and appends one terminal dummy.
+            "prompt_ids": [[12], [31], [32], [0]],
+            "prompt_logprobs": [[-0.2], [-1.3], [-1.4], [0.0]],
+        }
+    )
+
+    result = b0_rollout_sync_hook._extract_selected_prompt_logprobs(output, spec)
+
+    assert result.tolist() == [-1.3, -1.4]
