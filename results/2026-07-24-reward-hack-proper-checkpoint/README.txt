@@ -30,7 +30,22 @@ epoch; final_win_rate = final-epoch fraction. Buggy-checkpoint numbers from the 
   8b_proper_kl1e4_lr1e4  1e-4  1e-4    6/10     0.641            (n/a)
   8b_proper_kl0_lr1e4    0     1e-4    6/10     0.684            (n/a)
 
-VERDICT (H1): THE HACK REPLICATES on the clean checkpoint.
+EXTENDED RESULT (lr=1e-4 resumed 50->~99 epochs; jobs 11711/12/13, 2026-07-27..28)
+----------------------------------------------------------------------------------
+Resuming the three lr=1e-4 cells from global_step_50 for another ~50 epochs shows the win-rate
+KEEPS CLIMBING (the 50-epoch 7/10 was under-optimization, not a ceiling):
+  cell                 50ep            ~99ep
+  kl1e3 (HACK)         7/10 @ 0.72  -> 9/10  @ 0.895
+  kl1e4                6/10 @ 0.64  -> 10/10 @ 0.95
+  kl0                  6/10 @ 0.68  -> 8/10  @ 0.75
+=> With enough optimization pressure ALL three lr=1e-4 cells CLEAR the >=8/10 gate (8-10/10),
+   win-rate 0.75-0.95 ("more than human than human" decisively). The frozen 9B judge is fully
+   gameable per-turn on the clean checkpoint; the earlier 0.72 was simply mid-climb (see the
+   0->99 winrate_over_time_proper.png: lr=1e-4 curves ramp monotonically, lr=1e-5 stay flat ~0.5).
+   (3960 rows/cell = ~99 epochs; veRL resume off-by-one lands at 99 not 100. Jobs 11711/12 show
+   FAILED = benign FSx teardown crash, data complete/identical shape to the COMPLETED 11713.)
+
+VERDICT (H1): THE HACK REPLICATES on the clean checkpoint — and STRENGTHENS with more epochs.
   - At lr=1e-5 the frozen judge holds ~0.45-0.53 across ALL KL (1e-3/1e-4/0) -> KL is NOT the
     limiter, exactly as on the buggy checkpoint.
   - Raising to lr=1e-4 drives win-rate to 0.64-0.72 across all three KL values; the hack cell
