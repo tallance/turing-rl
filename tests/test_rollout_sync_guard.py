@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from scripts.rollout_sync_guard import (
+    assert_calibrated_fixed_sequence_synced,
     assert_fixed_sequence_delta_synced,
     assert_rollout_synced,
     logprob_parity,
@@ -83,3 +84,63 @@ def test_fixed_sequence_delta_requires_identical_shapes():
             np.array([-1.0, -2.0]),
             np.array([-1.1, -2.1]),
         )
+
+
+def test_calibrated_sync_passes_when_engine_bias_is_preserved_and_versions_advance():
+    actor0 = np.array([-1.0, -2.0, -3.0, -4.0, -5.0])
+    actor1 = actor0 + np.array([-0.30, 0.20, -0.15, 0.25, -0.10])
+    engine_bias = np.array([0.05, -0.04, 0.03, -0.02, 0.01])
+    rollout0 = actor0 + engine_bias
+    rollout1 = actor1 + engine_bias + 0.002
+
+    out = assert_calibrated_fixed_sequence_synced(
+        actor0,
+        actor1,
+        rollout0,
+        rollout1,
+        rollout_versions0=[0, 0],
+        rollout_versions1=[1, 1],
+    )
+
+    assert out["ok"] is True
+    assert out["weight_versions_advanced"] is True
+    assert out["raw_parity_preserved"] is True
+    assert out["movement_consistent"] is True
+
+
+def test_calibrated_sync_rejects_version_bump_with_stale_rollout_weights():
+    actor0 = np.array([-1.0, -2.0, -3.0, -4.0, -5.0])
+    actor1 = actor0 + np.array([-0.30, 0.20, -0.15, 0.25, -0.10])
+    rollout0 = actor0 + 0.03
+    rollout1 = rollout0.copy()
+
+    out = assert_calibrated_fixed_sequence_synced(
+        actor0,
+        actor1,
+        rollout0,
+        rollout1,
+        rollout_versions0=[0, 0],
+        rollout_versions1=[1, 1],
+    )
+
+    assert out["ok"] is False
+    assert out["weight_versions_advanced"] is True
+    assert out["movement_consistent"] is False
+    assert out["raw_parity_preserved"] is False
+
+
+def test_calibrated_sync_rejects_replicas_that_did_not_advance():
+    actor0 = np.array([-1.0, -2.0, -3.0])
+    actor1 = actor0 + np.array([-0.2, 0.2, -0.1])
+
+    out = assert_calibrated_fixed_sequence_synced(
+        actor0,
+        actor1,
+        actor0,
+        actor1,
+        rollout_versions0=[0, 0],
+        rollout_versions1=[1, 0],
+    )
+
+    assert out["ok"] is False
+    assert out["weight_versions_advanced"] is False

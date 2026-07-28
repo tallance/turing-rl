@@ -103,3 +103,108 @@ def assert_fixed_sequence_delta_synced(
         "delta_atol": float(delta_atol),
         "delta_correlation": delta_correlation,
     }
+
+
+def logprob_error_stats(left, right) -> dict:
+    """Distributional parity for two engines scoring the same fixed tokens."""
+    left = np.asarray(left, dtype=np.float64)
+    right = np.asarray(right, dtype=np.float64)
+    if left.shape != right.shape:
+        raise ValueError(f"logprob shapes differ: {left.shape} vs {right.shape}")
+    if not left.size:
+        raise ValueError("fixed-sequence logprobs must not be empty")
+    error = np.abs(left - right)
+    correlation = None
+    if left.size > 1 and np.std(left) > 0 and np.std(right) > 0:
+        correlation = float(np.corrcoef(left, right)[0, 1])
+    return {
+        "max_abs": float(np.max(error)),
+        "mean_abs": float(np.mean(error)),
+        "p99_abs": float(np.quantile(error, 0.99)),
+        "correlation": correlation,
+    }
+
+
+def assert_calibrated_fixed_sequence_synced(
+    actor_lp0,
+    actor_lp1,
+    rollout_lp0,
+    rollout_lp1,
+    *,
+    rollout_versions0,
+    rollout_versions1,
+    min_raw_correlation: float = 0.995,
+    max_mean_error_increase: float = 0.01,
+    max_p99_error_increase: float = 0.05,
+    movement_ratio_bounds: tuple[float, float] = (0.5, 2.0),
+    min_delta_correlation: float = 0.5,
+) -> dict:
+    """Gate sync relative to the known-synced step-0 engine baseline.
+
+    Qwen3.5 uses different GDN kernels in HF and vLLM, so exact token-level deltas are not a valid
+    unconditional gate. A valid live-sync check instead requires every rollout replica's version
+    to advance, cross-engine raw-logprob parity to remain as good as at step 0, and both engines to
+    move by comparable magnitudes. Delta correlation is additionally required when the actor move
+    is large enough to rise above the measured cross-engine baseline noise.
+    """
+    strict_delta = assert_fixed_sequence_delta_synced(
+        actor_lp0,
+        actor_lp1,
+        rollout_lp0,
+        rollout_lp1,
+    )
+    baseline = logprob_error_stats(actor_lp0, rollout_lp0)
+    final = logprob_error_stats(actor_lp1, rollout_lp1)
+
+    versions0 = list(rollout_versions0)
+    versions1 = list(rollout_versions1)
+    weight_versions_advanced = bool(
+        versions0
+        and len(versions0) == len(versions1)
+        and all(old is not None and new is not None and int(new) > int(old) for old, new in zip(versions0, versions1))
+    )
+    raw_parity_preserved = bool(
+        baseline["correlation"] is not None
+        and final["correlation"] is not None
+        and baseline["correlation"] >= min_raw_correlation
+        and final["correlation"] >= min_raw_correlation
+        and final["mean_abs"] <= baseline["mean_abs"] + max_mean_error_increase
+        and final["p99_abs"] <= baseline["p99_abs"] + max_p99_error_increase
+    )
+
+    actor_move_mean = strict_delta["actor_move_mean_abs"]
+    rollout_move_mean = strict_delta["rollout_move_mean_abs"]
+    movement_ratio = float(rollout_move_mean / actor_move_mean) if actor_move_mean > 0 else float("inf")
+    movement_consistent = bool(
+        strict_delta["policy_moved"]
+        and strict_delta["rollout_moved"]
+        and movement_ratio_bounds[0] <= movement_ratio <= movement_ratio_bounds[1]
+    )
+
+    delta_signal_required = bool(actor_move_mean >= max(0.02, 1.5 * baseline["mean_abs"]))
+    delta_correlation = strict_delta["delta_correlation"]
+    delta_signal_consistent = bool(
+        not delta_signal_required
+        or (delta_correlation is not None and delta_correlation >= min_delta_correlation)
+    )
+    synced = bool(
+        weight_versions_advanced
+        and raw_parity_preserved
+        and movement_consistent
+        and delta_signal_consistent
+    )
+    return {
+        "ok": synced,
+        "synced": synced,
+        "policy_moved": strict_delta["policy_moved"],
+        "rollout_moved": strict_delta["rollout_moved"],
+        "weight_versions_advanced": weight_versions_advanced,
+        "raw_parity_preserved": raw_parity_preserved,
+        "movement_consistent": movement_consistent,
+        "movement_ratio": movement_ratio,
+        "delta_signal_required": delta_signal_required,
+        "delta_signal_consistent": delta_signal_consistent,
+        "baseline_raw_parity": baseline,
+        "final_raw_parity": final,
+        "strict_delta": strict_delta,
+    }

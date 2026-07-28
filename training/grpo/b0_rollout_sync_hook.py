@@ -47,7 +47,11 @@ from typing import Any
 
 import numpy as np
 
-from scripts.rollout_sync_guard import assert_fixed_sequence_delta_synced, logprob_parity
+from scripts.rollout_sync_guard import (
+    assert_calibrated_fixed_sequence_synced,
+    assert_fixed_sequence_delta_synced,
+    logprob_parity,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -299,21 +303,6 @@ def _teacher_forced_logprob(
     return np.concatenate(selected)
 
 
-def _logprob_error_stats(left: np.ndarray, right: np.ndarray) -> dict[str, Any]:
-    if left.shape != right.shape:
-        raise ValueError(f"logprob shapes differ: {left.shape} vs {right.shape}")
-    error = np.abs(left - right)
-    correlation = None
-    if left.size > 1 and np.std(left) > 0 and np.std(right) > 0:
-        correlation = float(np.corrcoef(left, right)[0, 1])
-    return {
-        "max_abs": float(np.max(error)),
-        "mean_abs": float(np.mean(error)),
-        "p99_abs": float(np.quantile(error, 0.99)),
-        "correlation": correlation,
-    }
-
-
 def _per_sequence_delta_verdicts(state: dict[str, Any]) -> list[dict[str, Any]]:
     verdicts = []
     offset = 0
@@ -427,19 +416,17 @@ def install_b0_rollout_sync_hook() -> bool:
                         f"incomplete B0 capture: step0={state['step0']} step1={state['step1']} "
                         f"actor_captures={len(state['actor_lp'])} rollout_captures={len(state['rollout_lp'])}"
                     )
-                verdict = assert_fixed_sequence_delta_synced(
+                verdict = assert_calibrated_fixed_sequence_synced(
                     state["actor_lp"][0],
                     state["actor_lp"][1],
                     state["rollout_lp"][0],
                     state["rollout_lp"][1],
+                    rollout_versions0=state["rollout_weight_versions"][0],
+                    rollout_versions1=state["rollout_weight_versions"][1],
                 )
                 payload = {
                     **verdict,
                     "absolute_parity": {"step0": state["step0"], "step1": state["step1"]},
-                    "fixed_raw_parity": {
-                        "step0": _logprob_error_stats(state["actor_lp"][0], state["rollout_lp"][0]),
-                        "step1": _logprob_error_stats(state["actor_lp"][1], state["rollout_lp"][1]),
-                    },
                     "rollout_weight_versions": state["rollout_weight_versions"],
                     "per_sequence_delta": _per_sequence_delta_verdicts(state),
                 }
