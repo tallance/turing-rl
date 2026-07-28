@@ -197,7 +197,11 @@ def _extract_selected_prompt_logprobs(output: Any, spec: dict[str, Any]) -> np.n
     return np.asarray(values, dtype=np.float64)
 
 
-async def _score_fixed_sequences_async(client: Any, specs: list[dict[str, Any]], call_index: int) -> np.ndarray:
+async def _score_fixed_sequences_async(
+    client: Any,
+    specs: list[dict[str, Any]],
+    call_index: int,
+) -> tuple[np.ndarray, list[int | None]]:
     requests = [
         client.generate(
             request_id=f"b0-fixed-delta-{call_index}-{row}",
@@ -207,9 +211,14 @@ async def _score_fixed_sequences_async(client: Any, specs: list[dict[str, Any]],
         for row, spec in enumerate(specs)
     ]
     outputs = await asyncio.gather(*requests)
-    return np.concatenate(
+    logprobs = np.concatenate(
         [_extract_selected_prompt_logprobs(output, spec) for output, spec in zip(outputs, specs, strict=True)]
     )
+    weight_versions = [
+        int(version) if (version := output.extra_fields.get("global_steps")) is not None else None
+        for output in outputs
+    ]
+    return logprobs, weight_versions
 
 
 def _install_fixed_sequence_rollout_capture(trainer: Any, state: dict[str, Any]) -> None:
@@ -230,12 +239,14 @@ def _install_fixed_sequence_rollout_capture(trainer: Any, state: dict[str, Any])
         try:
             if state["fixed_specs"] is None:
                 state["fixed_specs"] = _extract_fixed_sequence_specs(output, dp_size)
-            rollout_lp = asyncio.run(
+            rollout_lp, weight_versions = asyncio.run(
                 _score_fixed_sequences_async(client, state["fixed_specs"], call_index)
             )
             state["rollout_lp"].append(rollout_lp)
+            state["rollout_weight_versions"].append(weight_versions)
             print(
-                f"B0_ROLLOUT_SYNC: fixed vLLM call={call_index} tokens={rollout_lp.size}",
+                f"B0_ROLLOUT_SYNC: fixed vLLM call={call_index} tokens={rollout_lp.size} "
+                f"weight_versions={weight_versions}",
                 flush=True,
             )
         except Exception as exc:
@@ -267,8 +278,16 @@ def _teacher_forced_logprob(
     fixed_dp: Any,
     specs: list[dict[str, Any]],
 ) -> np.ndarray:
-    """Actor logprobs on the fixed sequence via veRL's DataProto compatibility adapter."""
-    out, _mfu = trainer._compute_old_log_prob(copy.deepcopy(fixed_dp))
+    """Raw actor logprobs on the fixed sequence via veRL's DataProto adapter.
+
+    vLLM prompt logprobs are computed directly from raw logits and do not apply sampling
+    temperature. Override the copied actor batch to temperature 1.0 so both engines score the
+    same distribution without changing the real training batch.
+    """
+    probe_dp = copy.deepcopy(fixed_dp)
+    probe_dp.meta_info = dict(probe_dp.meta_info)
+    probe_dp.meta_info["temperature"] = 1.0
+    out, _mfu = trainer._compute_old_log_prob(probe_dp)
     tensordict = out.batch
     logprobs = _to_np(tensordict[_first_present_key(tensordict, _ACTOR_LOGPROB_KEYS)])
     if logprobs.shape[0] != len(specs):
@@ -278,6 +297,45 @@ def _teacher_forced_logprob(
         for row, spec in enumerate(specs)
     ]
     return np.concatenate(selected)
+
+
+def _logprob_error_stats(left: np.ndarray, right: np.ndarray) -> dict[str, Any]:
+    if left.shape != right.shape:
+        raise ValueError(f"logprob shapes differ: {left.shape} vs {right.shape}")
+    error = np.abs(left - right)
+    correlation = None
+    if left.size > 1 and np.std(left) > 0 and np.std(right) > 0:
+        correlation = float(np.corrcoef(left, right)[0, 1])
+    return {
+        "max_abs": float(np.max(error)),
+        "mean_abs": float(np.mean(error)),
+        "p99_abs": float(np.quantile(error, 0.99)),
+        "correlation": correlation,
+    }
+
+
+def _per_sequence_delta_verdicts(state: dict[str, Any]) -> list[dict[str, Any]]:
+    verdicts = []
+    offset = 0
+    for row, spec in enumerate(state["fixed_specs"]):
+        count = len(spec["selected_response_offsets"])
+        row_slice = slice(offset, offset + count)
+        verdict = assert_fixed_sequence_delta_synced(
+            state["actor_lp"][0][row_slice],
+            state["actor_lp"][1][row_slice],
+            state["rollout_lp"][0][row_slice],
+            state["rollout_lp"][1][row_slice],
+        )
+        verdicts.append(
+            {
+                "row": row,
+                "weight_version_step0": state["rollout_weight_versions"][0][row],
+                "weight_version_step1": state["rollout_weight_versions"][1][row],
+                **verdict,
+            }
+        )
+        offset += count
+    return verdicts
 
 
 def write_rollout_sync(run_dir: str, payload: dict) -> str:
@@ -314,6 +372,7 @@ def install_b0_rollout_sync_hook() -> bool:
         "step1": None,
         "actor_lp": [],
         "rollout_lp": [],
+        "rollout_weight_versions": [],
         "fixed_dp": None,
         "fixed_specs": None,
         "error": None,
@@ -377,6 +436,12 @@ def install_b0_rollout_sync_hook() -> bool:
                 payload = {
                     **verdict,
                     "absolute_parity": {"step0": state["step0"], "step1": state["step1"]},
+                    "fixed_raw_parity": {
+                        "step0": _logprob_error_stats(state["actor_lp"][0], state["rollout_lp"][0]),
+                        "step1": _logprob_error_stats(state["actor_lp"][1], state["rollout_lp"][1]),
+                    },
+                    "rollout_weight_versions": state["rollout_weight_versions"],
+                    "per_sequence_delta": _per_sequence_delta_verdicts(state),
                 }
             except Exception as exc:
                 payload = {

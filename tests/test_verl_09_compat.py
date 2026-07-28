@@ -34,14 +34,16 @@ def test_teacher_forced_logprob_uses_trainer_dataproto_adapter():
 
         def _compute_old_log_prob(self, fixed_dp):
             self.calls += 1
-            assert fixed_dp == {"fixed": True}
+            assert fixed_dp.meta_info["temperature"] == 1.0
             return Output(), 0.0
 
     trainer = Trainer()
+    fixed_dp = SimpleNamespace(meta_info={"temperature": 0.6})
     specs = [{"selected_response_offsets": [1, 2]}]
-    result = b0_rollout_sync_hook._teacher_forced_logprob(trainer, {"fixed": True}, specs)
+    result = b0_rollout_sync_hook._teacher_forced_logprob(trainer, fixed_dp, specs)
 
     assert trainer.calls == 1
+    assert fixed_dp.meta_info["temperature"] == 0.6
     np.testing.assert_allclose(result, [-0.2, -0.3])
 
 
@@ -243,3 +245,35 @@ def test_b0_prompt_logprobs_align_to_fixed_response_tokens():
     result = b0_rollout_sync_hook._extract_selected_prompt_logprobs(output, spec)
 
     assert result.tolist() == [-1.3, -1.4]
+
+
+def test_b0_fixed_sequence_score_records_rollout_weight_version():
+    import asyncio
+
+    from training.grpo import b0_rollout_sync_hook
+
+    class Client:
+        async def generate(self, **kwargs):
+            assert kwargs["sampling_params"]["prompt_logprobs"] == 0
+            return SimpleNamespace(
+                extra_fields={
+                    "prompt_ids": [[12], [31], [32], [0]],
+                    "prompt_logprobs": [[-0.2], [-1.3], [-1.4], [0.0]],
+                    "global_steps": 3,
+                }
+            )
+
+    specs = [
+        {
+            "sequence_ids": [11, 12, 31, 32],
+            "prompt_length": 2,
+            "selected_response_offsets": [0, 1],
+        }
+    ]
+
+    logprobs, versions = asyncio.run(
+        b0_rollout_sync_hook._score_fixed_sequences_async(Client(), specs, call_index=1)
+    )
+
+    assert logprobs.tolist() == [-1.3, -1.4]
+    assert versions == [3]
