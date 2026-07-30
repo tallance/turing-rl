@@ -1,78 +1,128 @@
-Reward-Hacking Probe, Repeated on a PROPER (stop-token) SFT Checkpoint — Arm A (Qwen3-8B)
-=========================================================================================
-Spec:  docs/superpowers/specs/2026-07-24-reward-hack-proper-checkpoint-design.md
-Plan:  docs/superpowers/plans/2026-07-24-reward-hack-proper-checkpoint.md
-Cluster DEPLOYED_SHA: b4a1c50 (code) ; runs used the merged proper checkpoint (below).
-Branch: worktree-reward-hack-proper-ckpt
+Reward-hack proper-checkpoint experiment provenance
+===================================================
 
-WHAT THIS IS
+References
+----------
+Spec: docs/superpowers/specs/2026-07-24-reward-hack-proper-checkpoint-design.md
+Plan: docs/superpowers/plans/2026-07-24-reward-hack-proper-checkpoint.md
+W&B project: https://meta.wandb.io/lancewicki/2026-07-15-rl-generator-vs-fixed-judge
+
+Shared inputs
+-------------
+Dataset:
+  data/prism/full_s42_history_sft40_grpo60_test10/grpo/train_overfit10.parquet
+
+Frozen judge:
+  Qwen/Qwen3.5-9B
+
+Grid:
+  KL in {1e-3, 1e-4, 0}
+  LR in {1e-5, 1e-4}
+  GRPO G=4
+  TURING_JUDGE_SCORE_CLIP_MAX=7
+
+Arm A: Qwen3-8B
+----------------
+Merged SFT/KL-reference checkpoint:
+  checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3
+
+Initial 50-update grid jobs (2026-07-25 through 2026-07-26):
+  11136-11141
+
+LR=1e-4 continuation jobs (2026-07-27 through 2026-07-28):
+  11711-11713
+
+Run tags:
+  8b_proper_kl1e3_lr1e5
+  8b_proper_kl1e4_lr1e5
+  8b_proper_kl0_lr1e5
+  8b_proper_kl1e3_lr1e4
+  8b_proper_kl1e4_lr1e4
+  8b_proper_kl0_lr1e4
+
+Configuration:
+  LoRA r64/alpha32
+  target_modules=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]
+  10 prompts per update, 4 rollouts per prompt
+
+Cluster source paths:
+  /home/lancewicki/projects/turing-rl/results/grpo/rl-generator/8b_proper_*/reward_dump
+  /home/lancewicki/projects/turing-rl/results/grpo/rl-generator/8b_proper_*/checkpoints
+  /home/lancewicki/projects/turing-rl/logs/rl_gen-*.out
+
+Arm B: Qwen3.5-9B
+------------------
+B0 rollout-sync job (2026-07-28):
+  11910
+
+Grid and continuation jobs (2026-07-28 through 2026-07-30):
+  11915-11920
+  12069 (9b_proper_kl1e4_lr1e4 continuation from global_step_50 to global_step_100)
+
+Run tags represented by artifacts in this directory:
+  9b_b0_calibrated_lr1e4
+  9b_proper_kl1e3_lr1e4
+  9b_proper_kl1e4_lr1e4
+
+Configuration:
+  Qwen/Qwen3.5-9B
+  FSDP2 LoRA r64/alpha32
+  lora.merge=True
+  target_modules=[q_proj,k_proj,v_proj,o_proj,gate_proj,up_proj,down_proj]
+  trainer GPUs 0-6; frozen judge GPU 7
+  7 sampled prompts per update, 4 rollouts per prompt
+
+Validated stack used by the B0 run:
+  turing-rl SHA dfa0995e92bad4421be145b25d0b665adaacdb25
+  verl 0.9.0.dev0, git c791da0bfcd7d7b560b1e461d2c188145b39c353
+  vLLM 0.18.0+cu130
+  transformers 5.4.0
+  torch 2.10.0+cu130
+  flash-linear-attention 0.5.1
+
+Cluster source paths:
+  /home/lancewicki/projects/turing-rl/results/grpo/rl-generator/9b_b0_calibrated_lr1e4
+  /home/lancewicki/projects/turing-rl/results/grpo/rl-generator/9b_proper_*/reward_dump
+  /home/lancewicki/projects/turing-rl/results/grpo/rl-generator/9b_proper_*/checkpoints
+  /home/lancewicki/projects/turing-rl/logs/rl_gen_1node-*.out
+
+Artifacts in this directory
+---------------------------
+  winrate_over_time_proper.png
+  8b_proper_*_rating_scatter.png
+  8b_proper_*_conversation_trajectory.txt
+  9b_proper_*_rating_scatter.png
+  9b_proper_kl1e4_lr1e4_conversation_trajectory_step50.txt
+  winrate_over_time_9b_completed_lr1e4.png
+  8b_vs_9b_kl1e4_lr1e4_winrate.png
+  8b_vs_9b_kl1e4_lr1e4_winrate_vertical.png
+  arm_b_b0_calibrated_rollout_sync.json
+  arm_b_b0_calibrated_job_11910.log
+
+Reproduction
 ------------
-Re-run of the 2026-07-15 "RL generator vs. fixed judge" reward-hack probe, fixing the confound that
-the original seeded GRPO from a stop-token-MASKED SFT checkpoint (non-terminating generator). Here we
-seed from the stop-token-SUPERVISED checkpoint-78 (trajectory run 10715), merged into a standalone
-backbone (merge parity verified: argmax agreement 1.0, softmax-KL 6e-4). KL reference confirmed
-correct: wandb step-1 actor/kl_loss = 0 (vs the buggy runs' ~0.63-0.86).
+Cluster repo:
+  /home/lancewicki/projects/turing-rl
 
-H1: does the lr=1e-4 hack (buggy checkpoint: 8/10, win-rate 0.744 on the 10-turn overfit set)
-replicate when the SFT init actually terminates?
+Merge the Arm A SFT checkpoint:
+  HF_HOME=/home/lancewicki/data/hf_cache \
+    python scripts/merge_sft_adapter.py \
+      --base-model Qwen/Qwen3-8B \
+      --adapter-dir checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/checkpoint-78 \
+      --output-dir checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3
 
-GRID (overfit-10, no cap [TURING_JUDGE_SCORE_CLIP_MAX=7], frozen Qwen3.5-9B judge, 50 epochs,
-LoRA r64/alpha32 attn+MLP, merged-SFT KL ref). Jobs 11136-11141 (2026-07-25..26).
+Submit the Arm A grid:
+  bash scripts/slurm/submit_arm_a_grid.sh
 
-RESULTS (proper checkpoint) — won/10 = strict per-prompt majority (frac>0.5, ties excl) at final
-epoch; final_win_rate = final-epoch fraction. Buggy-checkpoint numbers from the 2026-07-15 run.
---------------------------------------------------------------------------------------------------
-  cell                 KL     LR      won/10   final_win_rate   buggy-ckpt
-  8b_proper_kl1e3_lr1e5  1e-3  1e-5    4/10     0.525            5/10 ~0.60  (faithful baseline)
-  8b_proper_kl1e4_lr1e5  1e-4  1e-5    5/10     0.500            4/10 0.590
-  8b_proper_kl0_lr1e5    0     1e-5    3/10     0.450            4/10 0.575
-  8b_proper_kl1e3_lr1e4  1e-3  1e-4    7/10     0.718            8/10 0.744  (THE HACK)
-  8b_proper_kl1e4_lr1e4  1e-4  1e-4    6/10     0.641            (n/a)
-  8b_proper_kl0_lr1e4    0     1e-4    6/10     0.684            (n/a)
+Analyze a run:
+  python scripts/overfit_gate_check.py \
+    --dump_dir results/grpo/rl-generator/<tag>/reward_dump
 
-VERDICT (H1): THE HACK REPLICATES on the clean checkpoint.
-  - At lr=1e-5 the frozen judge holds ~0.45-0.53 across ALL KL (1e-3/1e-4/0) -> KL is NOT the
-    limiter, exactly as on the buggy checkpoint.
-  - Raising to lr=1e-4 drives win-rate to 0.64-0.72 across all three KL values; the hack cell
-    (kl=1e-3, lr=1e-4) reaches 7/10 @ 0.718, vs the buggy checkpoint's 8/10 @ 0.744.
-  => The reward-hack is real and checkpoint-independent, NOT an artifact of the non-terminating
-     (stop-token-masked) generator. It is marginally weaker on the clean init (7/10 vs 8/10, 0.718
-     vs 0.744) — sensible: a properly-terminating SFT start is slightly harder to push to full
-     overfit. The LR->win-rate trend (0.5 -> 0.72) is robust across 3 KL values.
-  CAVEAT: final_win_rate is a single-final-epoch snapshot (noisy, swings observed 5-9 in the prior
-  run); a last-K-epoch average would firm up the 7-vs-8 gate margin. See the per-cell scatter PNGs.
+  python scripts/plot_overfit_ratings.py \
+    --dump_dir results/grpo/rl-generator/<tag>/reward_dump \
+    --out results/grpo/rl-generator/<tag>/rating_scatter.png
 
-FILES
------
-  <cell>_rating_scatter.png  - 10-subplot per-example judge Likert vs epoch (blue=per-rollout,
-                               red=epoch mean; green line = win Likert>=5, gray = tie 4).
-
-INPUT DATA (cluster, source of truth)
--------------------------------------
-  Reward dumps: results/grpo/rl-generator/8b_proper_<cell>/reward_dump/reward-*.jsonl (2000 rows/cell
-  = 50 epochs x 10 prompts x G=4). turing_judge_score_raw = oriented Likert.
-  SFT init/KL-ref (merged): checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3
-    (merged from checkpoint-78 via scripts/merge_sft_adapter.py).
-  Overfit-10: data/prism/full_s42_history_sft40_grpo60_test10/grpo/train_overfit10.parquet
-  wandb: https://meta.wandb.io/lancewicki/2026-07-15-rl-generator-vs-fixed-judge (run per cell,
-    experiment_name qwen3-8b-grpo-turing-8b_proper_<cell>).
-
-REPRODUCE (cluster; repo /home/lancewicki/projects/turing-rl)
--------------------------------------------------------------
-  0. Deploy committed HEAD (git archive HEAD | tar; stamp DEPLOYED_SHA). NOTE: scripts/sync_to_cluster.sh
-     operates on the MAIN checkout, not a worktree; for a worktree branch use the manual archive.
-  1. Merge the proper checkpoint (CPU; set HF_HOME=/home/lancewicki/data/hf_cache):
-       python scripts/merge_sft_adapter.py --base-model Qwen/Qwen3-8B \
-         --adapter-dir checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/checkpoint-78 \
-         --output-dir  checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3
-     (merge parity: argmax agreement + softmax-KL, NOT raw max-logit — bf16 merge gives ~0.3 max-logit
-      noise on logits of scale ~4; assert argmax_agree~1.0 & KL<1e-3.)
-  2. Submit the grid:  bash scripts/slurm/submit_arm_a_grid.sh   (6 cells; serialize under 24-GPU QOS)
-  3. Gate + plot per cell:
-       python scripts/overfit_gate_check.py --dump_dir results/grpo/rl-generator/<cell>/reward_dump
-       python scripts/plot_overfit_ratings.py --dump_dir .../reward_dump --out .../rating_scatter.png
-Slurm jobs: 11136-11141 (11136 marked FAILED = benign FSx 'Stale file handle' at teardown AFTER 50
-epochs; its 2000-row dump is complete).
-
-OUT OF SCOPE (post-plan): full-split runs + 880-heldout eval; Arm B (Qwen3.5-9B generator) — blocked
-on a veRL 0.9 patch-port (see memory: verl-09-refactor-breaks-grpo-patch).
+  python scripts/dump_conversation_trajectory.py \
+    --dump_dir results/grpo/rl-generator/<tag>/reward_dump \
+    --out results/grpo/rl-generator/<tag>/conversation_trajectory.txt \
+    --group_size 4

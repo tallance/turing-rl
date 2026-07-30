@@ -67,6 +67,8 @@ _PROPAGATED_RUNTIME_ENV_VARS = (
     "LOGPROB_CLIP_MIN",
     "LOGPROB_CLIP_MAX",
     "PERSONA_ELBO_SFT_MAX_LENGTH",
+    "B0_ROLLOUT_SYNC",
+    "RL_RUN_DIR",
 )
 _PERSONA_WORKER_PROCESS_SETUP_HOOK = "training.grpo.ray_worker_setup.persona_worker_process_setup"
 _UPSTREAM_WORKER_PROCESS_SETUP_HOOK_ENV = "PERSONA_UPSTREAM_WORKER_PROCESS_SETUP_HOOK"
@@ -106,9 +108,81 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _find_optional_module_spec(module_name: str) -> Any:
+    """Return a module spec, treating a missing parent package as unavailable."""
+    try:
+        return importlib.util.find_spec(module_name)
+    except ModuleNotFoundError:
+        return None
+
+
+def _patch_verl_attention_utils_without_flash_attn() -> bool:
+    """Use Transformers' padding helpers when the standalone flash-attn package is absent."""
+    try:
+        import flash_attn.bert_padding  # noqa: F401
+        return False
+    except ImportError:
+        pass
+
+    try:
+        from einops import rearrange
+        from transformers.modeling_flash_attention_utils import _index_first_axis, _pad_input, _unpad_input
+        from verl.utils import attention_utils
+    except ImportError:
+        return False
+
+    def get_attention_functions():
+        return _index_first_axis, _pad_input, rearrange, _unpad_input
+
+    attention_utils._get_attention_functions = get_attention_functions
+    attention_utils._index_first_axis = _index_first_axis
+    attention_utils._pad_input = _pad_input
+    attention_utils._rearrange = rearrange
+    attention_utils._unpad_input = _unpad_input
+    return True
+
+
+def _insert_pre_resume_cache_clear(text: str) -> str:
+    marker = "# Persona compatibility: release trainer allocator cache before rollout wake-up."
+    if marker in text:
+        return text
+    anchor = (
+        "        set_expandable_segments(False)\n"
+        '        log_gpu_memory_usage("Before resume weights", logger=logger)\n'
+    )
+    if anchor not in text:
+        return text
+    return text.replace(
+        anchor,
+        anchor
+        + f"        {marker}\n"
+        + "        aggressive_empty_cache(force_sync=True)\n",
+        1,
+    )
+
+
+def _patch_engine_worker_pre_resume_cache_clear_source() -> None:
+    """Patch veRL's colocated sync order so offloaded actor cache cannot block vLLM wake-up."""
+    spec = _find_optional_module_spec("verl.workers.engine_workers")
+    if spec is None or spec.origin is None:
+        return
+    path = Path(spec.origin)
+    try:
+        text = path.read_text()
+    except OSError:
+        return
+    patched = _insert_pre_resume_cache_clear(text)
+    if patched == text:
+        return
+    try:
+        path.write_text(patched)
+    except OSError:
+        logger.warning("Failed to patch veRL pre-resume cache clear at %s", path, exc_info=True)
+
+
 def _patch_actor_elbo_sft_source() -> None:
     """Patch veRL actor config for optional ELBO/SFT loss."""
-    spec = importlib.util.find_spec("verl.workers.actor.dp_actor")
+    spec = _find_optional_module_spec("verl.workers.actor.dp_actor")
     if spec is None or spec.origin is None:
         return
     path = Path(spec.origin)
@@ -175,7 +249,7 @@ def _patch_actor_elbo_sft_source() -> None:
 
 
 def _patch_actor_config_elbo_sft_source() -> None:
-    spec = importlib.util.find_spec("verl.workers.config.actor")
+    spec = _find_optional_module_spec("verl.workers.config.actor")
     if spec is None or spec.origin is None:
         return
     path = Path(spec.origin)
@@ -202,7 +276,7 @@ def _patch_actor_config_elbo_sft_source() -> None:
 
 def _patch_peft_meta_adapter_load_source() -> None:
     """Patch PEFT adapter loading on meta tensors."""
-    spec = importlib.util.find_spec("verl.workers.fsdp_workers")
+    spec = _find_optional_module_spec("verl.workers.fsdp_workers")
     if spec is None or spec.origin is None:
         return
     path = Path(spec.origin)
@@ -1126,7 +1200,7 @@ def _worker_process_setup_hook_path() -> str:
 def _with_repo_root_pythonpath(env_vars: dict[str, str]) -> dict[str, str]:
     repo_root = os.environ.get("REPO_ROOT", "").strip()
     if not repo_root:
-        return env_vars
+        repo_root = str(Path(__file__).resolve().parents[2])
 
     existing_pythonpath = env_vars.get("PYTHONPATH")
     if existing_pythonpath is None:
@@ -1136,6 +1210,25 @@ def _with_repo_root_pythonpath(env_vars: dict[str, str]) -> dict[str, str]:
         pythonpath_entries.insert(0, repo_root)
     env_vars["PYTHONPATH"] = ":".join(pythonpath_entries) if pythonpath_entries else repo_root
     return env_vars
+
+
+def _agent_loop_score_context(args: tuple[Any, ...], call_kwargs: Mapping[str, Any]) -> tuple[Any, Mapping[str, Any]]:
+    """Extract the final output and sample kwargs across veRL agent-loop APIs."""
+    if not args:
+        raise TypeError("AgentLoopWorker._compute_score called without an output")
+
+    first_arg = args[0]
+    if isinstance(first_arg, (list, tuple)):
+        if not first_arg:
+            raise ValueError("AgentLoopWorker._compute_score called with no trajectory outputs")
+        output = first_arg[-1]
+        score_kwargs = call_kwargs.get("kwargs", args[1] if len(args) > 1 else {})
+    else:
+        # Legacy veRL passed output plus five tensors and the sample kwargs mapping.
+        output = first_arg
+        score_kwargs = args[6] if len(args) > 6 else call_kwargs.get("kwargs", {})
+
+    return output, _coerce_mapping(score_kwargs)
 
 
 def _merge_propagated_runtime_env_vars(runtime_env: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -1148,6 +1241,9 @@ def _merge_propagated_runtime_env_vars(runtime_env: Mapping[str, Any] | None) ->
 
     if _worker_process_setup_hook_enabled():
         env_vars = dict(merged_runtime_env.get("env_vars") or {})
+        for name in ("B0_ROLLOUT_SYNC", "RL_RUN_DIR"):
+            if os.environ.get(name) is not None:
+                env_vars[name] = os.environ[name]
         existing_hook = merged_runtime_env.get("worker_process_setup_hook")
         if existing_hook and existing_hook != _worker_process_setup_hook_path():
             if isinstance(existing_hook, str):
@@ -1169,8 +1265,8 @@ def _patch_ppo_ray_runtime_env(constants_ppo_mod: Any) -> None:
 
     original_get_ppo_ray_runtime_env = constants_ppo_mod.get_ppo_ray_runtime_env
 
-    def patched_get_ppo_ray_runtime_env():
-        return _merge_propagated_runtime_env_vars(original_get_ppo_ray_runtime_env())
+    def patched_get_ppo_ray_runtime_env(*args, **kwargs):
+        return _merge_propagated_runtime_env_vars(original_get_ppo_ray_runtime_env(*args, **kwargs))
 
     constants_ppo_mod.get_ppo_ray_runtime_env = patched_get_ppo_ray_runtime_env
     constants_ppo_mod._persona_runtime_env_vars_patch_applied = True
@@ -1653,6 +1749,8 @@ def _should_route_grouped_sim_rewards(config: Any, num_workers: int) -> bool:
 
 def apply_verl_runtime_patch() -> bool:
     _patch_ray_loopback_advertise()
+    _patch_verl_attention_utils_without_flash_attn()
+    _patch_engine_worker_pre_resume_cache_clear_source()
     _patch_peft_meta_adapter_load_source()
     _patch_fsdp1_lora_checkpointing()
     _patch_actor_config_elbo_sft_source()
@@ -2032,11 +2130,15 @@ def apply_verl_runtime_patch() -> bool:
         finally:
             self.server_class = original_server_class
 
-    async def patched_compute_score(self, output, prompts, responses, attention_mask, input_ids, position_ids, kwargs):
+    async def patched_compute_score(self, *args, **call_kwargs):
         metric = os.environ.get("REWARD_METRIC", "turing")
+        if metric != "logprob" or not _current_policy_logprob_enabled():
+            return await original_compute_score(self, *args, **call_kwargs)
+
+        output, score_kwargs = _agent_loop_score_context(args, call_kwargs)
         output.extra_fields = dict(output.extra_fields or {})
 
-        if output.reward_score is None and metric == "logprob" and _current_policy_logprob_enabled():
+        if output.reward_score is None:
             from shared.prompt_utils import (
                 build_messages_for_prompt_mode,
                 get_chat_template_kwargs_for_prompt_mode,
@@ -2049,9 +2151,9 @@ def apply_verl_runtime_patch() -> bool:
                 parse_response_for_prompt_mode,
             )
 
-            extra_info = _coerce_mapping(kwargs.get("extra_info"))
+            extra_info = _coerce_mapping(score_kwargs.get("extra_info"))
             _rewritten_messages, extra_info = _maybe_override_prompt_messages_for_runtime_conditioning(extra_info)
-            ground_truth = _extract_logprob_ground_truth(kwargs, extra_info)
+            ground_truth = _extract_logprob_ground_truth(score_kwargs, extra_info)
             context = str(extra_info.get("context", "") or "")
             user_history = str(extra_info.get("user_history", "") or "")
             persona = str(extra_info.get("persona", extra_info.get("persona_memory", "")) or "")
@@ -2126,16 +2228,7 @@ def apply_verl_runtime_patch() -> bool:
             output.extra_fields.setdefault("server_sticky_request_id", sticky_request_id)
             return
 
-        return await original_compute_score(
-            self,
-            output,
-            prompts,
-            responses,
-            attention_mask,
-            input_ids,
-            position_ids,
-            kwargs,
-        )
+        return await original_compute_score(self, *args, **call_kwargs)
 
     def patched_compute_rm_score(self, data):
         if not _should_route_grouped_sim_rewards(self.config, len(self.reward_loop_workers)):
@@ -2215,9 +2308,9 @@ def apply_verl_runtime_patch() -> bool:
             if self.reward_model_manager is not None:
                 self.reward_model_manager.sleep()
 
-    def patched_postprocess(self, inputs, input_non_tensor_batch=None):
+    def patched_postprocess(self, inputs, *args, **kwargs):
         _normalize_reward_extra_info_keys(inputs)
-        return original_postprocess(self, inputs, input_non_tensor_batch=input_non_tensor_batch)
+        return original_postprocess(self, inputs, *args, **kwargs)
 
     SingleTurnAgentLoop.run = patched_single_turn_run
     RayPPOTrainer.__init__ = patched_trainer_init

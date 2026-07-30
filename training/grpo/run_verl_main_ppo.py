@@ -54,6 +54,13 @@ def main() -> None:
     apply_verl_metric_patch()
     apply_verl_runtime_patch()
     _patch_verl_main_ppo_secret_logging()
+    # B0 spike only: attach the rollout-sync (logprob-parity) instrumentation. Guarded so normal
+    # runs are unaffected. Installed AFTER apply_verl_runtime_patch() so it wraps the current
+    # (persona-patched) RayPPOTrainer actor-update method, and BEFORE the trainer runs below.
+    if os.environ.get("B0_ROLLOUT_SYNC"):
+        from training.grpo.b0_rollout_sync_hook import install_b0_rollout_sync_hook
+
+        install_b0_rollout_sync_hook()
     runpy.run_module("verl.trainer.main_ppo", run_name="__main__", alter_sys=True)
 
 
