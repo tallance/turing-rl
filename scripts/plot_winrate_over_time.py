@@ -69,7 +69,7 @@ def winrate_series(dump_dir: str, G: int):
                 if x >= 5:
                     wins += 1
         if nontie > 0:
-            epochs.append(e + 1)
+            epochs.append(e)   # 0-indexed: epoch 0 = initial SFT policy (step-0 baseline)
             winrates.append(wins / nontie)
             counts.append(nontie)
     final = winrates[-1] if winrates else 0.0
@@ -104,8 +104,10 @@ def main() -> None:
             roll = [sum(wr[max(0, j - 2):j + 1]) / len(wr[max(0, j - 2):j + 1]) for j in range(len(wr))]
             ax.plot(ep, roll, color="tab:red", lw=1.8, alpha=0.9, label="3-epoch rolling mean")
         ax.axhline(0.5, ls="--", color="gray", lw=0.9)
+        # epoch 0 (leftmost point) = initial SFT policy = step-0 baseline
+        step0 = wr[0] if wr else 0.0
         ax.set_ylim(-0.02, 1.02)
-        ax.set_title(f"{label}   final={final:.2f}  ({len(ep)} epochs, {nrows} rows)", fontsize=10)
+        ax.set_title(f"{label}   step0={step0:.2f} → final={final:.2f}  ({len(ep)} epochs, {nrows} rows)", fontsize=10)
         ax.grid(True, alpha=0.25)
 
     for j in range(n, len(axes)):

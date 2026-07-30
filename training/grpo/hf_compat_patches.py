@@ -8,6 +8,8 @@ from typing import Any
 
 _PATCH_ATTR = "_persona_init_on_device_parameter_compat_patch_applied"
 _ORIGINAL_ATTR = "_persona_original_init_on_device"
+_ROPE_PATCH_ATTR = "_persona_rope_ignore_keys_compat_patch_applied"
+_ROPE_ORIGINAL_ATTR = "_persona_original_check_received_keys"
 
 
 def _split_parameter_attrs_for_constructor(
@@ -112,7 +114,43 @@ def apply_peft_tensor_parallel_compat_patch() -> None:
     tensor_parallel.EmbeddingParallel = _UnavailableEmbeddingParallel
 
 
+def apply_rope_ignore_keys_compat_patch() -> bool:
+    """Accept vLLM 0.18's list-valued RoPE ignore keys under Transformers 5.4."""
+    try:
+        from transformers.modeling_rope_utils import RotaryEmbeddingConfigMixin
+    except ImportError:
+        return False
+
+    if getattr(RotaryEmbeddingConfigMixin, _ROPE_PATCH_ATTR, False):
+        return True
+
+    original_check_received_keys = RotaryEmbeddingConfigMixin._check_received_keys
+
+    def patched_check_received_keys(
+        rope_type,
+        received_keys,
+        required_keys,
+        optional_keys=None,
+        ignore_keys=None,
+    ):
+        if ignore_keys is not None and not isinstance(ignore_keys, set):
+            ignore_keys = set(ignore_keys)
+        return original_check_received_keys(
+            rope_type,
+            received_keys,
+            required_keys,
+            optional_keys=optional_keys,
+            ignore_keys=ignore_keys,
+        )
+
+    setattr(RotaryEmbeddingConfigMixin, _ROPE_ORIGINAL_ATTR, original_check_received_keys)
+    RotaryEmbeddingConfigMixin._check_received_keys = staticmethod(patched_check_received_keys)
+    setattr(RotaryEmbeddingConfigMixin, _ROPE_PATCH_ATTR, True)
+    return True
+
+
 def apply_hf_compat_patches() -> None:
     """Apply all Hugging Face / PEFT compatibility shims."""
     apply_accelerate_init_on_device_parameter_compat_patch()
     apply_peft_tensor_parallel_compat_patch()
+    apply_rope_ignore_keys_compat_patch()

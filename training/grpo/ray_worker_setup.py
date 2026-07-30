@@ -230,3 +230,7 @@ def persona_worker_process_setup() -> None:
     _log_worker_assignment_state(final_state or initial_state)
     install_verl_metric_patch_in_ray_worker()
     apply_verl_runtime_patch()
+    if os.environ.get("B0_ROLLOUT_SYNC"):
+        from training.grpo.b0_rollout_sync_hook import install_b0_rollout_sync_hook
+
+        install_b0_rollout_sync_hook()
