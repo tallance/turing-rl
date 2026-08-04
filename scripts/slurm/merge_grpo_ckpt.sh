@@ -71,18 +71,25 @@ $PY_EVAL - "$ACTOR" "$HF_BASE" "$STEP" "$RUN_TAG" <<'PROV'
 import hashlib, json, os, sys
 actor, hf_base, step, run_tag = sys.argv[1:5]
 shards = sorted(f for f in os.listdir(actor) if f.startswith("model_world_size_"))
+meta = [{"name": n, "size": os.stat(os.path.join(actor, n)).st_size} for n in shards]
+
+# Fingerprint the EXTRACTED ADAPTER, not the shard prefix. The LoRA base is frozen, so shard
+# names/sizes and their leading bytes are identical across steps -- an earlier version hashed
+# those and produced the same value for step 8 and step 16, i.e. it could not detect the very
+# mixup it existed to catch. The adapter is the only step-specific content.
+adapter = os.path.join(hf_base, "lora_adapter", "adapter_model.safetensors")
 h = hashlib.sha256()
-meta = []
-for name in shards:
-    st = os.stat(os.path.join(actor, name))
-    meta.append({"name": name, "size": st.st_size})
-    h.update(f"{name}:{st.st_size}".encode())
-    with open(os.path.join(actor, name), "rb") as fh:   # first 1 MiB is enough to catch a swap
-        h.update(fh.read(1 << 20))
+with open(adapter, "rb") as fh:
+    for chunk in iter(lambda: fh.read(1 << 24), b""):
+        h.update(chunk)
+adapter_fp = h.hexdigest()
+
 json.dump({"actor_dir": actor, "step": int(step), "run_tag": run_tag,
-           "n_shards": len(shards), "shards": meta, "actor_fingerprint": h.hexdigest()},
+           "n_shards": len(shards), "shards": meta,
+           "adapter_sha256": adapter_fp,
+           "adapter_bytes": os.path.getsize(adapter)},
           open(os.path.join(hf_base, "merge_provenance.json"), "w"), indent=2)
-print(f"provenance: step={step} run_tag={run_tag} shards={len(shards)} fp={h.hexdigest()[:16]}")
+print(f"provenance: step={step} run_tag={run_tag} shards={len(shards)} adapter_sha256={adapter_fp[:16]}")
 PROV
 
 echo "--- step 2: fold the GRPO delta into the merged_ep3 container -> hf_dense ---"
