@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -47,26 +48,60 @@ from merge_grpo_adapter import load_adapter  # noqa: E402
 
 DEFAULT_ALLOWLIST = ("mtp.",)
 
+_REPEATED_LM = re.compile(r"(language_model\.)+")
+
+
+def normalize_merger_key(key: str) -> str:
+    """Undo the extra wrapper level ``verl.model_merger`` adds for Qwen3.5 vision2seq.
+
+    Saving via ``AutoModelForVision2Seq`` re-prefixes the state dict, so hf_base keys come
+    back nested one level too deep, in two forms::
+
+        model.language_model.language_model.language_model.X -> model.language_model.X
+        model.language_model.visual.X                        -> model.visual.X
+
+    Both are fixed by dropping the leading ``model.language_model.`` then collapsing any
+    remaining repeats. This is a pure RENAME -- the caller still asserts exact key-set
+    equality afterwards, so a genuinely missing or extra tensor is not masked.
+
+    Applied to an ALREADY-correct key this would corrupt it, so the caller never applies it
+    blindly: it builds both mappings and keeps whichever actually agrees with the container.
+    """
+    if key.startswith("model.language_model."):
+        key = "model." + key[len("model.language_model.") :]
+    return _REPEATED_LM.sub("language_model.", key)
+
 
 class Model:
     """Lazy key->shard index over a sharded safetensors dir."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, normalize=None):
         self.path = path
         self.index: dict[str, Path] = {}
+        n_raw = 0
         for shard in sorted(path.glob("*.safetensors")):
             with safe_open(str(shard), framework="pt") as f:
                 for key in f.keys():
-                    self.index[key] = shard
+                    n_raw += 1
+                    self.index[normalize(key) if normalize else key] = shard
+                    if normalize:
+                        self.raw = getattr(self, "raw", {})
+                        self.raw[normalize(key)] = key
         if not self.index:
             raise SystemExit(f"FAIL: no safetensors tensors under {path}")
+        if normalize and len(self.index) != n_raw:
+            raise SystemExit(
+                f"FAIL: key normalization collided under {path} ({n_raw} keys -> {len(self.index)}); "
+                "the rename rule is wrong and would hide a real mismatch"
+            )
 
     def keys(self) -> set[str]:
         return set(self.index)
 
     def get(self, key: str) -> torch.Tensor:
+        name = getattr(self, "raw", {}).get(key, key)
         with safe_open(str(self.index[key]), framework="pt") as f:
-            return f.get_tensor(key)
+            return f.get_tensor(name)
 
 
 def main() -> None:
@@ -79,6 +114,8 @@ def main() -> None:
     ap.add_argument("--expect_targets", type=int, default=128)
     ap.add_argument("--allow_missing_prefix", nargs="*", default=list(DEFAULT_ALLOWLIST),
                     help="Key prefixes allowed to differ between hf_base and base (default: mtp.)")
+    ap.add_argument("--no_key_normalize", action="store_true",
+                    help="Compare hf_base keys verbatim (skip the verl vision2seq rename fix)")
     a = ap.parse_args()
 
     failures: list[str] = []
@@ -148,7 +185,19 @@ def main() -> None:
 
     # ---- D: hf_base fidelity vs the container ----------------------------------
     if a.hf_base:
+        # Pick the key mapping empirically rather than assuming the merger mangled names:
+        # blindly renaming a correctly-named dir would corrupt the comparison.
         hf_base = Model(Path(a.hf_base))
+        if not a.no_key_normalize:
+            renamed = Model(Path(a.hf_base), normalize=normalize_merger_key)
+            n_raw = len(hf_base.keys() & base.keys())
+            n_renamed = len(renamed.keys() & base.keys())
+            if n_renamed > n_raw:
+                notes.append(
+                    f"D: applied the verl vision2seq key rename to hf_base "
+                    f"({n_raw} -> {n_renamed} keys aligned with the container)"
+                )
+                hf_base = renamed
         allow = tuple(a.allow_missing_prefix)
 
         def allowed(k: str) -> bool:
@@ -162,8 +211,9 @@ def main() -> None:
             failures.append(f"D: hf_base missing {len(bad_missing)} non-allowlisted keys, e.g. {bad_missing[:3]}")
         if bad_extra:
             failures.append(f"D: hf_base has {len(bad_extra)} unexpected keys, e.g. {bad_extra[:3]}")
-        if missing:
-            notes.append(f"D: {len(missing)} allowlisted keys absent from hf_base (prefixes {allow})")
+        n_allowlisted = len(missing) - len(bad_missing)
+        if n_allowlisted:
+            notes.append(f"D: {n_allowlisted} allowlisted keys absent from hf_base (prefixes {allow})")
 
         mismatched = []
         for key in sorted(base.keys() & hf_base.keys()):
