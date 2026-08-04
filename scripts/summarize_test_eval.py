@@ -63,6 +63,12 @@ def main() -> None:
     ap.add_argument("--cell", default="qwen35-9b")
     ap.add_argument("--mode", default="on")
     ap.add_argument("--expect_pairs", type=int, default=880)
+    ap.add_argument("--max_missing_frac", type=float, default=0.03,
+                    help="Per-cell unscored fraction tolerated before refusing to emit a table")
+    ap.add_argument("--common_pairs", action="store_true", default=True,
+                    help="Score every checkpoint on the intersection of scored pairs (default)")
+    ap.add_argument("--no_common_pairs", dest="common_pairs", action="store_false",
+                    help="Score each checkpoint on all pairs it has (not strictly comparable)")
     ap.add_argument("--out_csv", default=None)
     ap.add_argument("--out_md", default=None)
     a = ap.parse_args()
@@ -73,16 +79,33 @@ def main() -> None:
         raise SystemExit(f"FAIL: no reward dirs under {root}/raw/*/sweep/{a.cell}/{a.mode}")
     order = [k for k in PREFERRED if k in found] + sorted(set(found) - set(PREFERRED))
 
+    # Judge timeouts drop ~1-3% of pairs, and each checkpoint drops a DIFFERENT few. Scoring each
+    # on whatever it happens to have would compare them over different subsets. Restrict every
+    # checkpoint to the pairs they ALL scored so the columns are strictly comparable.
+    per_key = {k: load_rows(found[k]) for k in order}
+    keysets = {k: {tuple(str(r.get(f, "")) for f in KEY_FIELDS) for r in v} for k, v in per_key.items()}
+    common = set.intersection(*keysets.values()) if keysets else set()
+    dropped = {k: len(v - common) for k, v in keysets.items()}
+    if any(dropped.values()):
+        print(f"# comparability: scoring all checkpoints on the {len(common)} pairs common to every "
+              f"cell (dropped per checkpoint: "
+              f"{', '.join(f'{k}={n}' for k, n in dropped.items() if n)})\n")
+
     rows_out, problems = [], []
     for key in order:
-        rows = load_rows(found[key])
-        uniq = {tuple(str(r.get(f, "")) for f in KEY_FIELDS) for r in rows}
-        if len(uniq) != a.expect_pairs:
-            problems.append(f"{key}: {len(uniq)} unique pairs, expected {a.expect_pairs}")
+        uniq = keysets[key]
+        if len(uniq) < a.expect_pairs * (1 - a.max_missing_frac):
+            problems.append(f"{key}: {len(uniq)} unique pairs, expected >= "
+                            f"{a.expect_pairs * (1 - a.max_missing_frac):.0f} "
+                            f"(--max_missing_frac={a.max_missing_frac:.1%})")
+        rows = [r for r in per_key[key]
+                if tuple(str(r.get(f, "")) for f in KEY_FIELDS) in common] if a.common_pairs \
+            else per_key[key]
         acc = directional_accuracy(rows)
         lk = likerts(rows)
         rows_out.append({
             "checkpoint": key,
+            "n_scored": len(rows),
             "n_unique_pairs": len(uniq),
             "n_likert": len(lk),
             "likert_mean": round(statistics.mean(lk), 4) if lk else None,

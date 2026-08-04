@@ -61,7 +61,7 @@ def expected_keys(pairs_path: Path) -> set[tuple]:
 
 
 def check(reward_dir: Path, pairs_path: Path, allow_multi_job: bool,
-          write_missing: Path | None = None) -> list[str]:
+          write_missing: Path | None = None, max_missing_frac: float = 0.0) -> list[str]:
     problems: list[str] = []
     if not reward_dir.is_dir():
         return [f"{reward_dir}: reward dir does not exist"]
@@ -84,7 +84,16 @@ def check(reward_dir: Path, pairs_path: Path, allow_multi_job: bool,
             "previous run are mixed in. Use a fresh output dir (or pass --allow_multi_job if intended)."
         )
     if missing:
-        problems.append(f"{label}: {len(missing)} pairs never scored, e.g. {sorted(missing)[:3]}")
+        frac = len(missing) / len(want) if want else 1.0
+        msg = (f"{label}: {len(missing)} pairs never scored ({frac:.1%}), "
+               f"e.g. {sorted(missing)[:3]}")
+        if frac <= max_missing_frac:
+            # Tolerated: judge timeouts run ~1-3% and blocking on every straggler stalls the
+            # pipeline. Comparability is preserved downstream -- summarize_test_eval.py scores
+            # every checkpoint on the pairs they ALL have.
+            print(f"[{label}] WARN tolerated: {msg}")
+        else:
+            problems.append(msg + f" -- above --max_missing_frac={max_missing_frac:.1%}")
         if write_missing is not None:
             import pandas as pd
 
@@ -120,6 +129,10 @@ def main() -> None:
                          "of timed-out pairs; the unique-key check still guards correctness)")
     ap.add_argument("--write_missing", default=None,
                     help="Directory to write <pairs>_missing.parquet subsets for a targeted re-judge")
+    ap.add_argument("--max_missing_frac", type=float, default=0.0,
+                    help="Tolerate this fraction of unscored pairs per cell (e.g. 0.03). Judge "
+                         "timeouts run ~1-3%%; summarize_test_eval.py then scores every checkpoint "
+                         "on the pairs they ALL have, so comparability is preserved.")
     a = ap.parse_args()
 
     checks: list[tuple[Path, Path]] = []
@@ -150,7 +163,8 @@ def main() -> None:
         if n_pairs != a.expect_pairs:
             problems.append(f"{pairs}: pair-set has {n_pairs} rows, expected {a.expect_pairs}")
         problems.extend(check(reward_dir, pairs, a.allow_multi_job,
-                              Path(a.write_missing) if a.write_missing else None))
+                              Path(a.write_missing) if a.write_missing else None,
+                              a.max_missing_frac))
 
     if problems:
         print(f"\nFAILED ({len(problems)}):", file=sys.stderr)
