@@ -633,9 +633,10 @@ def apply_generation_defaults(args: argparse.Namespace) -> argparse.Namespace:
         args.max_tokens = DEFAULT_MAX_TOKENS
     normalize_model_id(getattr(args, "model_id", DEFAULT_MODEL_ID))
     model_defaults = get_domain_generation_defaults(args.test_parquet)
-    args.temperature = model_defaults["temperature"]
-    args.top_p = model_defaults["top_p"]
-    args.top_k = model_defaults["top_k"]
+    # Explicit CLI sampling overrides win; otherwise the domain defaults apply unchanged.
+    for key in ("temperature", "top_p", "top_k"):
+        if getattr(args, key, None) is None:
+            setattr(args, key, model_defaults[key])
     args.min_p = model_defaults["min_p"]
     args.presence_penalty = model_defaults["presence_penalty"]
     # Respect a CLI --repetition_penalty override; else the domain default (1.0 = none).
@@ -696,6 +697,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max_tokens", type=int, default=None, help="Max tokens per generation")
     parser.add_argument("--repetition_penalty", type=float, default=None,
                         help="Override the generation repetition_penalty (default: domain default 1.0 = none).")
+    parser.add_argument("--temperature", type=float, default=None,
+                        help="Override the generation temperature (default: domain default, prism=0.6).")
+    parser.add_argument("--top_p", type=float, default=None,
+                        help="Override the generation top_p (default: domain default 1.0).")
+    parser.add_argument("--top_k", type=int, default=None,
+                        help="Override the generation top_k (default: domain default -1 = disabled).")
     parser.add_argument(
         "--backend", choices=("vllm", "hf"), default="vllm",
         help="Inference backend. 'hf' = transformers+PEFT (for models vLLM can't LoRA-serve, "
