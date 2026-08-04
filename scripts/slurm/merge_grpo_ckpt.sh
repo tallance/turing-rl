@@ -54,15 +54,36 @@ echo "=== merge_grpo_ckpt: STEP=$STEP RUN_TAG=$RUN_TAG ==="
 echo "    actor=$ACTOR"
 echo "    out=$OUT   host=$(hostname)   date=$(date)"
 
-if [ -d "$HF_BASE" ] && [ -n "$(ls -A "$HF_BASE" 2>/dev/null)" ]; then
-  echo "--- step 1: hf_base already exists, skipping model_merger ---"
-else
-  echo "--- step 1: verl.model_merger (FSDP2 shards -> hf_base + lora_adapter) ---"
-  $PY_MERGE -m verl.model_merger merge --backend fsdp \
-      --local_dir "$ACTOR" --target_dir "$HF_BASE" || { echo "FAIL: model_merger" >&2; exit 3; }
-fi
+# ALWAYS rebuild hf_base. Reusing a nonempty hf_base would be unsafe in a way the gate
+# CANNOT detect: the gate proves hf_dense == merged_ep3 + 0.5*B@A, but the adapter comes
+# from hf_base, so a stale hf_base (wrong step / wrong run tag) is internally self-consistent
+# and passes every check while the model is mislabeled. Rebuilding costs ~35s.
+echo "--- step 1: verl.model_merger (FSDP2 shards -> hf_base + lora_adapter) ---"
+rm -rf "$HF_BASE"
+$PY_MERGE -m verl.model_merger merge --backend fsdp \
+    --local_dir "$ACTOR" --target_dir "$HF_BASE" || { echo "FAIL: model_merger" >&2; exit 3; }
 [ -f "$HF_BASE/lora_adapter/adapter_model.safetensors" ] || {
   echo "ERROR: no lora_adapter under $HF_BASE -- checkpoint was not an unmerged LoRA?" >&2; exit 3; }
+
+# Record which actor these artifacts came from, so the provenance README and any later
+# audit can prove step N was built from step N's shards.
+$PY_EVAL - "$ACTOR" "$HF_BASE" "$STEP" "$RUN_TAG" <<'PROV'
+import hashlib, json, os, sys
+actor, hf_base, step, run_tag = sys.argv[1:5]
+shards = sorted(f for f in os.listdir(actor) if f.startswith("model_world_size_"))
+h = hashlib.sha256()
+meta = []
+for name in shards:
+    st = os.stat(os.path.join(actor, name))
+    meta.append({"name": name, "size": st.st_size})
+    h.update(f"{name}:{st.st_size}".encode())
+    with open(os.path.join(actor, name), "rb") as fh:   # first 1 MiB is enough to catch a swap
+        h.update(fh.read(1 << 20))
+json.dump({"actor_dir": actor, "step": int(step), "run_tag": run_tag,
+           "n_shards": len(shards), "shards": meta, "actor_fingerprint": h.hexdigest()},
+          open(os.path.join(hf_base, "merge_provenance.json"), "w"), indent=2)
+print(f"provenance: step={step} run_tag={run_tag} shards={len(shards)} fp={h.hexdigest()[:16]}")
+PROV
 
 echo "--- step 2: fold the GRPO delta into the merged_ep3 container -> hf_dense ---"
 rm -rf "$HF_DENSE"

@@ -92,9 +92,11 @@ echo "=== sampling: T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K max_tok
 
 # ---------------- phase 1: generation (parallel, 1 GPU each) + pair build ----------------
 BUILD_DEPS=""   # lines: gen_key|build_jid_or_empty
+N_MATCHED=0
 for entry in $GENERATORS; do
   gk=${entry%%|*}; model=${entry#*|}
   if [ -n "$GEN_ONLY" ] && [ "$gk" != "$GEN_ONLY" ]; then continue; fi
+  N_MATCHED=$((N_MATCHED+1))
   pairs=$EVAL_ROOT/raw/pairs/gen_${gk}_880.parquet
 
   if [ "$DO_GEN" = "1" ]; then
@@ -121,6 +123,13 @@ for entry in $GENERATORS; do
   fi
 done
 
+# A typo'd GEN_ONLY must not look like a successful no-op submit.
+if [ "$N_MATCHED" -eq 0 ]; then
+  echo "FATAL: GEN_ONLY='$GEN_ONLY' matched no generator. Known keys:" >&2
+  for entry in $GENERATORS; do echo "  ${entry%%|*}" >&2; done
+  exit 1
+fi
+
 # ---------------- phase 2: judging (serialized, 8 GPUs each) ----------------
 [ "$DO_JUDGE" = "1" ] || { echo "DO_JUDGE=0: stopping after generation."; exit 0; }
 
@@ -136,6 +145,20 @@ for dep_entry in $BUILD_DEPS; do
     [ -z "$cell_name" ] && continue
     for mode in $MODES; do
       gpus=$((tp*replicas))
+      # Pre-submit freshness guard. Reward dumps ACCUMULATE in a reused dir, so a re-run
+      # would silently mix stale rows with new. verify_judge_completeness.py catches that
+      # afterwards, but only after burning an 8-GPU cell for hours -- refuse up front.
+      rdir=$sweep_root/$cell_name/$mode/reward
+      if [ -d "$rdir" ] && [ -n "$(ls -A "$rdir" 2>/dev/null)" ]; then
+        if [ "${FORCE_REJUDGE:-0}" = "1" ]; then
+          echo "FORCE_REJUDGE=1: clearing $rdir" >&2
+          [ "$DRY" = "1" ] || rm -rf "$rdir"
+        else
+          echo "FATAL: reward dir already has output: $rdir" >&2
+          echo "       re-judging would mix stale rows with new. Move it aside, or set FORCE_REJUDGE=1." >&2
+          exit 1
+        fi
+      fi
       dep=""
       [ -n "$bjid" ] && dep="afterok:$bjid"
       [ -n "$PREV" ] && dep="${dep:+$dep,}afterany:$PREV"
