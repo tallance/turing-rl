@@ -14,6 +14,12 @@
 # Sampling mirrors job 13634's val_kwargs (Qwen3 model-card) so test numbers extend the
 # in-training validation curve; judge env mirrors 13634's judge exactly.
 #
+# PREREQUISITE: every non-zero step in STEPS must already have a GATED dense model built by
+# scripts/slurm/merge_grpo_ckpt.sh. veRL checkpoints are unmerged LoRA, so generating straight
+# from one evaluates the SFT base and silently reproduces step-0 numbers.
+#
+# End-to-end runbook: docs/test-set-eval.md
+#
 # Usage:
 #   DRY=1 bash scripts/launch_test_eval.sh                 # print the plan
 #   bash scripts/launch_test_eval.sh                       # full gen+judge, 9B thinking-on

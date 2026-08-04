@@ -20,6 +20,13 @@
 # which is far too heavy for the login node.
 #
 # Required env: STEP (e.g. 8)   Optional: EVAL_ROOT, RUN_TAG, DISTINCT_FROM
+#
+#   sbatch --export=ALL,STEP=8 scripts/slurm/merge_grpo_ckpt.sh
+#
+# A gate failure exits 5 and hf_dense STILL EXISTS on disk, so callers must gate on the job's
+# exit status, never on the directory being present.
+#
+# End-to-end runbook: docs/test-set-eval.md
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export PYTHONUNBUFFERED=1
