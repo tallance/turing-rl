@@ -104,17 +104,16 @@ SSOT: `training/sft/configs/qwen3_8b_lora.yaml`; launcher `scripts/slurm/sft_var
 | Launch variant | `bf16_fsdp` (full_shard, wrap `Qwen3DecoderLayer`) — verified on 40GB | also `qlora_r64`, `bf16_fa2` |
 
 ## Flags / things to fix
-- **Judge score clip: this project runs with NO clip, but the code default is still 5.0.**
-  `training/grpo/reward.py:58` sets `TURING_JUDGE_SCORE_CLIP_MAX = 5.0` (inherited upstream from
-  commit 6aaecfb — it is an extra beyond the paper's own `(min{s,5}−1)/6`), and
-  `tests/test_reward_cap.py:10` pins that unset-env default. We do not want it: clipping at 5
-  flattens the advantage across ratings 5/6/7, which kills exactly the gradient that pushes a
-  generator past ~50% (see `specs/2026-07-15-rl-generator-vs-fixed-judge-design.md:74`). Every
-  launcher therefore exports `TURING_JUDGE_SCORE_CLIP_MAX=7` — `scripts/slurm/rl_generator_run{,_9b,_9b_1node}.sh`,
-  `scripts/launch_test_eval.sh` — and `tests/test_rl_9b_launcher.py:68` asserts it stays there.
-  **Any new launcher or eval path must export 7; never rely on the unset default.** Flipping the
-  constant to 7 (and updating the test) would remove this footgun, but that changes reward
-  behavior for anything running without the env var, so it is a deliberate, separate change.
+- **Judge score clip: NO clip, and that is now the code default too (changed 2026-08-04).**
+  `training/grpo/reward.py` sets `TURING_JUDGE_SCORE_CLIP_MAX = 7.0`, a no-op on the 1–7 Likert.
+  Upstream shipped **5.0** (commit 6aaecfb — an extra beyond the paper's own `(min{s,5}−1)/6`);
+  we do not want it, because clipping at 5 flattens the advantage across ratings 5/6/7 and kills
+  exactly the gradient that pushes a generator past ~50% (see
+  `specs/2026-07-15-rl-generator-vs-fixed-judge-design.md:74`). Every launcher already exported
+  `=7` explicitly (`scripts/slurm/rl_generator_run{,_9b,_9b_1node}.sh`, `scripts/launch_test_eval.sh`,
+  guarded by `tests/test_rl_9b_launcher.py:68`), so **no completed run's numbers change** — this
+  only fixes the unset-env path, which previously clipped silently. Those explicit exports are now
+  redundant but harmless; left in place as documentation. Set the env to 5 to reproduce upstream.
 - **Judge parser** — the correct parser for Qwen is `qwen3` (source-verified in
   `scripts/slurm/judge_serve_8b.sh:20`; used by the judge sweep). The 397B training judge
   `scripts/slurm/judge_serve.sh` is now fixed to `qwen3` (`--max-model-len 32768` was already
