@@ -37,16 +37,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
 
 import torch
 from safetensors import safe_open
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from merge_grpo_adapter import load_adapter  # noqa: E402
-
 DEFAULT_ALLOWLIST = ("mtp.",)
+LORA_A, LORA_B = ".lora_A", ".lora_B"
 
 _REPEATED_LM = re.compile(r"(language_model\.)+")
 
@@ -72,21 +69,74 @@ def normalize_merger_key(key: str) -> str:
     return _REPEATED_LM.sub("language_model.", key)
 
 
+def load_adapter_independently(adapter_dir: Path, provenance: dict | None) -> tuple[dict, float]:
+    """Read the adapter WITHOUT reusing merge_grpo_adapter's loader.
+
+    The gate must not import its parsing from the script it is checking: if that shared code
+    mis-derived the scaling (alpha/r inverted) or swapped lora_A/lora_B, the merge would apply a
+    wrong delta and the gate would recompute the SAME wrong delta and pass. So this re-derives
+    everything here and, when available, cross-checks r/alpha against ``lora_train_meta.json`` --
+    written by veRL at training time, independent of both scripts.
+    """
+    cfg = json.loads((adapter_dir / "adapter_config.json").read_text())
+    r, alpha = int(cfg["r"]), int(cfg["lora_alpha"])
+    if r <= 0 or alpha <= 0:
+        raise SystemExit(f"FAIL: implausible LoRA config r={r} alpha={alpha}")
+
+    meta_path = None
+    if provenance and provenance.get("actor_dir"):
+        cand = Path(provenance["actor_dir"]) / "lora_train_meta.json"
+        if cand.exists():
+            meta_path = cand
+    if meta_path:
+        meta = json.loads(meta_path.read_text())
+        if int(meta.get("r", r)) != r or int(meta.get("lora_alpha", alpha)) != alpha:
+            raise SystemExit(
+                f"FAIL: adapter_config (r={r}, alpha={alpha}) disagrees with veRL's "
+                f"{meta_path} (r={meta.get('r')}, alpha={meta.get('lora_alpha')})"
+            )
+        print(f"[A] cross-checked r/alpha against {meta_path.name}")
+    else:
+        print("[A] WARN: no lora_train_meta.json found; r/alpha come from adapter_config alone")
+
+    a_by, b_by = {}, {}
+    with safe_open(str(adapter_dir / "adapter_model.safetensors"), framework="pt") as f:
+        for key in f.keys():
+            tag = LORA_A if LORA_A in key else (LORA_B if LORA_B in key else None)
+            if tag is None:
+                raise SystemExit(f"FAIL: unexpected adapter key {key}")
+            stem = key.split(tag)[0]
+            if stem.startswith("base_model.model."):
+                stem = stem[len("base_model.model.") :]
+            (a_by if tag == LORA_A else b_by)[stem] = f.get_tensor(key)
+
+    if set(a_by) != set(b_by):
+        raise SystemExit(f"FAIL: unpaired LoRA tensors: {sorted(set(a_by) ^ set(b_by))[:5]}")
+    # Orientation check: A is (r, in), B is (out, r). Catches a swapped pairing.
+    for mod in a_by:
+        if a_by[mod].shape[0] != r or b_by[mod].shape[1] != r:
+            raise SystemExit(
+                f"FAIL: {mod} has lora_A{tuple(a_by[mod].shape)} lora_B{tuple(b_by[mod].shape)}, "
+                f"inconsistent with rank r={r} -- the two may be swapped"
+            )
+    return {f"{m}.weight": (a_by[m], b_by[m]) for m in a_by}, alpha / r
+
+
 class Model:
     """Lazy key->shard index over a sharded safetensors dir."""
 
     def __init__(self, path: Path, normalize=None):
         self.path = path
         self.index: dict[str, Path] = {}
+        self.raw: dict[str, str] = {}
         n_raw = 0
         for shard in sorted(path.glob("*.safetensors")):
             with safe_open(str(shard), framework="pt") as f:
                 for key in f.keys():
                     n_raw += 1
-                    self.index[normalize(key) if normalize else key] = shard
-                    if normalize:
-                        self.raw = getattr(self, "raw", {})
-                        self.raw[normalize(key)] = key
+                    name = normalize(key) if normalize else key
+                    self.index[name] = shard
+                    self.raw[name] = key
         if not self.index:
             raise SystemExit(f"FAIL: no safetensors tensors under {path}")
         if normalize and len(self.index) != n_raw:
@@ -99,9 +149,8 @@ class Model:
         return set(self.index)
 
     def get(self, key: str) -> torch.Tensor:
-        name = getattr(self, "raw", {}).get(key, key)
         with safe_open(str(self.index[key]), framework="pt") as f:
-            return f.get_tensor(name)
+            return f.get_tensor(self.raw[key])
 
 
 def main() -> None:
@@ -123,7 +172,9 @@ def main() -> None:
 
     base = Model(Path(a.base))
     dense = Model(Path(a.dense))
-    pairs, scaling = load_adapter(Path(a.adapter))
+    prov_path = Path(a.adapter).parent / "merge_provenance.json"
+    provenance = json.loads(prov_path.read_text()) if prov_path.exists() else None
+    pairs, scaling = load_adapter_independently(Path(a.adapter), provenance)
 
     # ---- A: adapter accounting -------------------------------------------------
     if len(pairs) != a.expect_targets:

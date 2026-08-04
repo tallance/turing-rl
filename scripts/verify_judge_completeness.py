@@ -171,7 +171,8 @@ def main() -> None:
         for p in problems:
             print(f"  - {p}", file=sys.stderr)
         raise SystemExit(1)
-    print(f"\nPASS: {len(checks)} cell(s) scored every pair exactly once, from a single fresh job.")
+    print(f"\nPASS: {len(checks)} cell(s) scored the expected pairs, no duplicates or strays"
+          f"{' (tolerating <=' + format(a.max_missing_frac, '.1%') + ' unscored)' if a.max_missing_frac else ''}.")
 
 
 if __name__ == "__main__":
