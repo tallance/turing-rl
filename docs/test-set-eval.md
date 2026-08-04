@@ -69,9 +69,15 @@ python scripts/verify_judge_completeness.py --eval_root results/<EVAL_ROOT> \
 # then resubmit judge_sweep_cell.sh with PAIRS=<...>_missing.parquet and a raised timeout
 ```
 
-Up to 3% missing is tolerated; `summarize_test_eval.py` then scores every checkpoint on the pairs
-they **all** have, so a tolerated gap costs a smaller common `n` instead of quietly comparing
-checkpoints over different subsets.
+The verifier tolerates up to 3% so the pipeline keeps moving, but **`summarize_test_eval.py` is
+strict by default** — a published table should not rest on incomplete scoring. If you do raise
+`--max_missing_frac` there, the threshold applies to the **common subset**, not just to each cell:
+gaps are usually disjoint, so the intersection shrinks with their union. Real example from this
+run — cells at 861/857/870 (worst 97.4%) intersected to only 831/880 = 94.4%.
+
+Note the summarizer discovers any reward directory that exists, including one a judge is still
+writing. The strict default catches that (a partial cell fails the count); if you run with a
+tolerance, confirm the judge jobs have actually finished first.
 
 ## Keeping numbers comparable
 

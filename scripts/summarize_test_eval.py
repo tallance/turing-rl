@@ -63,8 +63,10 @@ def main() -> None:
     ap.add_argument("--cell", default="qwen35-9b")
     ap.add_argument("--mode", default="on")
     ap.add_argument("--expect_pairs", type=int, default=880)
-    ap.add_argument("--max_missing_frac", type=float, default=0.03,
-                    help="Per-cell unscored fraction tolerated before refusing to emit a table")
+    ap.add_argument("--max_missing_frac", type=float, default=0.0,
+                    help="Unscored fraction tolerated, applied to EACH cell AND to the common "
+                         "subset. Defaults to 0: a published table should not silently rest on "
+                         "incomplete scoring. Raise it only as an explicit diagnostic.")
     ap.add_argument("--common_pairs", action="store_true", default=True,
                     help="Score every checkpoint on the intersection of scored pairs (default)")
     ap.add_argument("--no_common_pairs", dest="common_pairs", action="store_false",
@@ -86,17 +88,30 @@ def main() -> None:
     keysets = {k: {tuple(str(r.get(f, "")) for f in KEY_FIELDS) for r in v} for k, v in per_key.items()}
     common = set.intersection(*keysets.values()) if keysets else set()
     dropped = {k: len(v - common) for k, v in keysets.items()}
+    floor = a.expect_pairs * (1 - a.max_missing_frac)
+
+    rows_out, problems = [], []
+
+    # The COMMON subset is what the table is actually scored on, and it shrinks with the UNION of
+    # each cell's gaps -- so per-cell checks alone are not enough. Observed here: cells at
+    # 861/857/870 (worst 97.4%) intersected to just 831/880 = 94.4%, under a 97% per-cell bar.
+    # Gate the intersection too; it gets stricter as checkpoints are added.
+    if a.common_pairs and len(common) < floor:
+        problems.append(
+            f"common subset is {len(common)}/{a.expect_pairs} ({len(common)/a.expect_pairs:.1%}) "
+            f"across {len(order)} checkpoints, below the {1 - a.max_missing_frac:.1%} floor "
+            f"(union of per-cell gaps = {a.expect_pairs - len(common)}). Re-judge the missing pairs "
+            f"(verify_judge_completeness.py --write_missing) rather than lowering the bar."
+        )
     if any(dropped.values()):
         print(f"# comparability: scoring all checkpoints on the {len(common)} pairs common to every "
               f"cell (dropped per checkpoint: "
               f"{', '.join(f'{k}={n}' for k, n in dropped.items() if n)})\n")
 
-    rows_out, problems = [], []
     for key in order:
         uniq = keysets[key]
-        if len(uniq) < a.expect_pairs * (1 - a.max_missing_frac):
-            problems.append(f"{key}: {len(uniq)} unique pairs, expected >= "
-                            f"{a.expect_pairs * (1 - a.max_missing_frac):.0f} "
+        if len(uniq) < floor:
+            problems.append(f"{key}: {len(uniq)} unique pairs, expected >= {floor:.0f} "
                             f"(--max_missing_frac={a.max_missing_frac:.1%})")
         rows = [r for r in per_key[key]
                 if tuple(str(r.get(f, "")) for f in KEY_FIELDS) in common] if a.common_pairs \
