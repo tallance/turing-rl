@@ -56,12 +56,16 @@ export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 # Jobs 13946-13948 lost 19/23/10 of 880 pairs that way; the 2026-07 sweep baseline lost 9.
 export PERSONA_OPENAI_TIMEOUT_SECONDS=${PERSONA_OPENAI_TIMEOUT_SECONDS:-1800}
 
-# gen_key -> model dir. step_0 is the pre-RL SFT init; step_N are dense merges built by
-# scripts/merge_grpo_adapter.py and cleared by scripts/validate_grpo_merge.py.
-GENERATORS="\
-9b-grpo-step0|$MERGED_EP3
-9b-grpo-step8|$EVAL_ROOT/models/step8/hf_dense
-9b-grpo-step16|$EVAL_ROOT/models/step16/hf_dense"
+# gen_key -> model dir. step 0 is the pre-RL SFT init; every other step is a dense merge built
+# by scripts/merge_grpo_adapter.py and cleared by scripts/validate_grpo_merge.py.
+# STEPS selects which checkpoints to evaluate, e.g. STEPS="24 32" for the second half.
+STEPS=${STEPS:-"0 8 16"}
+GENERATORS=""
+for s in $STEPS; do
+  if [ "$s" = "0" ]; then m=$MERGED_EP3; else m=$EVAL_ROOT/models/step$s/hf_dense; fi
+  GENERATORS="${GENERATORS}9b-grpo-step${s}|${m}
+"
+done
 
 CELLS=$(/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python -c "
 from configs.judge_sweep_cells import cell_list
