@@ -75,7 +75,7 @@ Shared serving/sampling defaults (all judges):
 | Client timeout | `PERSONA_OPENAI_TIMEOUT_SECONDS=1800` (thinking-on 397B) | reward.py fallback is 400 |
 | Retries | `PERSONA_OPENAI_MAX_RETRIES=3` | |
 | Concurrency | judge sweep: 32 per endpoint (8 endpoints); GRPO **`TURING_JUDGE_MAX_CONCURRENCY=64`** on DP-8 | **Corrected 2026-08-04** — see the correction note above. The old value (4, run as 8) starved the server: measured 6.4× throughput at 64 with flat latency, no KV pressure. Pair with `PERSONA_OPENAI_TIMEOUT_SECONDS=1800` |
-| Reward math | clip judge score at **5.0**, `(clip−1)/6`, ×**0.9**; rating re-derived from 6 dims + penalties (mean×3) | `TURING_JUDGE_SCORE_CLIP_MAX`, `TURING_RAW_REWARD_SCALE` |
+| Reward math | **no clip** (`TURING_JUDGE_SCORE_CLIP_MAX=7`, a no-op on the 1–7 Likert), then `(score−1)/6`, ×**0.9**; rating re-derived from 6 dims + penalties (mean×3) | `TURING_JUDGE_SCORE_CLIP_MAX`, `TURING_RAW_REWARD_SCALE`. **Export 7 explicitly** — the code constant is still 5.0 (see Flags) |
 
 ## Generator
 SSOT: `training/sft/configs/qwen3_8b_lora.yaml` (base), `bash_scripts/grpo/train_grpo.sh` (GRPO, upstream = paper Table 6).
@@ -104,6 +104,17 @@ SSOT: `training/sft/configs/qwen3_8b_lora.yaml`; launcher `scripts/slurm/sft_var
 | Launch variant | `bf16_fsdp` (full_shard, wrap `Qwen3DecoderLayer`) — verified on 40GB | also `qlora_r64`, `bf16_fa2` |
 
 ## Flags / things to fix
+- **Judge score clip: this project runs with NO clip, but the code default is still 5.0.**
+  `training/grpo/reward.py:58` sets `TURING_JUDGE_SCORE_CLIP_MAX = 5.0` (inherited upstream from
+  commit 6aaecfb — it is an extra beyond the paper's own `(min{s,5}−1)/6`), and
+  `tests/test_reward_cap.py:10` pins that unset-env default. We do not want it: clipping at 5
+  flattens the advantage across ratings 5/6/7, which kills exactly the gradient that pushes a
+  generator past ~50% (see `specs/2026-07-15-rl-generator-vs-fixed-judge-design.md:74`). Every
+  launcher therefore exports `TURING_JUDGE_SCORE_CLIP_MAX=7` — `scripts/slurm/rl_generator_run{,_9b,_9b_1node}.sh`,
+  `scripts/launch_test_eval.sh` — and `tests/test_rl_9b_launcher.py:68` asserts it stays there.
+  **Any new launcher or eval path must export 7; never rely on the unset default.** Flipping the
+  constant to 7 (and updating the test) would remove this footgun, but that changes reward
+  behavior for anything running without the env var, so it is a deliberate, separate change.
 - **Judge parser** — the correct parser for Qwen is `qwen3` (source-verified in
   `scripts/slurm/judge_serve_8b.sh:20`; used by the judge sweep). The 397B training judge
   `scripts/slurm/judge_serve.sh` is now fixed to `qwen3` (`--max-model-len 32768` was already
