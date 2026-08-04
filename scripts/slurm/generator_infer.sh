@@ -13,6 +13,13 @@
 # Required env: GEN_KEY MODEL_ID   Optional: CKPT (empty => --base_model)
 # Uses gpu:8 (one whole node) so the single-node chain never overlaps a scoring job;
 # vLLM uses TP=1 (7 GPUs idle) — chain serialization matters more than packing here.
+# Callers that only need the one GPU can override at submit time: `sbatch --gres=gpu:1`.
+#
+# Optional overrides (ALL unset by default => byte-identical legacy behaviour):
+#   SWEEP_BASE     output root (default: the 2026-07-15 generator-sweep tree)
+#   GEN_TEMPERATURE / GEN_TOP_P / GEN_TOP_K        sampling; unset => domain defaults (prism 0.6)
+#   GEN_MAX_TOKENS / GEN_TRUNCATE_PROMPT_TOKENS / GEN_MAX_MODEL_LEN
+#     length caps; set these to mirror GRPO validation (1024 / 12500 / 13524).
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache PYTHONUNBUFFERED=1
@@ -31,7 +38,8 @@ GEN_KEY=${GEN_KEY:?set GEN_KEY}
 MODEL_ID=${MODEL_ID:?set MODEL_ID}
 CKPT=${CKPT:-}
 TEST=$REPO/data/prism/full_s42_history_sft40_grpo60_test10/test.parquet
-OUT_DIR=$REPO/results/2026-07-15-generator-sweep/raw/generator/$GEN_KEY
+SWEEP_BASE=${SWEEP_BASE:-$REPO/results/2026-07-15-generator-sweep}
+OUT_DIR=$SWEEP_BASE/raw/generator/$GEN_KEY
 OUT=$OUT_DIR/heldout_inference.pkl
 mkdir -p "$OUT_DIR"; cd "$REPO"
 [ -f "$TEST" ] || { echo "ERROR: missing $TEST"; exit 2; }
@@ -39,14 +47,25 @@ mkdir -p "$OUT_DIR"; cd "$REPO"
 BASE=(); [ -z "$CKPT" ] && BASE=(--base_model)
 CK=(); [ -n "$CKPT" ] && CK=(--checkpoint_dir "$CKPT")
 
+# Only pass a flag when its env var is set, so the default path is unchanged.
+SAMPLING=()
+[ -n "${GEN_TEMPERATURE:-}" ] && SAMPLING+=(--temperature "$GEN_TEMPERATURE")
+[ -n "${GEN_TOP_P:-}" ]       && SAMPLING+=(--top_p "$GEN_TOP_P")
+[ -n "${GEN_TOP_K:-}" ]       && SAMPLING+=(--top_k "$GEN_TOP_K")
+[ -n "${GEN_MAX_TOKENS:-}" ]  && SAMPLING+=(--max_tokens "$GEN_MAX_TOKENS")
+[ -n "${GEN_TRUNCATE_PROMPT_TOKENS:-}" ] && SAMPLING+=(--vllm_truncate_prompt_tokens "$GEN_TRUNCATE_PROMPT_TOKENS")
+[ -n "${GEN_MAX_MODEL_LEN:-}" ]          && SAMPLING+=(--vllm_max_model_len "$GEN_MAX_MODEL_LEN")
+
 echo "=== generator_infer: GEN_KEY=$GEN_KEY MODEL_ID=$MODEL_ID CKPT=${CKPT:-<base>} BACKEND=$BACKEND ==="
+echo "=== out_dir=$OUT_DIR sampling_overrides=[${SAMPLING[*]-}] ==="
 $PY -u -m eval.generate_trained "${BASE[@]}" "${CK[@]}" --test_parquet "$TEST" \
     --model_id "$MODEL_ID" --gen_num 1 --output "$OUT" --conditioning_mode history \
-    --backend "$BACKEND" \
+    --backend "$BACKEND" "${SAMPLING[@]}" \
     --vllm_tensor_parallel_size 1 --vllm_gpu_memory_utilization 0.6 --vllm_max_num_seqs 32
 RC=$?
 $PY -c "import json,os; json.dump({'gen_key':'$GEN_KEY','model_id':'$MODEL_ID',\
 'checkpoint_dir':'${CKPT:-}','base_model':$([ -z "$CKPT" ] && echo True || echo False),\
-'test_parquet':'$TEST','gen_num':1,'output':'$OUT',\
+'test_parquet':'$TEST','gen_num':1,'output':'$OUT','backend':'$BACKEND',\
+'sampling_overrides':'${SAMPLING[*]-}',\
 'slurm_job_id':os.environ.get('SLURM_JOB_ID')}, open('$OUT_DIR/gen_metadata.json','w'), indent=2)"
 echo "=== exit: $RC ==="; exit $RC
