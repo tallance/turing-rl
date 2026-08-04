@@ -60,7 +60,8 @@ def expected_keys(pairs_path: Path) -> set[tuple]:
     return {tuple(str(r[f]) for f in KEY_FIELDS) for _, r in df.iterrows()}
 
 
-def check(reward_dir: Path, pairs_path: Path, allow_multi_job: bool) -> list[str]:
+def check(reward_dir: Path, pairs_path: Path, allow_multi_job: bool,
+          write_missing: Path | None = None) -> list[str]:
     problems: list[str] = []
     if not reward_dir.is_dir():
         return [f"{reward_dir}: reward dir does not exist"]
@@ -84,6 +85,15 @@ def check(reward_dir: Path, pairs_path: Path, allow_multi_job: bool) -> list[str
         )
     if missing:
         problems.append(f"{label}: {len(missing)} pairs never scored, e.g. {sorted(missing)[:3]}")
+        if write_missing is not None:
+            import pandas as pd
+
+            df = pd.read_parquet(pairs_path)
+            keep = df.apply(lambda r: tuple(str(r[f]) for f in KEY_FIELDS) in missing, axis=1)
+            out = write_missing / f"{pairs_path.stem}_missing.parquet"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            df[keep].to_parquet(out)
+            print(f"[{label}] wrote {int(keep.sum())} missing pairs -> {out}")
     if extra:
         problems.append(f"{label}: {len(extra)} scored rows are not in the pair-set, e.g. {sorted(extra)[:3]}")
     if dupes:
@@ -105,7 +115,11 @@ def main() -> None:
     ap.add_argument("--reward_dir", default=None, help="Check a single reward dir")
     ap.add_argument("--pairs", default=None, help="Pair-set parquet (required with --reward_dir)")
     ap.add_argument("--expect_pairs", type=int, default=880)
-    ap.add_argument("--allow_multi_job", action="store_true")
+    ap.add_argument("--allow_multi_job", action="store_true",
+                    help="Permit dumps spanning several jobs (legitimate after a targeted re-run "
+                         "of timed-out pairs; the unique-key check still guards correctness)")
+    ap.add_argument("--write_missing", default=None,
+                    help="Directory to write <pairs>_missing.parquet subsets for a targeted re-judge")
     a = ap.parse_args()
 
     checks: list[tuple[Path, Path]] = []
@@ -135,7 +149,8 @@ def main() -> None:
         n_pairs = len(pd.read_parquet(pairs))
         if n_pairs != a.expect_pairs:
             problems.append(f"{pairs}: pair-set has {n_pairs} rows, expected {a.expect_pairs}")
-        problems.extend(check(reward_dir, pairs, a.allow_multi_job))
+        problems.extend(check(reward_dir, pairs, a.allow_multi_job,
+                              Path(a.write_missing) if a.write_missing else None))
 
     if problems:
         print(f"\nFAILED ({len(problems)}):", file=sys.stderr)

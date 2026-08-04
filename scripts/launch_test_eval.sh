@@ -51,6 +51,10 @@ export GEN_MAX_MODEL_LEN=${GEN_MAX_MODEL_LEN:-13524}
 export PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'
 export TURING_JUDGE_SCORE_CLIP_MAX=7
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
+# The 400s default drops pairs: thinking-ON 9B with an 8192-token budget can exceed it under
+# 32-way concurrency, and run_judge_sweep_cell.py swallows the TimeoutError (err counter, exit 0).
+# Jobs 13946-13948 lost 19/23/10 of 880 pairs that way; the 2026-07 sweep baseline lost 9.
+export PERSONA_OPENAI_TIMEOUT_SECONDS=${PERSONA_OPENAI_TIMEOUT_SECONDS:-1800}
 
 # gen_key -> model dir. step_0 is the pre-RL SFT init; step_N are dense merges built by
 # scripts/merge_grpo_adapter.py and cleared by scripts/validate_grpo_merge.py.
