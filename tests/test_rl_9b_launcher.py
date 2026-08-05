@@ -18,6 +18,37 @@ def test_judge_concurrency_is_pinned_not_inherited():
     # A long timeout is what makes high concurrency safe (reward.py falls back to 400 s).
     assert 'PERSONA_OPENAI_TIMEOUT_SECONDS="${PERSONA_OPENAI_TIMEOUT_SECONDS:-1800}"' in RUN_2NODE
 
+def test_full5_mode_pins_the_whole_cadence_and_keeps_every_checkpoint():
+    # The full-dataset 5-epoch run is ~5.7 days and 325 steps. Everything cadence-related is
+    # pinned in the MODE arm rather than passed via EXTRA_OVERRIDES, so no run can silently
+    # inherit a different value the way 13634 inherited its judge concurrency.
+    assert "  full5)" in S
+    for k in (
+        "trainer.total_epochs=5",
+        "trainer.save_freq=32",      # 10 ckpts at 32,64,...,320, ~12.3 h apart
+        "trainer.test_freq=32",      # val on the SAME step grid, so every ckpt is scored
+        "trainer.val_before_train=True",
+    ):
+        assert k in S, f"full5 must pin {k}"
+    # veRL's default is null (keep all). 13634 ran with 6, which would drop the first four of
+    # this run's ten checkpoints.
+    assert "trainer.max_actor_ckpt_to_keep=null" in S
+    assert "trainer.max_actor_ckpt_to_keep=6" not in S
+    # The epoch-end hook fires at multiples of steps_per_epoch (65) and has no offset knob, so
+    # leaving it on would add 5 near-duplicate saves 1-5 steps after the save_freq=32 ones.
+    assert "export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0" in S
+    # The driver validates MODE separately -- an unlisted mode is rejected before the trainer runs.
+    assert "overfit|full|epoch1|full5" in RUN_2NODE
+
+
+def test_full5_does_not_cap_the_dataset():
+    # Job 13634 was the HALF run: data.train_max_samples=2048 / val_max_samples=352, passed via
+    # EXTRA_OVERRIDES. full5 must run the full split (4174 train / 705 val), so neither cap may
+    # be baked into the launcher.
+    assert "train_max_samples" not in S
+    assert "val_max_samples" not in S
+
+
 def test_lora_target_is_attn_mlp_not_all_linear_excludes_visual_and_mtp():
     assert "all-linear" not in S                       # never LoRA the GDN backbone
     for m in ("q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"):

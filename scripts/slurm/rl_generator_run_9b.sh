@@ -19,7 +19,8 @@
 #
 # Submit: B0_ROLLOUT_SYNC=1 JUDGE=9b MODE=overfit OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike \
 #           sbatch --export=ALL scripts/slurm/rl_generator_run_9b.sh
-#   JUDGE = 9b | 397b     MODE = overfit | full | epoch1
+#   JUDGE = 9b | 397b     MODE = overfit | full | epoch1 | full5
+#   full5 = full-dataset 5-epoch production run (325 steps; ckpt + validate every 32).
 #   B0_ROLLOUT_SYNC=1 turns on the Step-3b rollout-sync hook (writes rollout_sync.json).
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
@@ -42,9 +43,9 @@ mkdir -p "$WANDB_DIR"
 WANDB_BIN=${WANDB_BIN:-/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/wandb}
 
 JUDGE=${JUDGE:?set JUDGE=9b|397b}
-MODE=${MODE:?set MODE=overfit|full|epoch1}
+MODE=${MODE:?set MODE=overfit|full|epoch1|full5}
 case "$JUDGE" in 9b|397b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
-case "$MODE" in overfit|full|epoch1) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
+case "$MODE" in overfit|full|epoch1|full5) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
 case "$JUDGE" in
   9b)   JUDGE_MODEL=Qwen/Qwen3.5-9B;                  TP=1; DP=8 ;;
   397b) JUDGE_MODEL=Qwen/Qwen3.5-397B-A17B-GPTQ-Int4; TP=8; DP=1 ;;

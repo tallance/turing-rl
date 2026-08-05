@@ -157,6 +157,31 @@ case "$MODE" in
     ) ;;
   epoch1) OVR+=( trainer.total_epochs=1 ) ;;
   full)   : ;;   # base config (few epochs)
+  full5)
+    # Full-dataset production run: 4174 train rows / batch 64 = 65 steps/epoch, 325 steps total.
+    # Everything cadence-related is PINNED here rather than left to EXTRA_OVERRIDES, for the same
+    # reason judge concurrency is pinned in rl_generator_run_9b.sh: job 13634 silently ran with an
+    # inherited value and nothing in the repo recorded it.
+    #
+    # save_freq=32 -> ckpts at 32,64,...,320 (~12.3 h apart). A checkpoint 32 steps INTO each epoch
+    # (step = 32 mod 65) is not expressible: save_freq is a plain multiple, and the epoch-end hook
+    # (verl_runtime_patch.py:_resolve_epoch_aligned_save_freq) returns exactly steps_per_epoch with
+    # no offset. save_freq=32 lands within 5 steps of those targets, so the hook is turned OFF here
+    # -- left on it would fire at 65,130,195,260,325, i.e. 5 near-duplicate saves 1-5 steps after
+    # the save_freq ones (~95 GB of redundant weights).
+    #
+    # test_freq=32 puts validation on the SAME step grid as the checkpoints, so every saved ckpt
+    # has a val score. Full 705-row val split at ~0.225 req/s is ~52 min per pass, 11 passes.
+    export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0
+    OVR+=(
+      trainer.total_epochs=5
+      trainer.save_freq=32
+      trainer.test_freq=32
+      trainer.val_before_train=True
+      # veRL's own default is null (keep all). 13634 was submitted with 6, which would silently
+      # delete the first four of this run's ten checkpoints.
+      trainer.max_actor_ckpt_to_keep=null
+    ) ;;
 esac
 
 echo "+ $PY -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen3_8b_grpo_turing ${OVR[*]} ${EXTRA_OVERRIDES:-}"
