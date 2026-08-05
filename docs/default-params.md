@@ -12,6 +12,39 @@ source of truth (SSOT), it's named — edit there, not here.
 > cut 397B parse-error 0.11→0.03 and raised penalized accuracy 0.686→0.720. See
 > `post-plans/2026-07-08-judge-sweep/2026-07-14-cot-failure-diagnostic.md`.
 
+> **CORRECTION (2026-08-04): GRPO judge concurrency was far too low, and the stated
+> reason ("40GB KV pressure") is not supported by measurement.** GRPO job 13634 spent
+> **41.5 of its 44.1 h (93.9%) waiting on the judge** — 9952 calls at ~101 s mean latency
+> with an effective concurrency of only 6.3. Generation + backprop + checkpointing was
+> just 2.7 h.
+>
+> Probe 13999 swept client concurrency against the trainer's own DP-8 topology using real
+> ~22k-char judge prompts (`scripts/slurm/judge_concurrency_probe.sh`):
+>
+> | concurrency | req/s | p50 | p95 |
+> |---|---|---|---|
+> | 8 | 0.072 | 116 s | 131 s |
+> | 32 | 0.238 | 124 s | 140 s |
+> | **64** | **0.458** | 124 s | 140 s |
+> | 128 | 0.460 | 130 s | 139 s |
+>
+> Throughput scales **6.4× up to 64** and saturates there, while **latency is flat**
+> (p50 116→124 s, p95 ~140 s). There is no KV-cache collapse: at concurrency 8 the DP-8
+> server was starved (one in-flight request per rank, so vLLM never batched), not
+> protected. Concurrency 8 reproduced training's rate (0.072 vs 0.063 measured), which
+> validates the probe.
+>
+> The cap traces to the job-13628 timeout cascade (concurrency 128 at a **400 s** timeout:
+> queue wait exceeded the timeout, so every request failed). The effective fix is the
+> **timeout**, not the concurrency — at concurrency 64 the measured p95 is 140 s, well
+> inside even the old 400 s limit.
+>
+> **New defaults: `TURING_JUDGE_MAX_CONCURRENCY=64` with
+> `PERSONA_OPENAI_TIMEOUT_SECONDS=1800`.** Projected effect on a 13634-shaped run:
+> ~6 h of judging instead of 41.5 h, i.e. **~9 h end-to-end instead of 44 h**.
+> Caveat: measured on **DP-8** (one server, 8 data-parallel ranks). An older non-DP sweep
+> (`report-20260715-162423.md`) did collapse at 64+, so this applies to the DP topology.
+
 ## Judge (reward model)
 SSOT: `configs/judge_sweep_cells.py` (model matrix), `scripts/run_judge_sweep_cell.py`
 (`cell_env`), `training/grpo/reward.py` (reward math), `scripts/slurm/judge_sweep_cell.sh` (serving).
@@ -41,8 +74,8 @@ Shared serving/sampling defaults (all judges):
 | Max completion tokens | `PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192` | |
 | Client timeout | `PERSONA_OPENAI_TIMEOUT_SECONDS=1800` (thinking-on 397B) | reward.py fallback is 400 |
 | Retries | `PERSONA_OPENAI_MAX_RETRIES=3` | |
-| Concurrency | judge sweep: 8 per endpoint; GRPO: `TURING_JUDGE_MAX_CONCURRENCY=4` | 40GB KV pressure |
-| Reward math | clip judge score at **5.0**, `(clip−1)/6`, ×**0.9**; rating re-derived from 6 dims + penalties (mean×3) | `TURING_JUDGE_SCORE_CLIP_MAX`, `TURING_RAW_REWARD_SCALE` |
+| Concurrency | judge sweep: 32 per endpoint (8 endpoints); GRPO **`TURING_JUDGE_MAX_CONCURRENCY=64`** on DP-8 | **Corrected 2026-08-04** — see the correction note above. The old value (4, run as 8) starved the server: measured 6.4× throughput at 64 with flat latency, no KV pressure. Pair with `PERSONA_OPENAI_TIMEOUT_SECONDS=1800` |
+| Reward math | **no clip** (`TURING_JUDGE_SCORE_CLIP_MAX=7`, a no-op on the 1–7 Likert), then `(score−1)/6`, ×**0.9**; rating re-derived from 6 dims + penalties (mean×3) | `TURING_JUDGE_SCORE_CLIP_MAX`, `TURING_RAW_REWARD_SCALE`. **Export 7 explicitly** — the code constant is still 5.0 (see Flags) |
 
 ## Generator
 SSOT: `training/sft/configs/qwen3_8b_lora.yaml` (base), `bash_scripts/grpo/train_grpo.sh` (GRPO, upstream = paper Table 6).
@@ -71,6 +104,16 @@ SSOT: `training/sft/configs/qwen3_8b_lora.yaml`; launcher `scripts/slurm/sft_var
 | Launch variant | `bf16_fsdp` (full_shard, wrap `Qwen3DecoderLayer`) — verified on 40GB | also `qlora_r64`, `bf16_fa2` |
 
 ## Flags / things to fix
+- **Judge score clip: NO clip, and that is now the code default too (changed 2026-08-04).**
+  `training/grpo/reward.py` sets `TURING_JUDGE_SCORE_CLIP_MAX = 7.0`, a no-op on the 1–7 Likert.
+  Upstream shipped **5.0** (commit 6aaecfb — an extra beyond the paper's own `(min{s,5}−1)/6`);
+  we do not want it, because clipping at 5 flattens the advantage across ratings 5/6/7 and kills
+  exactly the gradient that pushes a generator past ~50% (see
+  `specs/2026-07-15-rl-generator-vs-fixed-judge-design.md:74`). Every launcher already exported
+  `=7` explicitly (`scripts/slurm/rl_generator_run{,_9b,_9b_1node}.sh`, `scripts/launch_test_eval.sh`,
+  guarded by `tests/test_rl_9b_launcher.py:68`), so **no completed run's numbers change** — this
+  only fixes the unset-env path, which previously clipped silently. Those explicit exports are now
+  redundant but harmless; left in place as documentation. Set the env to 5 to reproduce upstream.
 - **Judge parser** — the correct parser for Qwen is `qwen3` (source-verified in
   `scripts/slurm/judge_serve_8b.sh:20`; used by the judge sweep). The 397B training judge
   `scripts/slurm/judge_serve.sh` is now fixed to `qwen3` (`--max-model-len 32768` was already

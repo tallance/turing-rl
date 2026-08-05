@@ -2,6 +2,21 @@
 import pathlib
 S = pathlib.Path("scripts/slurm/rl_generator_train_9b.sh").read_text()
 SINGLE_NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b_1node.sh").read_text()
+RUN_2NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b.sh").read_text()
+
+
+def test_judge_concurrency_is_pinned_not_inherited():
+    # reward.py reads TURING_JUDGE_MAX_CONCURRENCY *before* PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY,
+    # and sbatch --export=ALL carries the submitting shell's env in. Job 13634 inherited a stray
+    # TURING_JUDGE_MAX_CONCURRENCY=8 that appears in no committed file and ran 41.5/44.1 h
+    # judge-bound. The launcher must therefore SET the var unconditionally -- a `${VAR:-default}`
+    # on TURING_JUDGE_MAX_CONCURRENCY itself would re-open exactly that hole.
+    assert 'export TURING_JUDGE_MAX_CONCURRENCY="$JUDGE_CONC"' in RUN_2NODE
+    assert 'export PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY="$JUDGE_CONC"' in RUN_2NODE
+    assert "${TURING_JUDGE_MAX_CONCURRENCY:-" not in RUN_2NODE
+    assert 'JUDGE_CONC="${JUDGE_CONC:-64}"' in RUN_2NODE
+    # A long timeout is what makes high concurrency safe (reward.py falls back to 400 s).
+    assert 'PERSONA_OPENAI_TIMEOUT_SECONDS="${PERSONA_OPENAI_TIMEOUT_SECONDS:-1800}"' in RUN_2NODE
 
 def test_lora_target_is_attn_mlp_not_all_linear_excludes_visual_and_mtp():
     assert "all-linear" not in S                       # never LoRA the GDN backbone

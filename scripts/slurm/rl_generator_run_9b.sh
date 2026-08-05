@@ -89,7 +89,24 @@ export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 export PERSONA_JUDGE_DUMP_RATE=1.0
 export PERSONA_REWARD_DUMP_DIR="$REWARD_DUMP_DIR"
 export PERSONA_EVAL_JUDGE_MODEL="$JUDGE_MODEL"
-export PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY="${PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY:-128}"
+# --- judge concurrency: PINNED, never inherited ---------------------------------------
+# reward.py:_reward_judge_request_limit() checks TURING_JUDGE_MAX_CONCURRENCY *before*
+# PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY, and sbatch --export=ALL propagates the submitting
+# shell. So a stray ambient TURING_JUDGE_MAX_CONCURRENCY silently beats the value set here
+# and leaves no trace in the repo. That is exactly what happened to job 13634: it inherited
+# 8 (confirmed in its log: "[reward_judge] max concurrent requests per process: 8") and spent
+# 41.5 of 44.1 h judge-bound at an effective concurrency of 6.3.
+# Probe 13999 on this same DP-8 judge topology: throughput scales 6.4x from 8 -> 64 with FLAT
+# latency (p50 116->124 s, p95 ~140 s), saturating at 64. See docs/default-params.md.
+# Set JUDGE_CONC to change this deliberately; do NOT rely on ambient env.
+JUDGE_CONC="${JUDGE_CONC:-64}"
+export TURING_JUDGE_MAX_CONCURRENCY="$JUDGE_CONC"
+export PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY="$JUDGE_CONC"
+# reward.py's own fallback is 400 s. At concurrency 64 the measured p95 is 140 s, but the
+# 400 s default is what turned the job-13628 flood into a total-failure cascade, so keep the
+# headroom: the cost of a long timeout is bounded, the cost of a false timeout is a lost pair.
+export PERSONA_OPENAI_TIMEOUT_SECONDS="${PERSONA_OPENAI_TIMEOUT_SECONDS:-1800}"
+echo "=== judge concurrency pinned: $JUDGE_CONC (timeout ${PERSONA_OPENAI_TIMEOUT_SECONDS}s) ==="
 export PERSONA_OPENAI_MAX_RETRIES="${PERSONA_OPENAI_MAX_RETRIES:-3}"
 export WANDB_PROJECT="${WANDB_PROJECT:-2026-07-15-rl-generator-vs-fixed-judge}"
 export MERGED_SFT_MODEL_PATH="${MERGED_SFT_MODEL_PATH:-checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}"

@@ -55,7 +55,10 @@ DEFAULT_FORMAT_NONEMPTY_REASONING_BONUS = 0.0
 DEFAULT_FORMAT_REASONING_SCHEMA_BONUS = 0.05
 DEFAULT_FORMAT_NO_POST_HUMAN_THINKING_BONUS = 0.05
 TURING_RAW_REWARD_SCALE = 0.9
-TURING_JUDGE_SCORE_CLIP_MAX = 5.0  # default; overridable via TURING_JUDGE_SCORE_CLIP_MAX env
+# No clip by default: 7 is a no-op on the 1-7 Likert. Upstream shipped 5.0, which flattens the
+# advantage across ratings 5/6/7 and kills exactly the gradient that pushes a generator past ~50%.
+# Every launcher already exported 7; this makes the unset default match. Overridable via env.
+TURING_JUDGE_SCORE_CLIP_MAX = 7.0
 DEFAULT_TURING_LENGTH_LOWER_RATIO = 0.8
 DEFAULT_TURING_LENGTH_UPPER_RATIO = 1.1
 DEFAULT_TURING_LENGTH_SHORT_PENALTY_LAMBDA = 0.35
