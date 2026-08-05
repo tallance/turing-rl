@@ -4,17 +4,26 @@ Reads the tidy per-pair table from scripts/export_judge_rating_pairs.py and draw
 one panel: x = Qwen3.5-9B Likert, y = Qwen3.5-27B Likert, coloured by GRPO step
 (step 0 blue -> step 32 red).
 
-WHY MARKS ARE SIZED, NOT ONE-PER-PAIR. Both axes are integers 1-7, so the 4396
-rated pairs collapse onto at most 49 lattice points -- 665 of them land on a single
-point, and 172 on a single (step, point). A one-dot-per-pair scatter would be a
-solid blob, and five overlapping blue->red
-clouds would mix to brown, so neither the density nor the step would be readable.
-Instead each mark is one (step, 9B, 27B) cell with AREA PROPORTIONAL TO COUNT, and
-the five steps sit on a small fixed ring around their lattice point so they never
-hide one another. No pair is dropped or merged: the counts sum to the full sample.
+ONE DOT PER PAIR, JITTERED. Both axes are integers 1-7, so without jitter the 4396
+rated pairs would stack onto at most 49 lattice points -- 665 of them land on a
+single point, 172 on a single (step, point) -- and the scatter would be 49 dots.
+So every pair is drawn, displaced from its lattice point by a deterministic random
+offset. Two things shape that offset:
+
+  1. A fixed per-step ring offset, so the five steps form five separate clouds
+     around each lattice point instead of five blue->red clouds mixing to brown.
+  2. Random jitter, uniform inside a disc whose RADIUS SCALES AS sqrt(count). Area
+     then grows in proportion to the count, so every cloud has the same dot
+     density and a cloud's size reads directly as how many pairs are in it. Fixed-
+     radius jitter would instead make a 172-pair cloud and a 5-pair cloud the same
+     size and leave only opacity to tell them apart.
+
+The jitter is cosmetic: it moves where a dot is drawn, never what it counts as.
+Ratings are read from the CSV as integers, and the companion table CSV carries the
+exact per-cell counts.
 
 The step centroids (mean 9B, mean 27B) are overlaid and joined 0 -> 32, because the
-drift of the cloud is the thing the per-cell marks are too dense to show.
+drift of the cloud is the thing the individual dots are too dense to show.
 
 Colour is a diverging ramp: two opposite hues with a NEUTRAL GRAY midpoint (never a
 hue at the midpoint). Steps are ordered, so the ramp is read as position along
@@ -29,6 +38,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import random
 import statistics
 import sys
 from collections import Counter
@@ -68,9 +78,15 @@ STEP_COLOR = {
     24: "#bb582e",
     32: "#8d0d09",   # red pole
 }
-RING = 0.17          # radius of the per-step offset ring, in rating units
-MAX_AREA = 230.0     # points^2 for the largest cell; area is proportional to count
-MIN_AREA = 5.0       # floor so a single pair stays visible
+RING = 0.175         # radius of the per-step offset ring, in rating units
+CLOUD_R = 0.150      # jitter disc radius for the BIGGEST cell; others scale as sqrt(count)
+DOT_AREA = 3.5       # points^2 per dot -- one dot is one rated pair
+DOT_ALPHA = 0.55
+JITTER_SEED = 20260805   # fixed: the same CSV must always produce the same figure
+
+# RING + CLOUD_R = 0.325 < 0.5, so a cloud can never spill into the neighbouring
+# lattice point's territory and be misread as a different rating.
+assert RING + CLOUD_R < 0.5
 
 
 def load(path: Path) -> list[dict]:
@@ -121,15 +137,31 @@ def main() -> None:
     ax.annotate("9B = 27B", xy=(7.15, 7.15), xytext=(0, 6), textcoords="offset points",
                 color=INK["muted"], fontsize=9, ha="right", rotation=45, rotation_mode="anchor")
 
+    # One dot per rated pair. Seeded and iterated over sorted cells, so the same CSV
+    # always yields pixel-identical jitter.
+    rng = random.Random(JITTER_SEED)
+    drawn = 0
     for i, s in enumerate(steps):
         ang = -math.pi / 2 + 2 * math.pi * i / len(steps)
         dx, dy = RING * math.cos(ang), RING * math.sin(ang)
-        cells = per_step[s]
-        xs = [k[0] + dx for k in cells]
-        ys = [k[1] + dy for k in cells]
-        sizes = [max(MIN_AREA, MAX_AREA * n / biggest) for n in cells.values()]
-        ax.scatter(xs, ys, s=sizes, color=STEP_COLOR[s], alpha=0.80,
-                   linewidths=0.6, edgecolors=INK["surface"], zorder=3)
+        xs, ys = [], []
+        for (gx, gy), n in sorted(per_step[s].items()):
+            # radius ~ sqrt(count) => area ~ count => constant dot density everywhere.
+            r_cloud = CLOUD_R * math.sqrt(n / biggest)
+            for _ in range(n):
+                th = rng.random() * 2 * math.pi
+                rr = r_cloud * math.sqrt(rng.random())   # sqrt => uniform over the disc
+                xs.append(gx + dx + rr * math.cos(th))
+                ys.append(gy + dy + rr * math.sin(th))
+        # No marker edge: a 2px surface ring is for separating a few overlapping markers,
+        # and on hundreds of ~2px dots it would erase the fill it is meant to outline.
+        ax.scatter(xs, ys, s=DOT_AREA, color=STEP_COLOR[s], alpha=DOT_ALPHA,
+                   linewidths=0, zorder=3, rasterized=True)
+        drawn += len(xs)
+
+    # The whole point of a scatter is that every observation is on it.
+    if drawn != len(rated):
+        raise SystemExit(f"FAIL: drew {drawn} dots for {len(rated)} rated pairs")
 
     # Centroids: the drift the per-cell marks are too dense to show. 2px surface ring.
     cx, cy = [], []
@@ -161,10 +193,12 @@ def main() -> None:
     fig.text(0.095, 0.985, "Judge agreement on the held-out test set, by GRPO step",
              color=INK["primary"], fontsize=13, fontweight="bold", va="top")
     fig.text(0.095, 0.951,
-             f"One mark per (step, 9B, 27B) cell, area proportional to the pairs in it "
-             f"(largest = {biggest}); diamonds are step means.\n"
-             f"The five steps sit on a small ring around their lattice point so they do not "
-             f"hide one another.\n"
+             f"One dot per rated pair. Ratings are integers, so each dot is jittered off its "
+             f"lattice point: a fixed per-step\n"
+             f"offset separates the five clouds, then random spread whose radius scales as "
+             f"sqrt(count), making a cloud's\n"
+             f"area proportional to the pairs in it (largest = {biggest}). "
+             f"Diamonds are step means.\n"
              f"{len(rated)} of {total} pairs rated by both judges ({dropped} dropped: a judge "
              f"failed to parse). Per step: "
              f"{', '.join(f'{s}:{n_by_step[s]}' for s in steps)}.",
@@ -179,17 +213,8 @@ def main() -> None:
                     labelcolor=INK["secondary"])
     leg.get_title().set_color(INK["secondary"])
 
-    # Size legend: area encodes count, so the reader needs the scale, not just the hue.
-    size_ticks = [n for n in (10, 100, biggest) if n <= biggest]
-    size_handles = [plt.Line2D([], [], marker="o", linestyle="",
-                               markersize=math.sqrt(max(MIN_AREA, MAX_AREA * n / biggest)),
-                               markerfacecolor=INK["muted"], markeredgecolor=INK["surface"],
-                               label=f"{n} pairs") for n in size_ticks]
-    leg2 = ax.legend(handles=size_handles, title="cell size", loc="lower right",
-                     frameon=False, fontsize=9.5, title_fontsize=9.5,
-                     labelcolor=INK["secondary"], labelspacing=1.15, borderpad=1.0)
-    leg2.get_title().set_color(INK["secondary"])
-    ax.add_artist(leg)
+    # No size legend: dot density is constant, so a cloud's extent -- not any single
+    # mark -- carries the count, and the exact numbers live in the table CSV.
 
     fig.subplots_adjust(left=0.095, right=0.985, top=0.855, bottom=0.065)
     out_dir.mkdir(parents=True, exist_ok=True)
