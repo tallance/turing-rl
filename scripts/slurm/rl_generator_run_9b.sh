@@ -32,6 +32,14 @@ cd "$REPO"
 if [ -f "$REPO/.env" ]; then set -a; source "$REPO/.env"; set +a; fi
 export WANDB_BASE_URL="${WANDB_BASE_URL:-https://meta.wandb.io}"
 export WANDB_MODE=online
+# Keep the wandb run dir OFF FSx. Job 13634 completed all 32 steps, yet wandb kept only 30 train
+# points and 4 of 5 validations: the FSx wobble that killed the job also stalled wandb's writer,
+# so the tail never reached even the LOCAL transaction log (two `wandb sync` runs recovered
+# nothing). Node-local tmpfs is immune to that; cleanup() below syncs it and copies it back.
+export WANDB_DIR="${WANDB_DIR:-/tmp/wandb-${SLURM_JOB_ID:-$$}}"
+mkdir -p "$WANDB_DIR"
+# Arm-B trainer env (same one rl_generator_train_9b.sh runs in), used for the exit-time sync.
+WANDB_BIN=${WANDB_BIN:-/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/wandb}
 
 JUDGE=${JUDGE:?set JUDGE=9b|397b}
 MODE=${MODE:?set MODE=overfit|full|epoch1}
@@ -63,7 +71,18 @@ MODEL=$JUDGE_MODEL TP=$TP DP=$DP JUDGE_ENDPOINT_FILE=$ENDPOINT_FILE \
   srun --nodes=1 --ntasks=1 --nodelist="$NODE_JUDGE" --gres=gpu:8 --overlap \
   bash scripts/slurm/judge_serve_9b_replicas.sh &
 JUDGE_PID=$!
-cleanup() { kill "$JUDGE_PID" 2>/dev/null || true; }
+# Preserve wandb before the node-local dir vanishes with the job, then push whatever the run
+# never managed to upload. Slurm sends SIGTERM before SIGKILL, so this usually gets to run;
+# the copy happens first so the transaction log survives even if the sync itself is killed.
+save_wandb() {
+  [ -d "$WANDB_DIR" ] || return 0
+  cp -r "$WANDB_DIR" "$REPO/wandb/joblocal-${SLURM_JOB_ID:-$$}" 2>/dev/null || true
+  for d in "$WANDB_DIR"/run-*; do
+    [ -d "$d" ] || continue
+    timeout 600 "$WANDB_BIN" sync "$d" 2>&1 | tail -2 || true
+  done
+}
+cleanup() { save_wandb; kill "$JUDGE_PID" 2>/dev/null || true; }
 trap cleanup EXIT TERM INT
 
 # --- wait for the judge to publish its endpoint (written only after model-verified health) ---
@@ -118,8 +137,17 @@ export RL_JUDGE_JOB_ID=""   # no separate judge job; teardown handled here by ki
 export B0_ROLLOUT_SYNC="${B0_ROLLOUT_SYNC:-}"
 
 # --- trainer step on node1 (foreground) — 9B variant ---
+# Run the trainer script from node-local disk, NOT from FSx. bash reads a script LAZILY, holding
+# the file open and re-reading as it executes, so a multi-day job keeps an FSx handle alive for
+# its whole life. Job 13634 died that way after completing all 32 steps:
+#   scripts/slurm/rl_generator_train_9b.sh: error reading input file: Stale file handle
+# Copying it once removes that entire failure mode.
+# The copy must happen ON the trainer node: /tmp is node-local, and this launcher runs on a
+# different node than $NODE_TRAIN. bash -c receives its program as a string (already in memory),
+# so nothing is re-read from FSx once the copy is done.
 srun --nodes=1 --ntasks=1 --nodelist="$NODE_TRAIN" --gres=gpu:8 --overlap \
-  bash scripts/slurm/rl_generator_train_9b.sh
+  bash -c 'L=/tmp/rl_gen_train-${SLURM_JOB_ID:-$$}.sh; cp "$0" "$L" || exit 2; exec bash "$L"' \
+  "$REPO/scripts/slurm/rl_generator_train_9b.sh"
 RC=$?
 echo "=== trainer step exit: $RC ; tearing down judge step ==="
 kill "$JUDGE_PID" 2>/dev/null || true
