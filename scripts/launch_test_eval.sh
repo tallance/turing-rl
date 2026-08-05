@@ -14,12 +14,23 @@
 # Sampling mirrors job 13634's val_kwargs (Qwen3 model-card) so test numbers extend the
 # in-training validation curve; judge env mirrors 13634's judge exactly.
 #
+# PREREQUISITE: every non-zero step in STEPS must already have a GATED dense model built by
+# scripts/slurm/merge_grpo_ckpt.sh. veRL checkpoints are unmerged LoRA, so generating straight
+# from one evaluates the SFT base and silently reproduces step-0 numbers.
+#
+# End-to-end runbook: docs/test-set-eval.md
+#
 # Usage:
 #   DRY=1 bash scripts/launch_test_eval.sh                 # print the plan
 #   bash scripts/launch_test_eval.sh                       # full gen+judge, 9B thinking-on
 #   DO_GEN=0 JUDGES="qwen35-27b qwen35-397b" bash scripts/launch_test_eval.sh
 #                                                          # judge-only re-run over existing pairs
 #   GEN_ONLY=9b-grpo-step8 bash scripts/launch_test_eval.sh
+#
+#   # a non-held-out arm: the split must be DECLARED, or check_eval_split.py aborts pre-submit
+#   EVAL_ROOT=$REPO/results/<date>-trainset-eval MODELS_ROOT=<existing>/models \
+#   EVAL_PARQUET=<...>/grpo/train_used2048.parquet EVAL_EXPECT=train PAIRS_TAG=2048 \
+#   GEN_KEY_PREFIX=9b-grpo-train-step bash scripts/launch_test_eval.sh
 set -uo pipefail
 REPO=/home/lancewicki/projects/turing-rl
 cd "$REPO" || exit 2
@@ -34,6 +45,18 @@ GEN_ONLY=${GEN_ONLY:-}
 CHAIN_AFTER=${CHAIN_AFTER:-}
 
 MERGED_EP3=${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}
+
+# --- what we evaluate on. Defaults reproduce the held-out test-set eval exactly. ---
+# EVAL_PARQUET is exported so generator_infer.sh / build_pairs.sh inherit it via --export=ALL.
+# EVAL_EXPECT is asserted by scripts/check_eval_split.py below: pointing this at train/val data
+# without declaring it aborts, so a train-set curve can never be published as held-out.
+export EVAL_PARQUET=${EVAL_PARQUET:-$REPO/data/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
+export EVAL_EXPECT=${EVAL_EXPECT:-heldout}
+export PAIRS_TAG=${PAIRS_TAG:-880}
+# Lets a new EVAL_ROOT reuse dense models already merged+gated under another root.
+MODELS_ROOT=${MODELS_ROOT:-$EVAL_ROOT/models}
+# Keeps gen keys (and so output dirs) distinct when several arms share a checkpoint set.
+GEN_KEY_PREFIX=${GEN_KEY_PREFIX:-9b-grpo-step}
 
 # --- generation config: Qwen3 model-card = job 13634 val_kwargs; lengths = validation caps ---
 export SWEEP_BASE="$EVAL_ROOT"
@@ -62,8 +85,8 @@ export PERSONA_OPENAI_TIMEOUT_SECONDS=${PERSONA_OPENAI_TIMEOUT_SECONDS:-1800}
 STEPS=${STEPS:-"0 8 16"}
 GENERATORS=""
 for s in $STEPS; do
-  if [ "$s" = "0" ]; then m=$MERGED_EP3; else m=$EVAL_ROOT/models/step$s/hf_dense; fi
-  GENERATORS="${GENERATORS}9b-grpo-step${s}|${m}
+  if [ "$s" = "0" ]; then m=$MERGED_EP3; else m=$MODELS_ROOT/step$s/hf_dense; fi
+  GENERATORS="${GENERATORS}${GEN_KEY_PREFIX}${s}|${m}
 "
 done
 
@@ -95,7 +118,15 @@ need_jid () { [ -n "$1" ] || { echo "FATAL: no job id for $2" >&2; exit 1; }; }
 
 mkdir -p "$EVAL_ROOT/raw/pairs" "$EVAL_ROOT/raw/sweep" "$REPO/logs"
 
+# Split guard, PRE-SUBMIT: a mislabelled eval set costs seconds here instead of an 8-GPU night,
+# and the verdict lands in the results tree so the split is evidenced, not just asserted.
+/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python scripts/check_eval_split.py \
+    --eval_parquet "$EVAL_PARQUET" --expect "$EVAL_EXPECT" \
+    --out_json "$EVAL_ROOT/split_guard.json" \
+  || { echo "FATAL: split guard rejected the eval set; nothing submitted." >&2; exit 1; }
+
 echo "=== test-set eval: EVAL_ROOT=$EVAL_ROOT judges='$JUDGES' modes='$MODES' gen=$DO_GEN judge=$DO_JUDGE ==="
+echo "=== eval set: $EVAL_PARQUET (expect=$EVAL_EXPECT, tag=$PAIRS_TAG) ==="
 echo "=== sampling: T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K max_tokens=$GEN_MAX_TOKENS ==="
 
 # ---------------- phase 1: generation (parallel, 1 GPU each) + pair build ----------------
@@ -105,7 +136,7 @@ for entry in $GENERATORS; do
   gk=${entry%%|*}; model=${entry#*|}
   if [ -n "$GEN_ONLY" ] && [ "$gk" != "$GEN_ONLY" ]; then continue; fi
   N_MATCHED=$((N_MATCHED+1))
-  pairs=$EVAL_ROOT/raw/pairs/gen_${gk}_880.parquet
+  pairs=$EVAL_ROOT/raw/pairs/gen_${gk}_${PAIRS_TAG}.parquet
 
   if [ "$DO_GEN" = "1" ]; then
     if [ ! -d "$model" ]; then
@@ -144,7 +175,7 @@ fi
 PREV=""
 for dep_entry in $BUILD_DEPS; do
   gk=${dep_entry%%|*}; bjid=${dep_entry#*|}
-  pairs=$EVAL_ROOT/raw/pairs/gen_${gk}_880.parquet
+  pairs=$EVAL_ROOT/raw/pairs/gen_${gk}_${PAIRS_TAG}.parquet
   # The client appends $CELL_NAME/$THINKING_MODE, so pass the per-generator sweep ROOT.
   sweep_root=$EVAL_ROOT/raw/$gk/sweep
   # Here-string, NOT `echo | while`: a pipe puts the loop in a subshell and PREV would not

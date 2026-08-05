@@ -124,6 +124,9 @@ def main() -> None:
     ap.add_argument("--reward_dir", default=None, help="Check a single reward dir")
     ap.add_argument("--pairs", default=None, help="Pair-set parquet (required with --reward_dir)")
     ap.add_argument("--expect_pairs", type=int, default=880)
+    ap.add_argument("--pairs_tag", default="880",
+                    help="Row-count tag in the pair-set filename (gen_<key>_<tag>.parquet). Must "
+                         "match what launch_test_eval.sh used, or --eval_root finds no pair-sets.")
     ap.add_argument("--allow_multi_job", action="store_true",
                     help="Permit dumps spanning several jobs (legitimate after a targeted re-run "
                          "of timed-out pairs; the unique-key check still guards correctness)")
@@ -136,6 +139,7 @@ def main() -> None:
     a = ap.parse_args()
 
     checks: list[tuple[Path, Path]] = []
+    unpaired: list[str] = []
     if a.reward_dir:
         if not a.pairs:
             ap.error("--pairs is required with --reward_dir")
@@ -144,18 +148,22 @@ def main() -> None:
         root = Path(a.eval_root)
         for reward_dir in sorted(root.glob("raw/*/sweep/*/*/reward")):
             gen_key = reward_dir.parents[3].name
-            pairs = root / "raw" / "pairs" / f"gen_{gen_key}_880.parquet"
+            pairs = root / "raw" / "pairs" / f"gen_{gen_key}_{a.pairs_tag}.parquet"
             if not pairs.exists():
-                print(f"SKIP {reward_dir}: no pair-set at {pairs}")
+                # NOT a silent skip. A scored cell with no matching pair-set means either the
+                # wrong --pairs_tag (so this run verified a subset of what exists and would still
+                # print PASS) or a half-built tree. Both must fail loudly -- silently checking
+                # fewer cells than exist is the exact blind spot this script was written for.
+                unpaired.append(f"{reward_dir}: no pair-set at {pairs}")
                 continue
             checks.append((reward_dir, pairs))
     else:
         ap.error("provide --eval_root or --reward_dir")
 
-    if not checks:
+    if not checks and not unpaired:
         raise SystemExit("FAIL: nothing to verify (no reward dirs found)")
 
-    problems: list[str] = []
+    problems: list[str] = list(unpaired)
     for reward_dir, pairs in checks:
         import pandas as pd
 
