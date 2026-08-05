@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -29,8 +30,35 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.eval_rl_generator import directional_accuracy  # noqa: E402
 
 KEY_FIELDS = ("user_id", "post_id", "target_idx")
-# Display order; anything else found is appended alphabetically.
+# Display order; anything else found is appended in step order (see _step_order).
 PREFERRED = ["9b-grpo-step0", "9b-grpo-step8", "9b-grpo-step16", "9b-grpo-step24", "9b-grpo-step32"]
+
+_TRAILING_INT = re.compile(r"(\d+)$")
+
+
+def _step_order(gen_key: str) -> tuple[str, int, str]:
+    """Sort unknown gen keys by trailing step number, not lexically.
+
+    Plain sorted() renders step8 after step32, which silently mis-orders any arm whose keys are
+    not in PREFERRED (e.g. 9b-grpo-train-step*).
+    """
+    m = _TRAILING_INT.search(gen_key)
+    return (gen_key[: m.start()] if m else gen_key, int(m.group(1)) if m else -1, gen_key)
+
+
+def declared_split(eval_root: Path) -> str:
+    """Read the split-guard verdict so a train-set table cannot be read as held-out."""
+    guard = eval_root / "split_guard.json"
+    if not guard.is_file():
+        return ("UNVERIFIED (no split_guard.json; this root predates scripts/check_eval_split.py "
+                "or was built outside launch_test_eval.sh)")
+    try:
+        rec = json.loads(guard.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        return f"UNREADABLE split_guard.json ({exc})"
+    return (f"{rec.get('verdict', '?')} expect={rec.get('expect', '?')} "
+            f"rows={rec.get('eval_rows', '?')} users={rec.get('eval_users', '?')} "
+            f"parquet={rec.get('eval_parquet', '?')}")
 
 
 def load_rows(reward_dir: Path) -> list[dict]:
@@ -79,7 +107,12 @@ def main() -> None:
     found = {p.parents[3].name: p for p in root.glob(f"raw/*/sweep/{a.cell}/{a.mode}/reward")}
     if not found:
         raise SystemExit(f"FAIL: no reward dirs under {root}/raw/*/sweep/{a.cell}/{a.mode}")
-    order = [k for k in PREFERRED if k in found] + sorted(set(found) - set(PREFERRED))
+    order = [k for k in PREFERRED if k in found] + sorted(set(found) - set(PREFERRED), key=_step_order)
+
+    # State the split this table is scored on. Without it a train-set table is visually identical
+    # to a held-out one, which is precisely how an overfit curve gets published as generalisation.
+    split_note = f"# split: {declared_split(root)}"
+    print(split_note + "\n")
 
     # Judge timeouts drop ~1-3% of pairs, and each checkpoint drops a DIFFERENT few. Scoring each
     # on whatever it happens to have would compare them over different subsets. Restrict every
@@ -151,7 +184,9 @@ def main() -> None:
             ",".join(cols) + "\n" + "\n".join(",".join(str(r[c]) for c in cols) for r in rows_out) + "\n")
         print(f"\nwrote {a.out_csv}", file=sys.stderr)
     if a.out_md:
-        Path(a.out_md).write_text(md + "\n")
+        # The note travels with the artifact, not just the console: the .md is what gets pasted
+        # into write-ups. (Left out of the CSV, where a comment line would break parsing.)
+        Path(a.out_md).write_text(f"{split_note}\n\n{md}\n")
         print(f"wrote {a.out_md}", file=sys.stderr)
 
 

@@ -17,6 +17,8 @@
 #
 # Optional overrides (ALL unset by default => byte-identical legacy behaviour):
 #   SWEEP_BASE     output root (default: the 2026-07-15 generator-sweep tree)
+#   EVAL_PARQUET   prompts to generate on (default: the held-out test.parquet)
+#   EVAL_EXPECT    heldout|train|val|any -- asserted by scripts/check_eval_split.py (default heldout)
 #   GEN_TEMPERATURE / GEN_TOP_P / GEN_TOP_K        sampling; unset => domain defaults (prism 0.6)
 #   GEN_MAX_TOKENS / GEN_TRUNCATE_PROMPT_TOKENS / GEN_MAX_MODEL_LEN
 #     length caps; set these to mirror GRPO validation (1024 / 12500 / 13524).
@@ -37,12 +39,21 @@ REPO=/home/lancewicki/projects/turing-rl
 GEN_KEY=${GEN_KEY:?set GEN_KEY}
 MODEL_ID=${MODEL_ID:?set MODEL_ID}
 CKPT=${CKPT:-}
-TEST=$REPO/data/prism/full_s42_history_sft40_grpo60_test10/test.parquet
+TEST=${EVAL_PARQUET:-$REPO/data/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
+EVAL_EXPECT=${EVAL_EXPECT:-heldout}
 SWEEP_BASE=${SWEEP_BASE:-$REPO/results/2026-07-15-generator-sweep}
 OUT_DIR=$SWEEP_BASE/raw/generator/$GEN_KEY
 OUT=$OUT_DIR/heldout_inference.pkl
 mkdir -p "$OUT_DIR"; cd "$REPO"
 [ -f "$TEST" ] || { echo "ERROR: missing $TEST"; exit 2; }
+
+# Split guard. EVAL_PARQUET turns "held-out eval" into an unverified claim, so assert the split
+# BEFORE loading a model. launch_test_eval.sh checks pre-submit too; this repeats it because a
+# direct `sbatch scripts/slurm/generator_infer.sh` bypasses the launcher. Costs a few seconds.
+# Always the train env's python: the guard needs pandas, and BACKEND=hf swaps interpreters.
+/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python scripts/check_eval_split.py \
+    --eval_parquet "$TEST" --expect "$EVAL_EXPECT" --out_json "$OUT_DIR/split_guard.json" \
+  || { echo "ERROR: split guard rejected $TEST (expect=$EVAL_EXPECT)"; exit 3; }
 
 BASE=(); [ -z "$CKPT" ] && BASE=(--base_model)
 CK=(); [ -n "$CKPT" ] && CK=(--checkpoint_dir "$CKPT")
@@ -65,7 +76,7 @@ $PY -u -m eval.generate_trained "${BASE[@]}" "${CK[@]}" --test_parquet "$TEST" \
 RC=$?
 $PY -c "import json,os; json.dump({'gen_key':'$GEN_KEY','model_id':'$MODEL_ID',\
 'checkpoint_dir':'${CKPT:-}','base_model':$([ -z "$CKPT" ] && echo True || echo False),\
-'test_parquet':'$TEST','gen_num':1,'output':'$OUT','backend':'$BACKEND',\
+'test_parquet':'$TEST','eval_expect':'$EVAL_EXPECT','gen_num':1,'output':'$OUT','backend':'$BACKEND',\
 'sampling_overrides':'${SAMPLING[*]-}',\
 'slurm_job_id':os.environ.get('SLURM_JOB_ID')}, open('$OUT_DIR/gen_metadata.json','w'), indent=2)"
 echo "=== exit: $RC ==="; exit $RC
