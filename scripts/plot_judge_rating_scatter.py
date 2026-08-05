@@ -5,8 +5,9 @@ one panel: x = Qwen3.5-9B Likert, y = Qwen3.5-27B Likert, coloured by GRPO step
 (step 0 blue -> step 32 red).
 
 WHY MARKS ARE SIZED, NOT ONE-PER-PAIR. Both axes are integers 1-7, so the 4396
-rated pairs collapse onto at most 49 lattice points -- one cell holds 665 of them.
-A one-dot-per-pair scatter would be a solid blob, and five overlapping blue->red
+rated pairs collapse onto at most 49 lattice points -- 665 of them land on a single
+point, and 172 on a single (step, point). A one-dot-per-pair scatter would be a
+solid blob, and five overlapping blue->red
 clouds would mix to brown, so neither the density nor the step would be readable.
 Instead each mark is one (step, 9B, 27B) cell with AREA PROPORTIONAL TO COUNT, and
 the five steps sit on a small fixed ring around their lattice point so they never
@@ -193,8 +194,7 @@ def main() -> None:
     fig.subplots_adjust(left=0.095, right=0.985, top=0.855, bottom=0.065)
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = out_dir / "judge_rating_scatter_9b_vs_27b"
-    for ext in ("png", "pdf"):
-        fig.savefig(f"{stem}.{ext}", dpi=200)
+    fig.savefig(f"{stem}.png", dpi=200)
     plt.close(fig)
 
     # Table-view twin: the WCAG-clean equivalent of a colour-encoded scatter.
@@ -205,7 +205,7 @@ def main() -> None:
         for s in steps:
             for (x, y), n in sorted(per_step[s].items()):
                 w.writerow([s, x, y, n])
-    print(f"wrote {stem}.png / .pdf and {tbl.name}", file=sys.stderr)
+    print(f"wrote {stem}.png and {tbl.name}", file=sys.stderr)
     for s in steps:
         print(f"  step {s:>2}  n={n_by_step[s]}  mean 9B={cx[steps.index(s)]:.3f}  "
               f"mean 27B={cy[steps.index(s)]:.3f}", file=sys.stderr)
