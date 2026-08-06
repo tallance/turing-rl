@@ -283,4 +283,6 @@ def parse_args() -> argparse.Namespace:
 
 
 if __name__ == "__main__":
-    asyncio.run(replay(parse_args()))
+    completed_summary = asyncio.run(replay(parse_args()))
+    if completed_summary["http_errors"]:
+        raise SystemExit(5)
