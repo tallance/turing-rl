@@ -51,3 +51,23 @@
 2. Compute the same per-rank load concentration and effective-engine metrics used for the legacy validation log.
 3. Add a provenance-only `README.txt` with configuration, versions, job/date/path metadata, artifact checksums, mechanical validation, and reproduction commands.
 4. Report whether the new launcher materially improves balance and wall time; keep interpretation out of `README.txt`.
+
+### Task 6: Isolated vLLM 0.26 replay
+
+**Files:**
+- Modify: `scripts/slurm/judge_dp_replay.sh`
+- Modify: `tests/test_benchmark_judge_dp_replay.py`
+
+1. Inspect the vLLM 0.26 resolver plan and prior cloned-environment failures before installing anything.
+2. Create a clean, dedicated server environment with its wheel-pinned Torch, CUDA runtime,
+   FlashInfer, and compilation dependencies; place temporary/build caches on shared storage.
+3. Import the complete vLLM CLI and compilation path, verify the CUDA flavor, and parse the
+   cached Qwen3.5-9B config without allocating a GPU.
+4. Add a failing static harness test requiring an overridable `SERVER_ENV` while retaining the
+   original `turing-rl-train` Python as `PY_CLIENT`.
+5. Make the minimal harness change, run focused tests plus Python/shell syntax checks, commit it,
+   and deploy only the modified additive files.
+6. Run the mandatory Slurm preflight, including cloned-stack check 32, then submit the same
+   512-prompt, concurrency-64, DP=8, API-server-count=8 replay with `SERVER_ENV` pointed at v0.26.
+7. Pull and mechanically validate the artifacts, compare them to jobs 14217 and 14322, and add
+   provenance-only metadata.

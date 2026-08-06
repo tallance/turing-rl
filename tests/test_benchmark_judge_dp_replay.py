@@ -1,6 +1,10 @@
 import json
+from pathlib import Path
 
 from scripts.benchmark_judge_dp_replay import build_body, load_prompts
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_load_prompts_selects_first_validation_rows(tmp_path):
@@ -31,3 +35,13 @@ def test_build_body_matches_production_judge_payload():
         "order": ["Morph"],
         "allow_fallbacks": False,
     }
+
+
+def test_slurm_harness_allows_separate_server_environment():
+    harness = (REPO_ROOT / "scripts/slurm/judge_dp_replay.sh").read_text()
+
+    assert "SERVER_ENV=${SERVER_ENV:-/home/lancewicki/miniconda3/envs/turing-rl-train}" in harness
+    assert "PY_SERVER=$SERVER_ENV/bin/python" in harness
+    assert "VLLM=$SERVER_ENV/bin/vllm" in harness
+    assert "PY_CLIENT=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python" in harness
+    assert '"$PY_CLIENT" scripts/benchmark_judge_dp_replay.py' in harness
