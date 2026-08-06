@@ -51,6 +51,7 @@ mkdir -p "$OUT" "$REPO/logs"
 SERVER_LOG=$OUT/server.log
 GPU_LOG=$OUT/gpu_dmon.log
 METRICS_LOG=$OUT/metrics.log
+PROCESS_LOG=$OUT/process_cpu.log
 CLIENT_LOG=$OUT/client.log
 SERVER_CMD=(
   "$VLLM" serve "$MODEL"
@@ -86,9 +87,11 @@ echo "============================================"
 SRV=$!
 MON=""
 METRICS_MON=""
+PROC_MON=""
 cleanup() {
   if [ -n "$MON" ]; then kill "$MON" 2>/dev/null || true; fi
   if [ -n "$METRICS_MON" ]; then kill "$METRICS_MON" 2>/dev/null || true; fi
+  if [ -n "$PROC_MON" ]; then kill "$PROC_MON" 2>/dev/null || true; fi
   kill "$SRV" 2>/dev/null || true
 }
 trap cleanup EXIT TERM INT
@@ -117,6 +120,15 @@ done
   done ) > "$METRICS_LOG" 2>&1 &
 METRICS_MON=$!
 
+( while kill -0 "$SRV" 2>/dev/null; do
+    date --iso-8601=ns
+    ps -eo pid=,etimes=,time=,pcpu=,rss=,comm=,args= \
+      | grep -E 'ApiServer_|EngineCore_DP|VLLM::Worker|vllm serve' \
+      | grep -v grep || true
+    sleep 10
+  done ) > "$PROCESS_LOG" 2>&1 &
+PROC_MON=$!
+
 nvidia-smi dmon -s pucm -d 10 -o DT > "$GPU_LOG" 2>&1 &
 MON=$!
 
@@ -138,6 +150,9 @@ MON=""
 kill "$METRICS_MON" 2>/dev/null || true
 wait "$METRICS_MON" 2>/dev/null || true
 METRICS_MON=""
+kill "$PROC_MON" 2>/dev/null || true
+wait "$PROC_MON" 2>/dev/null || true
+PROC_MON=""
 nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits
 echo "client_exit=$RC date=$(date --iso-8601=seconds)"
 exit "$RC"

@@ -134,5 +134,7 @@ def test_slurm_harness_exposes_frontend_count_and_samples_engine_metrics():
     assert '--api-server-count "$API_SERVER_COUNT"' in harness
     assert "METRICS_LOG=$OUT/metrics.log" in harness
     assert 'http://localhost:$PORT/metrics' in harness
+    assert "PROCESS_LOG=$OUT/process_cpu.log" in harness
+    assert "ApiServer_|EngineCore_DP|VLLM::Worker" in harness
     assert "DURATION=${DURATION:-0}" in harness
     assert '--duration "$DURATION"' in harness
