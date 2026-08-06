@@ -35,6 +35,7 @@ MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 N=${N:-512}
 CONCURRENCY=${CONCURRENCY:-64}
 TIMEOUT=${TIMEOUT:-1800}
+DURATION=${DURATION:-0}
 API_SERVER_COUNT=${API_SERVER_COUNT:-8}
 PORT=${PORT:-$((8700 + ${SLURM_JOB_ID:-0} % 300))}
 INPUT_DUMP=${INPUT_DUMP:-$REPO/results/grpo/rl-generator/9b_full5ep_kl1e4_lr1e4_temp1/reward_dump/reward-14217-1041480.jsonl}
@@ -68,7 +69,7 @@ SERVER_CMD=(
 echo "============================================"
 echo "judge DP replay"
 echo "date=$(date --iso-8601=seconds) host=$(hostname) job=${SLURM_JOB_ID:-none}"
-echo "model=$MODEL n=$N concurrency=$CONCURRENCY timeout=$TIMEOUT api_server_count=$API_SERVER_COUNT port=$PORT"
+echo "model=$MODEL n=$N concurrency=$CONCURRENCY timeout=$TIMEOUT duration=$DURATION api_server_count=$API_SERVER_COUNT port=$PORT"
 echo "input_dump=$INPUT_DUMP"
 echo "out=$OUT"
 echo "server_env=$SERVER_ENV"
@@ -127,7 +128,8 @@ cd "$REPO"
   --n "$N" \
   --concurrency "$CONCURRENCY" \
   --model "$MODEL" \
-  --timeout "$TIMEOUT" 2>&1 | tee "$CLIENT_LOG"
+  --timeout "$TIMEOUT" \
+  --duration "$DURATION" 2>&1 | tee "$CLIENT_LOG"
 RC=${PIPESTATUS[0]}
 
 kill "$MON" 2>/dev/null || true

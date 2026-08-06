@@ -61,6 +61,13 @@ def load_prompts(dump_path: Path, n: int, split: str = "val") -> list[str]:
     return prompts
 
 
+def select_prompt(prompts: list[str], call_idx: int) -> str:
+    """Select a prompt, cycling a fixed base workload for duration runs."""
+    if not prompts:
+        raise ValueError("cannot select from an empty prompt list")
+    return prompts[call_idx % len(prompts)]
+
+
 def build_body(prompt: str, model: str = DEFAULT_MODEL) -> dict[str, Any]:
     """Return the production payload used by GRPO job 14217."""
     return {
@@ -205,6 +212,8 @@ async def replay(args: argparse.Namespace) -> dict[str, Any]:
         raise RuntimeError(
             f"requested {args.n} {args.split!r} prompts but found {len(prompts)} in {args.dumps}"
         )
+    if args.duration < 0:
+        raise ValueError("duration must be non-negative")
 
     args.out.mkdir(parents=True, exist_ok=True)
     requests_path = args.out / "requests.jsonl"
@@ -212,41 +221,74 @@ async def replay(args: argparse.Namespace) -> dict[str, Any]:
     semaphore = asyncio.Semaphore(args.concurrency)
     connector = aiohttp.TCPConnector(limit=args.concurrency)
     started = time.time()
+    deadline = started + args.duration if args.duration else None
     results: list[CallResult] = []
     print(
-        f"[replay] prompts={len(prompts)} split={args.split} concurrency={args.concurrency} "
-        f"endpoint={endpoint}",
+        f"[replay] base_prompts={len(prompts)} split={args.split} "
+        f"concurrency={args.concurrency} duration_s={args.duration} endpoint={endpoint}",
         flush=True,
     )
 
     async with aiohttp.ClientSession(connector=connector) as session:
-        tasks = [
-            asyncio.create_task(
-                one_call(
-                    session,
-                    endpoint,
-                    semaphore,
-                    call_idx,
-                    prompt,
-                    args.model,
-                    args.timeout,
+        pending: set[asyncio.Task[CallResult]] = set()
+        scheduled = 0
+
+        def can_schedule() -> bool:
+            if deadline is not None:
+                return time.time() < deadline
+            return scheduled < len(prompts)
+
+        def schedule_one() -> None:
+            nonlocal scheduled
+            call_idx = scheduled
+            pending.add(
+                asyncio.create_task(
+                    one_call(
+                        session,
+                        endpoint,
+                        semaphore,
+                        call_idx,
+                        select_prompt(prompts, call_idx),
+                        args.model,
+                        args.timeout,
+                    )
                 )
             )
-            for call_idx, prompt in enumerate(prompts)
-        ]
+            scheduled += 1
+
+        while len(pending) < args.concurrency and can_schedule():
+            schedule_one()
+
+        completed = 0
         with requests_path.open("w", encoding="utf-8") as output:
-            for completed, task in enumerate(asyncio.as_completed(tasks), start=1):
-                result = await task
-                results.append(result)
-                output.write(json.dumps(asdict(result), ensure_ascii=False) + "\n")
-                output.flush()
-                if completed % 32 == 0 or completed == len(tasks):
-                    elapsed = time.time() - started
-                    print(
-                        f"[replay] completed={completed}/{len(tasks)} elapsed_s={elapsed:.1f} "
-                        f"http_ok={sum(r.http_ok for r in results)}",
-                        flush=True,
-                    )
+            while pending:
+                done, pending = await asyncio.wait(
+                    pending, return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    result = await task
+                    results.append(result)
+                    completed += 1
+                    output.write(json.dumps(asdict(result), ensure_ascii=False) + "\n")
+                    output.flush()
+                    if completed % 32 == 0:
+                        elapsed = time.time() - started
+                        target = str(len(prompts)) if deadline is None else "duration"
+                        print(
+                            f"[replay] completed={completed}/{target} elapsed_s={elapsed:.1f} "
+                            f"http_ok={sum(r.http_ok for r in results)}",
+                            flush=True,
+                        )
+
+                while len(pending) < args.concurrency and can_schedule():
+                    schedule_one()
+
+        if completed % 32:
+            print(
+                f"[replay] completed={completed} elapsed_s={time.time() - started:.1f} "
+                f"http_ok={sum(r.http_ok for r in results)}",
+                flush=True,
+            )
 
     wall_s = time.time() - started
     summary = summarize(results, wall_s)
@@ -258,6 +300,9 @@ async def replay(args: argparse.Namespace) -> dict[str, Any]:
             "split": args.split,
             "concurrency": args.concurrency,
             "timeout_s": args.timeout,
+            "duration_target_s": args.duration,
+            "base_prompt_count": len(prompts),
+            "scheduled_requests": scheduled,
             "first_prompt_sha256": hashlib.sha256(prompts[0].encode("utf-8")).hexdigest(),
             "last_prompt_sha256": hashlib.sha256(prompts[-1].encode("utf-8")).hexdigest(),
         }
@@ -279,6 +324,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--concurrency", type=int, default=64)
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--timeout", type=float, default=1800.0)
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=0.0,
+        help="sustain concurrency for this many seconds; zero replays each base prompt once",
+    )
     return parser.parse_args()
 
 
