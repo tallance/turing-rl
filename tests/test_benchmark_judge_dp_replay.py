@@ -45,3 +45,12 @@ def test_slurm_harness_allows_separate_server_environment():
     assert "VLLM=$SERVER_ENV/bin/vllm" in harness
     assert "PY_CLIENT=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python" in harness
     assert '"$PY_CLIENT" scripts/benchmark_judge_dp_replay.py' in harness
+
+
+def test_slurm_harness_exposes_frontend_count_and_samples_engine_metrics():
+    harness = (REPO_ROOT / "scripts/slurm/judge_dp_replay.sh").read_text()
+
+    assert "API_SERVER_COUNT=${API_SERVER_COUNT:-8}" in harness
+    assert '--api-server-count "$API_SERVER_COUNT"' in harness
+    assert "METRICS_LOG=$OUT/metrics.log" in harness
+    assert 'http://localhost:$PORT/metrics' in harness

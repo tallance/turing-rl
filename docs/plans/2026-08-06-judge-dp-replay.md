@@ -71,3 +71,18 @@
    512-prompt, concurrency-64, DP=8, API-server-count=8 replay with `SERVER_ENV` pointed at v0.26.
 7. Pull and mechanically validate the artifacts, compare them to jobs 14217 and 14322, and add
    provenance-only metadata.
+
+### Task 7: Long-duration frontend-count control
+
+**Files:**
+- Modify: `scripts/slurm/judge_dp_replay.sh`
+- Modify: `tests/test_benchmark_judge_dp_replay.py`
+
+1. Parameterize `--api-server-count` while keeping DP size, model, payload, prompt order, and
+   client concurrency fixed.
+2. Sample the aggregate `/metrics` endpoint every ten seconds alongside GPU telemetry, retaining
+   per-engine running, waiting, and completion counters.
+3. Run API-server-count 8 and 1 cells long enough to sustain at least sixty minutes of client
+   load, using the same environment selected by the short version screen.
+4. Compare throughput and engine concentration in fixed ten-minute windows, with an explicit
+   post-45-minute persistence check.

@@ -35,6 +35,7 @@ MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 N=${N:-512}
 CONCURRENCY=${CONCURRENCY:-64}
 TIMEOUT=${TIMEOUT:-1800}
+API_SERVER_COUNT=${API_SERVER_COUNT:-8}
 PORT=${PORT:-$((8700 + ${SLURM_JOB_ID:-0} % 300))}
 INPUT_DUMP=${INPUT_DUMP:-$REPO/results/grpo/rl-generator/9b_full5ep_kl1e4_lr1e4_temp1/reward_dump/reward-14217-1041480.jsonl}
 OUT=${OUT:-$REPO/results/judge_dp_replay/${SLURM_JOB_ID}}
@@ -48,13 +49,14 @@ mkdir -p "$OUT" "$REPO/logs"
 
 SERVER_LOG=$OUT/server.log
 GPU_LOG=$OUT/gpu_dmon.log
+METRICS_LOG=$OUT/metrics.log
 CLIENT_LOG=$OUT/client.log
 SERVER_CMD=(
   "$VLLM" serve "$MODEL"
   --download-dir "$HF_HOME"
   --tensor-parallel-size 1
   --data-parallel-size 8
-  --api-server-count 8
+  --api-server-count "$API_SERVER_COUNT"
   --max-model-len 32768
   --gpu-memory-utilization 0.85
   --dtype bfloat16
@@ -66,7 +68,7 @@ SERVER_CMD=(
 echo "============================================"
 echo "judge DP replay"
 echo "date=$(date --iso-8601=seconds) host=$(hostname) job=${SLURM_JOB_ID:-none}"
-echo "model=$MODEL n=$N concurrency=$CONCURRENCY timeout=$TIMEOUT port=$PORT"
+echo "model=$MODEL n=$N concurrency=$CONCURRENCY timeout=$TIMEOUT api_server_count=$API_SERVER_COUNT port=$PORT"
 echo "input_dump=$INPUT_DUMP"
 echo "out=$OUT"
 echo "server_env=$SERVER_ENV"
@@ -82,8 +84,10 @@ echo "============================================"
 "${SERVER_CMD[@]}" > "$SERVER_LOG" 2>&1 &
 SRV=$!
 MON=""
+METRICS_MON=""
 cleanup() {
   if [ -n "$MON" ]; then kill "$MON" 2>/dev/null || true; fi
+  if [ -n "$METRICS_MON" ]; then kill "$METRICS_MON" 2>/dev/null || true; fi
   kill "$SRV" 2>/dev/null || true
 }
 trap cleanup EXIT TERM INT
@@ -105,6 +109,13 @@ for attempt in $(seq 1 900); do
 done
 [ "$ready" -eq 1 ] || { echo "ERROR: server readiness timeout" >&2; tail -160 "$SERVER_LOG"; exit 4; }
 
+( while kill -0 "$SRV" 2>/dev/null; do
+    date --iso-8601=ns
+    curl -sf -m 5 "http://localhost:$PORT/metrics" || true
+    sleep 10
+  done ) > "$METRICS_LOG" 2>&1 &
+METRICS_MON=$!
+
 nvidia-smi dmon -s pucm -d 10 -o DT > "$GPU_LOG" 2>&1 &
 MON=$!
 
@@ -122,6 +133,9 @@ RC=${PIPESTATUS[0]}
 kill "$MON" 2>/dev/null || true
 wait "$MON" 2>/dev/null || true
 MON=""
+kill "$METRICS_MON" 2>/dev/null || true
+wait "$METRICS_MON" 2>/dev/null || true
+METRICS_MON=""
 nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader,nounits
 echo "client_exit=$RC date=$(date --iso-8601=seconds)"
 exit "$RC"
