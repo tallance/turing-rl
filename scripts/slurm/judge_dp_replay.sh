@@ -123,7 +123,7 @@ METRICS_MON=$!
 ( while kill -0 "$SRV" 2>/dev/null; do
     date --iso-8601=ns
     ps -eo pid=,etimes=,time=,pcpu=,rss=,comm=,args= \
-      | grep -E 'ApiServer_|EngineCore_DP|VLLM::Worker|vllm serve' \
+      | grep -E 'VLLM::APIServer|EngineCore_DP|VLLM::Worker|vllm serve' \
       | grep -v grep || true
     sleep 10
   done ) > "$PROCESS_LOG" 2>&1 &
