@@ -19,8 +19,10 @@
 #
 # Submit: B0_ROLLOUT_SYNC=1 JUDGE=9b MODE=overfit OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike \
 #           sbatch --export=ALL scripts/slurm/rl_generator_run_9b.sh
-#   JUDGE = 9b | 397b     MODE = overfit | full | epoch1 | full5
+#   JUDGE = 9b | 397b     MODE = overfit | full | epoch1 | full5 | frac10ep10
 #   full5 = full-dataset 5-epoch production run (325 steps; ckpt + validate every 32).
+#   frac10ep10 = 10% of train (417 rows), 10 epochs (60 steps; ckpt + validate every 6),
+#                validating on 50% of the val split. Pins JUDGE_ENTRYPOINT=serve.
 #   B0_ROLLOUT_SYNC=1 turns on the Step-3b rollout-sync hook (writes rollout_sync.json).
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
@@ -43,9 +45,20 @@ mkdir -p "$WANDB_DIR"
 WANDB_BIN=${WANDB_BIN:-/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/wandb}
 
 JUDGE=${JUDGE:?set JUDGE=9b|397b}
-MODE=${MODE:?set MODE=overfit|full|epoch1|full5}
+MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep10}
 case "$JUDGE" in 9b|397b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
-case "$MODE" in overfit|full|epoch1|full5) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
+case "$MODE" in overfit|full|epoch1|full5|frac10ep10) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
+
+# Judge HTTP frontend, PINNED per mode -- never inherited from the submitting shell. An
+# ambient-only JUDGE_ENTRYPOINT would mean forgetting it at submission silently falls back to
+# the legacy module frontend, costing ~5 h of validation throughput with nothing in the log
+# recording which frontend served the run. Same reasoning as the concurrency pin below, and
+# the same failure the 13634 incident taught us.
+case "$MODE" in
+  frac10ep10) JUDGE_ENTRYPOINT=serve ;;
+  *)          JUDGE_ENTRYPOINT=module ;;   # full5 and earlier modes: byte-identical to job 14217
+esac
+export JUDGE_ENTRYPOINT
 case "$JUDGE" in
   9b)   JUDGE_MODEL=Qwen/Qwen3.5-9B;                  TP=1; DP=8 ;;
   397b) JUDGE_MODEL=Qwen/Qwen3.5-397B-A17B-GPTQ-Int4; TP=8; DP=1 ;;
@@ -66,9 +79,11 @@ rm -f "$ENDPOINT_FILE"
 
 echo ">> RL-gen atomic 9B run: JUDGE=$JUDGE MODEL=$JUDGE_MODEL MODE=$MODE job=$SLURM_JOB_ID"
 echo ">> nodes: judge=$NODE_JUDGE trainer=$NODE_TRAIN  run_dir=$RUN_DIR"
+echo "=== judge entrypoint pinned: $JUDGE_ENTRYPOINT (from MODE=$MODE, not ambient env) ==="
 
 # --- judge step on node0 (concurrent, backgrounded; frozen 9B judge, unchanged) ---
 MODEL=$JUDGE_MODEL TP=$TP DP=$DP JUDGE_ENDPOINT_FILE=$ENDPOINT_FILE \
+  JUDGE_ENTRYPOINT=$JUDGE_ENTRYPOINT \
   srun --nodes=1 --ntasks=1 --nodelist="$NODE_JUDGE" --gres=gpu:8 --overlap \
   bash scripts/slurm/judge_serve_9b_replicas.sh &
 JUDGE_PID=$!

@@ -1,8 +1,25 @@
 # tests/test_rl_9b_launcher.py
 import pathlib
+import re
+import subprocess
+
 S = pathlib.Path("scripts/slurm/rl_generator_train_9b.sh").read_text()
 SINGLE_NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b_1node.sh").read_text()
 RUN_2NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b.sh").read_text()
+JUDGE_SERVE = pathlib.Path("scripts/slurm/judge_serve_9b_replicas.sh").read_text()
+
+
+def mode_arm(name: str) -> str:
+    """Text of one `case "$MODE"` arm in the trainer script.
+
+    Assertions about a mode must be scoped to its own arm: now that more than one mode
+    exists, a plain substring check over the whole file cannot tell "full5 caps the
+    dataset" from "some other mode does".
+    """
+    start = S.index(f"  {name})")
+    rest = S[start + len(name) + 4:]
+    end = re.search(r"^(  \w+\)|esac)", rest, re.M)
+    return rest[: end.start()] if end else rest
 
 
 def test_judge_concurrency_is_pinned_not_inherited():
@@ -44,9 +61,114 @@ def test_full5_mode_pins_the_whole_cadence_and_keeps_every_checkpoint():
 def test_full5_does_not_cap_the_dataset():
     # Job 13634 was the HALF run: data.train_max_samples=2048 / val_max_samples=352, passed via
     # EXTRA_OVERRIDES. full5 must run the full split (4174 train / 705 val), so neither cap may
-    # be baked into the launcher.
-    assert "train_max_samples" not in S
-    assert "val_max_samples" not in S
+    # be baked into ITS arm. Scoped to the arm because frac10ep10 legitimately caps both.
+    full5 = mode_arm("full5")
+    assert "train_max_samples" not in full5
+    assert "val_max_samples" not in full5
+
+
+def test_frac10ep10_pins_the_subsets_and_the_per_epoch_cadence():
+    # 417 = 10% of 4174; veRL drops the last partial batch, so 417/64 -> 6 steps/epoch and
+    # 10 epochs -> 60 steps. save_freq=test_freq=6 keeps ckpts and val on the same epoch grid.
+    # 352 = 50% of the 705-row val split, and at seed 42 is the same subset the half-data run
+    # used, so val is comparable across the two runs.
+    arm = mode_arm("frac10ep10")
+    for k in (
+        "data.train_max_samples=417",
+        "data.val_max_samples=352",
+        "trainer.total_epochs=10",
+        "trainer.save_freq=6",
+        "trainer.test_freq=6",
+        "trainer.val_before_train=True",
+        "trainer.max_actor_ckpt_to_keep=null",
+    ):
+        assert k in arm, f"frac10ep10 must pin {k}"
+    # save_freq already equals steps_per_epoch, so the epoch-end hook would double-save.
+    assert "export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0" in arm
+    # Batch size stays at the config default: changing it would add a second variable versus
+    # full5. (The bare key appears in the guard's protected list; only an assignment is wrong.)
+    assert "data.train_batch_size=" not in arm
+    assert "overfit|full|epoch1|full5|frac10ep10" in RUN_2NODE
+
+
+def test_frac10ep10_rejects_extra_overrides_that_collide_with_pinned_keys():
+    # Hydra gives the LAST occurrence of a key priority and EXTRA_OVERRIDES is appended after
+    # "${OVR[@]}", so an ambient value silently beats everything the arm pins -- the same
+    # --export=ALL inheritance that produced 13634. The arm must refuse to launch instead.
+    arm = mode_arm("frac10ep10")
+    assert "ERROR: EXTRA_OVERRIDES sets" in arm
+    assert "exit 5" in arm
+    for protected in (
+        "data.train_max_samples",
+        "data.val_max_samples",
+        "data.train_batch_size",
+        "trainer.total_epochs",
+        "trainer.save_freq",
+        "trainer.test_freq",
+        "trainer.val_before_train",
+        "trainer.max_actor_ckpt_to_keep",
+    ):
+        assert protected in arm, f"guard must protect {protected}"
+
+
+def test_frac10ep10_extra_overrides_guard_actually_fires():
+    # Functional counterpart to the static test above: extract the real guard text and run it,
+    # so a broken `case` pattern cannot pass review by merely containing the right key names.
+    start = S.index("    for _protected in")
+    guard = S[start : S.index("done ;;", start) + len("done")]
+    script = 'set -uo pipefail\nEXTRA_OVERRIDES="$1"\n' + guard
+    for value, expected in (
+        ("", 0),                                        # nothing set -> proceed
+        ("trainer.total_epochs=3", 5),                  # collides with a pinned key
+        ("+trainer.total_epochs=3", 5),                 # Hydra append form collides too
+        ("data.val_max_samples=99", 5),
+        ("trainer.max_actor_ckpt_to_keep=6", 5),        # the 13634 value
+        ("actor_rollout_ref.actor.optim.lr=2e-5", 0),   # unpinned key: escape hatch survives
+        ("trainer.total_epochs_extra=3", 0),            # near-miss must not false-positive
+    ):
+        proc = subprocess.run(["bash", "-c", script, "_", value], capture_output=True, text=True)
+        assert proc.returncode == expected, f"EXTRA_OVERRIDES={value!r}: {proc.stderr}"
+
+
+def test_judge_entrypoint_is_pinned_per_mode_not_inherited():
+    # If the entrypoint were only forwarded from the environment, omitting it at submission
+    # would silently fall back to the legacy module frontend -- ~5 h of lost validation
+    # throughput, with nothing in the log recording which frontend actually served the run.
+    assert "case \"$MODE\" in\n  frac10ep10) JUDGE_ENTRYPOINT=serve ;;" in RUN_2NODE
+    assert "*)          JUDGE_ENTRYPOINT=module ;;" in RUN_2NODE
+    # A `${JUDGE_ENTRYPOINT:-...}` in the driver would re-open the ambient hole.
+    assert "${JUDGE_ENTRYPOINT:-" not in RUN_2NODE
+    assert "export JUDGE_ENTRYPOINT" in RUN_2NODE
+    # Forwarded explicitly to the judge step, and recorded in the log.
+    assert "JUDGE_ENTRYPOINT=$JUDGE_ENTRYPOINT" in RUN_2NODE
+    assert "=== judge entrypoint pinned:" in RUN_2NODE
+
+
+def test_judge_serve_script_switches_frontend_and_defaults_to_legacy():
+    # Default must stay byte-identical to what job 14217 ran, so full5 remains reproducible.
+    assert 'JUDGE_ENTRYPOINT=${JUDGE_ENTRYPOINT:-module}' in JUDGE_SERVE
+    assert "module) SERVE_CMD=(\"$PY\" -m vllm.entrypoints.openai.api_server" in JUDGE_SERVE
+    assert 'SERVE_CMD=("$VLLM_BIN" serve "$MODEL")' in JUDGE_SERVE
+    # Jobs 14359 vs 14361 measured 0.576 vs 0.585 req/s: the flag does nothing, so never pass
+    # it. Comments are stripped first -- the rationale is documented in one of them.
+    code = "\n".join(l for l in JUDGE_SERVE.splitlines() if not l.lstrip().startswith("#"))
+    assert "--api-server-count" not in code
+
+
+def test_judge_serve_script_rejects_an_unknown_frontend():
+    # Functional: the entrypoint case block runs before any mkdir/GPU work, so this exits
+    # cleanly on any machine and proves a typo fails loudly instead of picking a default.
+    proc = subprocess.run(
+        ["bash", "scripts/slurm/judge_serve_9b_replicas.sh"],
+        # SLURM_JOB_ID is required by the endpoint-file default and the script runs under
+        # `set -u`; it is always present under Slurm.
+        env={"PATH": "/usr/bin:/bin", "SLURM_JOB_ID": "0", "JUDGE_ENTRYPOINT": "bogus"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert proc.returncode == 5, proc.stderr
+    assert "bad JUDGE_ENTRYPOINT=bogus" in proc.stderr
 
 
 def test_lora_target_is_attn_mlp_not_all_linear_excludes_visual_and_mtp():

@@ -182,6 +182,48 @@ case "$MODE" in
       # delete the first four of this run's ten checkpoints.
       trainer.max_actor_ckpt_to_keep=null
     ) ;;
+  frac10ep10)
+    # Low-compute contrast arm to full5: 10% of the train split, 10 epochs, one checkpoint and
+    # one validation pass per epoch. The question is whether the smaller slice overfits MORE,
+    # which reads off train/val divergence WITHIN this run (10 views per sample vs full5's 5).
+    # This is NOT a matched-compute comparison: 60 steps is ~18% of full5's 325, so a final-val
+    # gap between the two runs must not be read as coverage-vs-repetition.
+    #
+    # 417 = 10% of 4174. veRL drops the last partial batch, so 417/64 -> 6 steps/epoch and
+    # 10 epochs -> 60 steps. save_freq=test_freq=6 puts checkpoints and validation on the same
+    # epoch-aligned grid (6,12,...,60), so every saved ckpt has a val score. Because save_freq
+    # already equals steps_per_epoch, the epoch-end hook is turned OFF -- left on it would fire
+    # at the same steps and write 10 duplicate checkpoints (~190 GB).
+    #
+    # 352 = 50% of the 705-row val split. At seed 42 this is the SAME subset the half-data run
+    # used (data/.../grpo/val_used352.meta.json), so val is comparable across the two runs.
+    # Subsampling is native to veRL (rl_dataset.py: rng.choice(total, size, replace=False)
+    # under data.shuffle=true); no new parquet files are needed.
+    export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0
+    OVR+=(
+      data.train_max_samples=417
+      data.val_max_samples=352
+      trainer.total_epochs=10
+      trainer.save_freq=6
+      trainer.test_freq=6
+      trainer.val_before_train=True
+      trainer.max_actor_ckpt_to_keep=null
+    )
+    # Hydra gives the LAST occurrence of a key priority, and EXTRA_OVERRIDES is appended after
+    # "${OVR[@]}" below. A stray ambient value -- sbatch --export=ALL propagates the submitting
+    # shell, the same mechanism behind the 13634 incident -- would therefore silently beat every
+    # value pinned above. Refuse to launch instead of running 21 h with a config nobody chose.
+    for _protected in data.train_max_samples data.val_max_samples data.train_batch_size \
+                      trainer.total_epochs trainer.save_freq trainer.test_freq \
+                      trainer.val_before_train trainer.max_actor_ckpt_to_keep; do
+      case " ${EXTRA_OVERRIDES:-} " in
+        *" $_protected="*|*"+$_protected="*)
+          echo "ERROR: EXTRA_OVERRIDES sets '$_protected', which MODE=frac10ep10 pins." >&2
+          echo "       EXTRA_OVERRIDES=${EXTRA_OVERRIDES}" >&2
+          echo "       Unpinned keys are still allowed; remove this one and resubmit." >&2
+          exit 5 ;;
+      esac
+    done ;;
 esac
 
 echo "+ $PY -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen3_8b_grpo_turing ${OVR[*]} ${EXTRA_OVERRIDES:-}"
