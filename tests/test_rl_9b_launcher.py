@@ -67,13 +67,14 @@ def test_full5_does_not_cap_the_dataset():
 
 
 def test_frac10ep10_pins_the_subsets_and_the_per_epoch_cadence():
-    # 417 = 10% of 4174; veRL drops the last partial batch, so 417/64 -> 6 steps/epoch and
-    # 10 epochs -> 60 steps. save_freq=test_freq=6 keeps ckpts and val on the same epoch grid.
+    # 384 = 6 x 64 exactly (9.2% of 4174). Chosen over the round 10% (417) because the train
+    # loader drops the last partial batch, so 417 would rotate 33 different rows out per epoch;
+    # 384 means every sample is seen exactly once per epoch and exactly 10 times over the run. save_freq=test_freq=6 keeps ckpts and val on the same epoch grid.
     # 352 = 50% of the 705-row val split, and at seed 42 is the same subset the half-data run
     # used, so val is comparable across the two runs.
     arm = mode_arm("frac10ep10")
     for k in (
-        "data.train_max_samples=417",
+        "data.train_max_samples=384",
         "data.val_max_samples=352",
         "trainer.total_epochs=10",
         "trainer.save_freq=6",

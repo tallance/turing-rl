@@ -189,11 +189,18 @@ case "$MODE" in
     # This is NOT a matched-compute comparison: 60 steps is ~18% of full5's 325, so a final-val
     # gap between the two runs must not be read as coverage-vs-repetition.
     #
-    # 417 = 10% of 4174. veRL drops the last partial batch, so 417/64 -> 6 steps/epoch and
-    # 10 epochs -> 60 steps. save_freq=test_freq=6 puts checkpoints and validation on the same
-    # epoch-aligned grid (6,12,...,60), so every saved ckpt has a val score. Because save_freq
-    # already equals steps_per_epoch, the epoch-end hook is turned OFF -- left on it would fire
-    # at the same steps and write 10 duplicate checkpoints (~190 GB).
+    # 384 = 6 x 64, i.e. 9.2% of the 4174-row train split, NOT the round 10% (417).
+    # The train loader sets drop_last=True (ray_trainer.py:409), so with 417 rows each epoch
+    # would train on 384 and discard 33 -- and because the sampler reshuffles per epoch, a
+    # DIFFERENT 33 each time, leaving samples seen 9.21 times on average instead of 10 and
+    # unevenly. 384 divides the batch exactly: nothing is dropped, every sample is seen exactly
+    # once per epoch and exactly 10 times over the run. Step count is identical either way
+    # (6 steps/epoch, 60 total), so the clean repeat costs nothing.
+    #
+    # save_freq=test_freq=6 puts checkpoints and validation on the same epoch-aligned grid
+    # (6,12,...,60), so every saved ckpt has a val score. Because save_freq already equals
+    # steps_per_epoch, the epoch-end hook is turned OFF -- left on it would fire at the same
+    # steps and write 10 duplicate checkpoints (~190 GB).
     #
     # 352 = 50% of the 705-row val split. At seed 42 this is the SAME subset the half-data run
     # used (data/.../grpo/val_used352.meta.json), so val is comparable across the two runs.
@@ -201,7 +208,7 @@ case "$MODE" in
     # under data.shuffle=true); no new parquet files are needed.
     export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0
     OVR+=(
-      data.train_max_samples=417
+      data.train_max_samples=384
       data.val_max_samples=352
       trainer.total_epochs=10
       trainer.save_freq=6
