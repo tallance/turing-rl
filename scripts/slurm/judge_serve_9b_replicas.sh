@@ -18,8 +18,7 @@
 #
 # Env: MODEL (default Qwen/Qwen3.5-9B), TP (default 1), DP (default 8),
 #   PORT (default derived from job id), REASONING_PARSER (default qwen3),
-#   JUDGE_ENDPOINT_FILE (default logs/judge_endpoint-<jobid>.txt),
-#   JUDGE_ENTRYPOINT (module|serve, default module -- see the case block below).
+#   JUDGE_ENDPOINT_FILE (default logs/judge_endpoint-<jobid>.txt).
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -45,36 +44,15 @@ esac
 AR=(); [ "$TP" -gt 1 ] && AR=(--disable-custom-all-reduce)
 DPFLAG=(); [ "$DP" -gt 1 ] && DPFLAG=(--data-parallel-size "$DP")
 
-# JUDGE_ENTRYPOINT selects the HTTP frontend. Same vLLM install, same weights, same flags --
-# only the launcher differs, so judge outputs are unchanged.
-#   module (default) : python -m vllm.entrypoints.openai.api_server. What job 14217 ran.
-#   serve            : the `vllm serve` CLI. Replay 14322 measured 0.455 req/s on this
-#                      frontend against 0.115-0.148 req/s for the module path under the same
-#                      DP-8 topology, because the module path progressively collapses all
-#                      traffic onto engine 000 under sustained load.
-# Do NOT add --api-server-count: jobs 14359 vs 14361 measured 0.576 vs 0.585 req/s, i.e. the
-# flag does nothing. The gain is the entrypoint, not the flag.
-JUDGE_ENTRYPOINT=${JUDGE_ENTRYPOINT:-module}
-case "$JUDGE_ENTRYPOINT" in
-  module) SERVE_CMD=("$PY" -m vllm.entrypoints.openai.api_server --model "$MODEL") ;;
-  serve)
-    VLLM_BIN="$(dirname "$PY")/vllm"
-    [ -x "$VLLM_BIN" ] || { echo "ERROR: JUDGE_ENTRYPOINT=serve but no vLLM CLI at $VLLM_BIN" >&2; exit 5; }
-    SERVE_CMD=("$VLLM_BIN" serve "$MODEL") ;;
-  *) echo "ERROR: bad JUDGE_ENTRYPOINT=$JUDGE_ENTRYPOINT (want module|serve)" >&2; exit 5 ;;
-esac
-
 mkdir -p "$REPO/logs"
 echo "============================================"
 echo "9B DP judge server: MODEL=$MODEL TP=$TP DP=$DP port=$PORT"
-echo "=== judge entrypoint: $JUDGE_ENTRYPOINT ==="
 echo "date=$(date) host=$(hostname) endpoint_file=$JUDGE_ENDPOINT_FILE"
-"$PY" -c 'import vllm; print("judge vllm version:", vllm.__version__)'
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 echo "============================================"
 
-"${SERVE_CMD[@]}" \
-  --download-dir "$HF_HOME" \
+$PY -m vllm.entrypoints.openai.api_server \
+  --model "$MODEL" --download-dir "$HF_HOME" \
   --tensor-parallel-size "$TP" "${DPFLAG[@]}" \
   --max-model-len 32768 --gpu-memory-utilization 0.85 --dtype bfloat16 \
   --reasoning-parser "$REASONING_PARSER" "${AR[@]}" \

@@ -6,7 +6,6 @@ import subprocess
 S = pathlib.Path("scripts/slurm/rl_generator_train_9b.sh").read_text()
 SINGLE_NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b_1node.sh").read_text()
 RUN_2NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b.sh").read_text()
-JUDGE_SERVE = pathlib.Path("scripts/slurm/judge_serve_9b_replicas.sh").read_text()
 
 
 def mode_arm(name: str) -> str:
@@ -128,49 +127,6 @@ def test_frac10ep10_extra_overrides_guard_actually_fires():
     ):
         proc = subprocess.run(["bash", "-c", script, "_", value], capture_output=True, text=True)
         assert proc.returncode == expected, f"EXTRA_OVERRIDES={value!r}: {proc.stderr}"
-
-
-def test_judge_entrypoint_is_pinned_to_the_frontend_job_14217_used():
-    # Every mode must serve the judge exactly as job 14217 did, so reward values stay
-    # comparable across runs. `serve` was trialled and rejected on measurement: job 15131 ran
-    # 0.18.0 + `vllm serve` for 75 min and collapsed just like the module frontend
-    # (0.135 req/s, 43 HTTP errors). Job 14322's 0.455 req/s came from an 18.8 min window,
-    # entirely before the ~20 min onset. Only vLLM 0.26.0 sustains, so the fix is the version.
-    assert "JUDGE_ENTRYPOINT=module" in RUN_2NODE
-    assert "JUDGE_ENTRYPOINT=serve" not in RUN_2NODE
-    # A `${JUDGE_ENTRYPOINT:-...}` in the driver would re-open the ambient hole.
-    assert "${JUDGE_ENTRYPOINT:-" not in RUN_2NODE
-    assert "export JUDGE_ENTRYPOINT" in RUN_2NODE
-    # Forwarded explicitly to the judge step so the value cannot drift.
-    assert "JUDGE_ENTRYPOINT=$JUDGE_ENTRYPOINT" in RUN_2NODE
-    assert "=== judge entrypoint pinned:" in RUN_2NODE
-
-
-def test_judge_serve_script_switches_frontend_and_defaults_to_legacy():
-    # Default must stay byte-identical to what job 14217 ran, so full5 remains reproducible.
-    assert 'JUDGE_ENTRYPOINT=${JUDGE_ENTRYPOINT:-module}' in JUDGE_SERVE
-    assert "module) SERVE_CMD=(\"$PY\" -m vllm.entrypoints.openai.api_server" in JUDGE_SERVE
-    assert 'SERVE_CMD=("$VLLM_BIN" serve "$MODEL")' in JUDGE_SERVE
-    # Jobs 14359 vs 14361 measured 0.576 vs 0.585 req/s: the flag does nothing, so never pass
-    # it. Comments are stripped first -- the rationale is documented in one of them.
-    code = "\n".join(l for l in JUDGE_SERVE.splitlines() if not l.lstrip().startswith("#"))
-    assert "--api-server-count" not in code
-
-
-def test_judge_serve_script_rejects_an_unknown_frontend():
-    # Functional: the entrypoint case block runs before any mkdir/GPU work, so this exits
-    # cleanly on any machine and proves a typo fails loudly instead of picking a default.
-    proc = subprocess.run(
-        ["bash", "scripts/slurm/judge_serve_9b_replicas.sh"],
-        # SLURM_JOB_ID is required by the endpoint-file default and the script runs under
-        # `set -u`; it is always present under Slurm.
-        env={"PATH": "/usr/bin:/bin", "SLURM_JOB_ID": "0", "JUDGE_ENTRYPOINT": "bogus"},
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert proc.returncode == 5, proc.stderr
-    assert "bad JUDGE_ENTRYPOINT=bogus" in proc.stderr
 
 
 def test_lora_target_is_attn_mlp_not_all_linear_excludes_visual_and_mtp():

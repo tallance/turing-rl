@@ -48,23 +48,6 @@ JUDGE=${JUDGE:?set JUDGE=9b|397b}
 MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep10}
 case "$JUDGE" in 9b|397b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
 case "$MODE" in overfit|full|epoch1|full5|frac10ep10) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
-
-# Judge HTTP frontend, PINNED per mode -- never inherited from the submitting shell, for the
-# same reason judge concurrency is pinned below (13634).
-#
-# EVERY mode uses `module`, i.e. byte-identical to job 14217's judge. `serve` was trialled for
-# frac10ep10 and rejected on measurement: job 15131 ran 0.18.0 + `vllm serve` for 75 min and
-# collapsed exactly like the module frontend (0.135 req/s, 8 engines -> 2, 43 HTTP errors).
-# The earlier 0.455 req/s for that combination (job 14322) is not reproducible -- it was
-# measured over 18.8 min, i.e. entirely before the ~20 min collapse onset.
-#
-# Only vLLM 0.26.0 sustains throughput (0.576/0.585 req/s over 77 min, jobs 14359/14361), so
-# the fix is the VERSION, not the entrypoint. Upgrading is deliberately NOT done here: it
-# would save ~6 h on a ~27 h run while changing the reward model out from under a comparison
-# with the 5-epoch run. See scripts/slurm/judge_serve_9b_replicas.sh for the serve branch,
-# which stays available but unused.
-JUDGE_ENTRYPOINT=module
-export JUDGE_ENTRYPOINT
 case "$JUDGE" in
   9b)   JUDGE_MODEL=Qwen/Qwen3.5-9B;                  TP=1; DP=8 ;;
   397b) JUDGE_MODEL=Qwen/Qwen3.5-397B-A17B-GPTQ-Int4; TP=8; DP=1 ;;
@@ -85,11 +68,9 @@ rm -f "$ENDPOINT_FILE"
 
 echo ">> RL-gen atomic 9B run: JUDGE=$JUDGE MODEL=$JUDGE_MODEL MODE=$MODE job=$SLURM_JOB_ID"
 echo ">> nodes: judge=$NODE_JUDGE trainer=$NODE_TRAIN  run_dir=$RUN_DIR"
-echo "=== judge entrypoint pinned: $JUDGE_ENTRYPOINT (from MODE=$MODE, not ambient env) ==="
 
 # --- judge step on node0 (concurrent, backgrounded; frozen 9B judge, unchanged) ---
 MODEL=$JUDGE_MODEL TP=$TP DP=$DP JUDGE_ENDPOINT_FILE=$ENDPOINT_FILE \
-  JUDGE_ENTRYPOINT=$JUDGE_ENTRYPOINT \
   srun --nodes=1 --ntasks=1 --nodelist="$NODE_JUDGE" --gres=gpu:8 --overlap \
   bash scripts/slurm/judge_serve_9b_replicas.sh &
 JUDGE_PID=$!
