@@ -130,16 +130,18 @@ def test_frac10ep10_extra_overrides_guard_actually_fires():
         assert proc.returncode == expected, f"EXTRA_OVERRIDES={value!r}: {proc.stderr}"
 
 
-def test_judge_entrypoint_is_pinned_per_mode_not_inherited():
-    # If the entrypoint were only forwarded from the environment, omitting it at submission
-    # would silently fall back to the legacy module frontend -- ~5 h of lost validation
-    # throughput, with nothing in the log recording which frontend actually served the run.
-    assert "case \"$MODE\" in\n  frac10ep10) JUDGE_ENTRYPOINT=serve ;;" in RUN_2NODE
-    assert "*)          JUDGE_ENTRYPOINT=module ;;" in RUN_2NODE
+def test_judge_entrypoint_is_pinned_to_the_frontend_job_14217_used():
+    # Every mode must serve the judge exactly as job 14217 did, so reward values stay
+    # comparable across runs. `serve` was trialled and rejected on measurement: job 15131 ran
+    # 0.18.0 + `vllm serve` for 75 min and collapsed just like the module frontend
+    # (0.135 req/s, 43 HTTP errors). Job 14322's 0.455 req/s came from an 18.8 min window,
+    # entirely before the ~20 min onset. Only vLLM 0.26.0 sustains, so the fix is the version.
+    assert "JUDGE_ENTRYPOINT=module" in RUN_2NODE
+    assert "JUDGE_ENTRYPOINT=serve" not in RUN_2NODE
     # A `${JUDGE_ENTRYPOINT:-...}` in the driver would re-open the ambient hole.
     assert "${JUDGE_ENTRYPOINT:-" not in RUN_2NODE
     assert "export JUDGE_ENTRYPOINT" in RUN_2NODE
-    # Forwarded explicitly to the judge step, and recorded in the log.
+    # Forwarded explicitly to the judge step so the value cannot drift.
     assert "JUDGE_ENTRYPOINT=$JUDGE_ENTRYPOINT" in RUN_2NODE
     assert "=== judge entrypoint pinned:" in RUN_2NODE
 

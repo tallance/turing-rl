@@ -22,7 +22,7 @@
 #   JUDGE = 9b | 397b     MODE = overfit | full | epoch1 | full5 | frac10ep10
 #   full5 = full-dataset 5-epoch production run (325 steps; ckpt + validate every 32).
 #   frac10ep10 = 10% of train (417 rows), 10 epochs (60 steps; ckpt + validate every 6),
-#                validating on 50% of the val split. Pins JUDGE_ENTRYPOINT=serve.
+#                validating on 50% of the val split. Judge identical to full5.
 #   B0_ROLLOUT_SYNC=1 turns on the Step-3b rollout-sync hook (writes rollout_sync.json).
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
@@ -49,15 +49,21 @@ MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep10}
 case "$JUDGE" in 9b|397b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
 case "$MODE" in overfit|full|epoch1|full5|frac10ep10) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
 
-# Judge HTTP frontend, PINNED per mode -- never inherited from the submitting shell. An
-# ambient-only JUDGE_ENTRYPOINT would mean forgetting it at submission silently falls back to
-# the legacy module frontend, costing ~5 h of validation throughput with nothing in the log
-# recording which frontend served the run. Same reasoning as the concurrency pin below, and
-# the same failure the 13634 incident taught us.
-case "$MODE" in
-  frac10ep10) JUDGE_ENTRYPOINT=serve ;;
-  *)          JUDGE_ENTRYPOINT=module ;;   # full5 and earlier modes: byte-identical to job 14217
-esac
+# Judge HTTP frontend, PINNED per mode -- never inherited from the submitting shell, for the
+# same reason judge concurrency is pinned below (13634).
+#
+# EVERY mode uses `module`, i.e. byte-identical to job 14217's judge. `serve` was trialled for
+# frac10ep10 and rejected on measurement: job 15131 ran 0.18.0 + `vllm serve` for 75 min and
+# collapsed exactly like the module frontend (0.135 req/s, 8 engines -> 2, 43 HTTP errors).
+# The earlier 0.455 req/s for that combination (job 14322) is not reproducible -- it was
+# measured over 18.8 min, i.e. entirely before the ~20 min collapse onset.
+#
+# Only vLLM 0.26.0 sustains throughput (0.576/0.585 req/s over 77 min, jobs 14359/14361), so
+# the fix is the VERSION, not the entrypoint. Upgrading is deliberately NOT done here: it
+# would save ~6 h on a ~27 h run while changing the reward model out from under a comparison
+# with the 5-epoch run. See scripts/slurm/judge_serve_9b_replicas.sh for the serve branch,
+# which stays available but unused.
+JUDGE_ENTRYPOINT=module
 export JUDGE_ENTRYPOINT
 case "$JUDGE" in
   9b)   JUDGE_MODEL=Qwen/Qwen3.5-9B;                  TP=1; DP=8 ;;
