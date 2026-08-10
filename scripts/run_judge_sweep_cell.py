@@ -36,7 +36,8 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -123,11 +124,25 @@ def _final_metadata(
     }
 
 
+def _raise_on_scoring_errors(err: int) -> None:
+    """Make incomplete shards fail after all assigned pairs are attempted."""
+    if err:
+        raise RuntimeError(f"judge shard completed with {err} scoring error(s)")
+
+
 def _parse_endpoints(raw: str) -> list[str]:
     endpoints = [e.strip().rstrip("/") for e in raw.split(",") if e.strip()]
     if not endpoints:
         raise ValueError("--endpoints must contain at least one endpoint")
     return endpoints
+
+
+def _api_key_for_endpoint(endpoint: str, resolve_remote_key: Callable[[], str]) -> str:
+    """Use a dummy key for loopback vLLM; keep strict lookup for remote APIs."""
+    hostname = urlparse(endpoint).hostname
+    if hostname in {"localhost", "127.0.0.1", "::1"}:
+        return os.environ.get("OPENAI_API_KEY") or "EMPTY"
+    return resolve_remote_key()
 
 
 async def async_main() -> None:
@@ -195,7 +210,7 @@ async def async_main() -> None:
         flush=True,
     )
 
-    api_key = resolve_judge_api_key()
+    api_key = _api_key_for_endpoint(my_endpoint, resolve_judge_api_key)
     started = time.time()
 
     # Rank-0 writes run metadata (before scoring so it exists even if the run is killed).
@@ -279,6 +294,8 @@ async def async_main() -> None:
         )
         with open(meta_path, "w", encoding="utf-8") as fh:
             json.dump(final_metadata, fh, indent=2)
+
+    _raise_on_scoring_errors(counters["err"])
 
 
 def main() -> None:

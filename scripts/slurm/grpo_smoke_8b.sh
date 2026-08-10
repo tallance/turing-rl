@@ -55,9 +55,8 @@ export PERSONA_OPENAI_MAX_RETRIES=3
 export TURING_JUDGE_MAX_CONCURRENCY=4
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 
-# Force the judge request to use json_schema (with 'rating' required) instead
-# of json_object. Fixes Qwen3-8B collapsing to '{}' after </think>. See
-# reward.py:_openai_chat for the guarded branch. 397B path leaves this unset.
+# Force the judge request to use the full prompt-matched JSON schema instead
+# of unconstrained json_object. See reward.py:_resolve_response_format.
 export PERSONA_JUDGE_JSON_SCHEMA=1
 
 # Dump every judge call for the smoke. Separate dir from the 397B session so

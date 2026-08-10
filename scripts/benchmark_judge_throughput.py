@@ -2,8 +2,8 @@
 
 Sweeps client concurrency [1, 4, 16, 64] against each provided endpoint. Uses
 real Turing prompts cycled from a prior 397B production dump. Payload matches
-the schema-fix production path (response_format=json_schema with required
-rating; reasoning enabled). Reports per-(endpoint, concurrency) throughput,
+the production path (response_format=json_schema with the full verdict schema;
+reasoning enabled). Reports per-(endpoint, concurrency) throughput,
 latency, and parse rate, and writes:
   - <out_dir>/results-<ts>.jsonl : one row per HTTP call
   - <out_dir>/report-<ts>.md     : human-readable summary with reproduce info
@@ -37,6 +37,7 @@ import aiohttp
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+from shared.judge_prompts import TURING_RESPONSE_SCHEMA  # noqa: E402
 from training.grpo.reward import _extract_json  # noqa: E402
 
 
@@ -90,12 +91,7 @@ def build_body(prompt: str, model: str = "Qwen/Qwen3-8B") -> dict:
             "json_schema": {
                 "name": "turing_verdict",
                 "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {"rating": {"type": "integer", "minimum": 1, "maximum": 7}},
-                    "required": ["rating"],
-                    "additionalProperties": True,
-                },
+                "schema": TURING_RESPONSE_SCHEMA,
             },
         },
     }
@@ -249,7 +245,7 @@ def write_report(
         "",
         f"- Model: `{meta['model']}`",
         f"- Reasoning parser: `--reasoning-parser qwen3`",
-        f"- Payload: `response_format=json_schema` (required rating), `reasoning.enabled=true`, `max_completion_tokens=8192`",
+        f"- Payload: `response_format=json_schema` (full 37-field verdict), `reasoning.enabled=true`, `max_completion_tokens=8192`",
         f"- TP configs: {meta['tps']}",
         f"- Client concurrency sweep: {meta['concurrencies']}",
         f"- Prompts per measurement: {meta['n']} (cycled from `{meta['dumps']}`)",

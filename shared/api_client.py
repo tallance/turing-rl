@@ -190,13 +190,14 @@ async def post_chat_async(
     *,
     semaphore,
     max_retries: int | None = None,
+    api_key: str | None = None,
 ) -> str:
     """Post a chat request with retries."""
     if aiohttp is None:
         raise ImportError("OpenRouter judge scoring requires aiohttp to be installed")
-    api_key = resolve_judge_api_key()
+    resolved_api_key = api_key or resolve_judge_api_key()
     url = openrouter_chat_url()
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
     if max_retries is None:
         max_retries = get_openai_max_retries()
     retry_sleep_seconds = max(0.0, float(os.environ.get("PERSONA_OPENAI_RETRY_SLEEP_SECONDS", "5")))

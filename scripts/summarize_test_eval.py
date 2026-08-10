@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import re
 import statistics
 import sys
 from pathlib import Path
@@ -29,8 +30,35 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.eval_rl_generator import directional_accuracy  # noqa: E402
 
 KEY_FIELDS = ("user_id", "post_id", "target_idx")
-# Display order; anything else found is appended alphabetically.
+# Display order; anything else found is appended in numeric step order.
 PREFERRED = ["9b-grpo-step0", "9b-grpo-step8", "9b-grpo-step16", "9b-grpo-step24", "9b-grpo-step32"]
+_TRAILING_INT = re.compile(r"(\d+)$")
+
+
+def _step_order(gen_key: str) -> tuple[str, int, str]:
+    """Sort generator keys by trailing step number rather than lexically."""
+    match = _TRAILING_INT.search(gen_key)
+    return (
+        gen_key[: match.start()] if match else gen_key,
+        int(match.group(1)) if match else -1,
+        gen_key,
+    )
+
+
+def declared_split(eval_root: Path) -> str:
+    """Read the recorded split-guard verdict for the output table."""
+    guard = eval_root / "split_guard.json"
+    if not guard.is_file():
+        return "UNVERIFIED (no split_guard.json)"
+    try:
+        record = json.loads(guard.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        return f"UNREADABLE split_guard.json ({exc})"
+    return (
+        f"{record.get('verdict', '?')} expect={record.get('expect', '?')} "
+        f"rows={record.get('eval_rows', '?')} users={record.get('eval_users', '?')} "
+        f"parquet={record.get('eval_parquet', '?')}"
+    )
 
 
 def load_rows(reward_dir: Path) -> list[dict]:
@@ -79,7 +107,11 @@ def main() -> None:
     found = {p.parents[3].name: p for p in root.glob(f"raw/*/sweep/{a.cell}/{a.mode}/reward")}
     if not found:
         raise SystemExit(f"FAIL: no reward dirs under {root}/raw/*/sweep/{a.cell}/{a.mode}")
-    order = [k for k in PREFERRED if k in found] + sorted(set(found) - set(PREFERRED))
+    order = [k for k in PREFERRED if k in found] + sorted(
+        set(found) - set(PREFERRED), key=_step_order
+    )
+    split_note = f"# split: {declared_split(root)}"
+    print(split_note + "\n")
 
     # Judge timeouts drop ~1-3% of pairs, and each checkpoint drops a DIFFERENT few. Scoring each
     # on whatever it happens to have would compare them over different subsets. Restrict every
@@ -151,7 +183,7 @@ def main() -> None:
             ",".join(cols) + "\n" + "\n".join(",".join(str(r[c]) for c in cols) for r in rows_out) + "\n")
         print(f"\nwrote {a.out_csv}", file=sys.stderr)
     if a.out_md:
-        Path(a.out_md).write_text(md + "\n")
+        Path(a.out_md).write_text(f"{split_note}\n\n{md}\n")
         print(f"wrote {a.out_md}", file=sys.stderr)
 
 

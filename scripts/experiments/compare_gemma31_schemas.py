@@ -21,6 +21,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from shared.judge_prompts import TURING_RESPONSE_PROPERTIES, TURING_RESPONSE_SCHEMA
+
 
 MODEL = "google/gemma-4-31B-it"
 CURRENT_SCHEMA = {
@@ -33,60 +35,10 @@ CURRENT_SCHEMA = {
 }
 
 
-def _string() -> dict[str, Any]:
-    return {"type": "string"}
-
-
-def _number(minimum: float, maximum: float) -> dict[str, Any]:
-    return {"type": "number", "minimum": minimum, "maximum": maximum}
-
-
-# Property insertion order intentionally matches the prompt's requested order.
-FULL_PROPERTIES: dict[str, dict[str, Any]] = {
-    "immediate_target_a": _string(),
-    "immediate_target_score_a": _number(0.0, 1.0),
-    "immediate_target_b": _string(),
-    "immediate_target_score_b": _number(0.0, 1.0),
-    "human_goal_a": _string(),
-    "human_goal_score_a": _number(0.0, 1.0),
-    "human_goal_b": _string(),
-    "human_goal_score_b": _number(0.0, 1.0),
-    "communication_style_a": _string(),
-    "communication_style_score_a": _number(0.0, 1.0),
-    "communication_style_b": _string(),
-    "communication_style_score_b": _number(0.0, 1.0),
-    "base_score_a": _number(0.0, 3.0),
-    "base_score_b": _number(0.0, 3.0),
-    "response_a_score": _number(0.0, 3.0),
-    "response_b_score": _number(0.0, 3.0),
-    "score_gap": _number(-3.0, 3.0),
-    "response_a_source_copy": _string(),
-    "source_copy_penalty_a": _number(0.0, 1.0),
-    "response_b_source_copy": _string(),
-    "source_copy_penalty_b": _number(0.0, 1.0),
-    "response_a_wrong_target_or_role": _string(),
-    "wrong_target_or_role_penalty_a": _number(0.0, 1.0),
-    "response_b_wrong_target_or_role": _string(),
-    "wrong_target_or_role_penalty_b": _number(0.0, 1.0),
-    "response_a_unsupported_adversarial_reframing": _string(),
-    "unsupported_adversarial_reframing_penalty_a": _number(0.0, 1.0),
-    "response_b_unsupported_adversarial_reframing": _string(),
-    "unsupported_adversarial_reframing_penalty_b": _number(0.0, 1.0),
-    "response_a_assistant_like": _string(),
-    "assistant_like_penalty_a": _number(0.0, 1.0),
-    "response_b_assistant_like": _string(),
-    "assistant_like_penalty_b": _number(0.0, 1.0),
-    "penalty_a": _number(0.0, 3.0),
-    "penalty_b": _number(0.0, 3.0),
-    "reasoning": _string(),
-    "rating": {"type": "integer", "minimum": 1, "maximum": 7},
-}
-FULL_SCHEMA = {
-    "type": "object",
-    "properties": FULL_PROPERTIES,
-    "required": list(FULL_PROPERTIES),
-    "additionalProperties": False,
-}
+# The minimal form is retained only as the historical control in this paired
+# experiment. Production uses the shared full schema below.
+FULL_PROPERTIES = TURING_RESPONSE_PROPERTIES
+FULL_SCHEMA = TURING_RESPONSE_SCHEMA
 SCHEMAS = {"current_minimal": CURRENT_SCHEMA, "full_prompt_schema": FULL_SCHEMA}
 
 

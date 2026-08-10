@@ -9,6 +9,7 @@ from scripts.experiments.compare_gemma31_schemas import (
     formulas_valid,
     schema_valid,
 )
+from shared.judge_prompts import TURING_RESPONSE_SCHEMA
 
 
 def _full_object():
@@ -37,6 +38,7 @@ def _full_object():
 
 
 def test_full_schema_is_ordered_rating_last_and_strict():
+    assert FULL_SCHEMA is TURING_RESPONSE_SCHEMA
     assert FULL_SCHEMA["required"] == list(FULL_PROPERTIES)
     assert FULL_SCHEMA["required"][-1] == "rating"
     assert FULL_SCHEMA["additionalProperties"] is False

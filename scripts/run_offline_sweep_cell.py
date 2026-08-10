@@ -5,7 +5,7 @@ import argparse, json, os, sys, time
 from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]; sys.path.insert(0, str(REPO_ROOT))
 import pandas as pd
-from shared.judge_prompts import TURING_PROMPT
+from shared.judge_prompts import TURING_PROMPT, TURING_RESPONSE_SCHEMA
 from shared.judge_utils import build_source_copy_warning, format_source_copy_watchlist
 from training.grpo.reward import _build_reward_dump_row   # DRY: shared viewer contract
 
@@ -35,9 +35,7 @@ def main() -> None:
     llm = LLM(model=MODEL_ID, tensor_parallel_size=args.tensor_parallel_size,
               gpu_memory_utilization=0.85, max_model_len=32768, dtype="bfloat16")
     tok = llm.get_tokenizer()
-    guided = GuidedDecodingParams(json={"type": "object",
-        "properties": {"rating": {"type": "integer", "minimum": 1, "maximum": 7}},
-        "required": ["rating"], "additionalProperties": True})
+    guided = GuidedDecodingParams(json=TURING_RESPONSE_SCHEMA)
     sp = SamplingParams(guided_decoding=guided, **SAMPLING_OFF)
     prompts, meta = [], []
     for row in pairs:

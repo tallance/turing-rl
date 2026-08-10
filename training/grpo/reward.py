@@ -31,7 +31,7 @@ from shared.api_client import (
     post_chat_async,
     resolve_judge_api_key,
 )
-from shared.judge_prompts import TURING_PROMPT
+from shared.judge_prompts import TURING_PROMPT, TURING_RESPONSE_SCHEMA
 from shared.judge_utils import (
     _coerce_turing_rating,
     _extract_turing_rating,
@@ -340,12 +340,15 @@ def compute_turing_length_info(response: str, ground_truth: str) -> dict[str, fl
 
 
 def _resolve_response_format() -> dict:
-    """json_object by default; strict json_schema (rating required) when PERSONA_JUDGE_JSON_SCHEMA=1."""
+    """Use the full prompt-matched schema when explicitly enabled."""
     if os.environ.get("PERSONA_JUDGE_JSON_SCHEMA") == "1":
-        return {"type": "json_schema", "json_schema": {"name": "turing_rating", "schema": {
-            "type": "object",
-            "properties": {"rating": {"type": "integer", "minimum": 1, "maximum": 7}},
-            "required": ["rating"], "additionalProperties": True}}}
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "turing_verdict",
+                "schema": TURING_RESPONSE_SCHEMA,
+            },
+        }
     return {"type": "json_object"}
 
 
@@ -418,7 +421,12 @@ async def _openai_chat(
         sampling=_sampling,
         chat_template_kwargs=_ctk,
     )
-    return await post_chat_async(session, payload, semaphore=_get_reward_judge_request_semaphore())
+    return await post_chat_async(
+        session,
+        payload,
+        semaphore=_get_reward_judge_request_semaphore(),
+        api_key=api_key,
+    )
 
 
 def _get_judge_max_completion_tokens() -> int:

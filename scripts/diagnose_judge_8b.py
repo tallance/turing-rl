@@ -4,7 +4,7 @@ Loads N real (context, human, generated) triples from a prior 397B judge dump,
 then sends each triple through the 8B judge under FOUR payload variants to
 isolate what's breaking:
 
-  V1 (prod)   response_format=json_object + reasoning=enabled + tokens=8192
+  V1 (prod)   full json_schema + reasoning=enabled + tokens=8192
   V2          same but response_format removed (drop constrained decoding)
   V3          same as V1 but reasoning disabled + '/no_think' appended
   V4          same as V1 but max_completion_tokens=16384
@@ -38,6 +38,7 @@ import aiohttp
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
+from shared.judge_prompts import TURING_RESPONSE_SCHEMA  # noqa: E402
 from training.grpo.reward import _extract_json  # noqa: E402  # canonical JSON extractor
 from shared.judge_utils import _extract_turing_rating  # noqa: E402  # regex fallback
 
@@ -147,21 +148,14 @@ def build_body(prompt: str, variant: str) -> dict:
         body["max_completion_tokens"] = 8192
 
     if variant in ("V1", "V4"):
-        # Use json_schema (not json_object): source-verified fix. json_object
-        # compiles to {"type":"object"}, so {} is legal and Qwen3-8B collapses
-        # to that ~50% after </think>. json_schema with required rating field
-        # forces the grammar to emit a rating before terminating.
+        # Use the production prompt-matched schema rather than an unconstrained
+        # json_object or the obsolete rating-only schema.
         body["response_format"] = {
             "type": "json_schema",
             "json_schema": {
                 "name": "turing_verdict",
                 "strict": True,
-                "schema": {
-                    "type": "object",
-                    "properties": {"rating": {"type": "integer", "minimum": 1, "maximum": 7}},
-                    "required": ["rating"],
-                    "additionalProperties": True,
-                },
+                "schema": TURING_RESPONSE_SCHEMA,
             },
         }
         body["reasoning"] = {"enabled": True}

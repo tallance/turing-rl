@@ -26,6 +26,11 @@
 #   DO_GEN=0 JUDGES="qwen35-27b qwen35-397b" bash scripts/launch_test_eval.sh
 #                                                          # judge-only re-run over existing pairs
 #   GEN_ONLY=9b-grpo-step8 bash scripts/launch_test_eval.sh
+#
+#   # Reuse pairs/models from another result root.
+#   EVAL_ROOT=$REPO/results/<new> MODELS_ROOT=$REPO/results/<old>/models \
+#   GEN_KEY_PREFIX=9b-full5ep-step STEPS="0 32 ..." DO_GEN=0 \
+#   JUDGES="gemma4-31b" bash scripts/launch_test_eval.sh
 set -uo pipefail
 REPO=/home/lancewicki/projects/turing-rl
 cd "$REPO" || exit 2
@@ -40,6 +45,13 @@ GEN_ONLY=${GEN_ONLY:-}
 CHAIN_AFTER=${CHAIN_AFTER:-}
 
 MERGED_EP3=${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}
+
+# --- evaluated split and reusable artifact locations ---
+export EVAL_PARQUET=${EVAL_PARQUET:-$REPO/data/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
+export EVAL_EXPECT=${EVAL_EXPECT:-heldout}
+export PAIRS_TAG=${PAIRS_TAG:-880}
+MODELS_ROOT=${MODELS_ROOT:-$EVAL_ROOT/models}
+GEN_KEY_PREFIX=${GEN_KEY_PREFIX:-9b-grpo-step}
 
 # --- generation config: Qwen3 model-card = job 13634 val_kwargs; lengths = validation caps ---
 export SWEEP_BASE="$EVAL_ROOT"
@@ -68,15 +80,16 @@ export PERSONA_OPENAI_TIMEOUT_SECONDS=${PERSONA_OPENAI_TIMEOUT_SECONDS:-1800}
 STEPS=${STEPS:-"0 8 16"}
 GENERATORS=""
 for s in $STEPS; do
-  if [ "$s" = "0" ]; then m=$MERGED_EP3; else m=$EVAL_ROOT/models/step$s/hf_dense; fi
-  GENERATORS="${GENERATORS}9b-grpo-step${s}|${m}
+  if [ "$s" = "0" ]; then m=$MERGED_EP3; else m=$MODELS_ROOT/step$s/hf_dense; fi
+  GENERATORS="${GENERATORS}${GEN_KEY_PREFIX}${s}|${m}
 "
 done
 
 CELLS=$(/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python -c "
-from configs.judge_sweep_cells import cell_list
-for c in cell_list('qwen3.5'):
-    print(c['cell_name'], c['model_id'], c['tp'], c['replicas'])
+from configs.judge_sweep_cells import cell_list, extra_cell
+cells = cell_list('qwen3.5') + [extra_cell('gemma4-12b'), extra_cell('gemma4-31b')]
+for c in cells:
+    print(c['cell_name'], c['model_id'], c['tp'], c['replicas'], c.get('concurrency', 32))
 ")
 FILTERED=""
 for j in $JUDGES; do
@@ -97,11 +110,23 @@ submit () {
   fi
   sbatch --parsable $deparg "$@"
 }
-need_jid () { [ -n "$1" ] || { echo "FATAL: no job id for $2" >&2; exit 1; }; }
+need_jid () {
+  if [ "$DRY" = "1" ]; then [ -n "$1" ] && return 0; fi
+  case "$1" in
+    ''|*[!0-9]*) echo "FATAL: sbatch failed for $2 (got '$1')" >&2; exit 1 ;;
+  esac
+}
 
 mkdir -p "$EVAL_ROOT/raw/pairs" "$EVAL_ROOT/raw/sweep" "$REPO/logs"
 
+# Assert and record the split before spending GPU time.
+/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python scripts/check_eval_split.py \
+    --eval_parquet "$EVAL_PARQUET" --expect "$EVAL_EXPECT" \
+    --out_json "$EVAL_ROOT/split_guard.json" \
+  || { echo "FATAL: split guard rejected the eval set; nothing submitted." >&2; exit 1; }
+
 echo "=== test-set eval: EVAL_ROOT=$EVAL_ROOT judges='$JUDGES' modes='$MODES' gen=$DO_GEN judge=$DO_JUDGE ==="
+echo "=== eval set: $EVAL_PARQUET (expect=$EVAL_EXPECT, tag=$PAIRS_TAG) ==="
 echo "=== sampling: T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K max_tokens=$GEN_MAX_TOKENS ==="
 
 # ---------------- phase 1: generation (parallel, 1 GPU each) + pair build ----------------
@@ -111,7 +136,7 @@ for entry in $GENERATORS; do
   gk=${entry%%|*}; model=${entry#*|}
   if [ -n "$GEN_ONLY" ] && [ "$gk" != "$GEN_ONLY" ]; then continue; fi
   N_MATCHED=$((N_MATCHED+1))
-  pairs=$EVAL_ROOT/raw/pairs/gen_${gk}_880.parquet
+  pairs=$EVAL_ROOT/raw/pairs/gen_${gk}_${PAIRS_TAG}.parquet
 
   if [ "$DO_GEN" = "1" ]; then
     if [ ! -d "$model" ]; then
@@ -150,12 +175,12 @@ fi
 PREV=""
 for dep_entry in $BUILD_DEPS; do
   gk=${dep_entry%%|*}; bjid=${dep_entry#*|}
-  pairs=$EVAL_ROOT/raw/pairs/gen_${gk}_880.parquet
+  pairs=$EVAL_ROOT/raw/pairs/gen_${gk}_${PAIRS_TAG}.parquet
   # The client appends $CELL_NAME/$THINKING_MODE, so pass the per-generator sweep ROOT.
   sweep_root=$EVAL_ROOT/raw/$gk/sweep
   # Here-string, NOT `echo | while`: a pipe puts the loop in a subshell and PREV would not
   # survive, silently breaking judge serialization (and blowing the 8-GPU budget).
-  while read -r cell_name model_id tp replicas; do
+  while read -r cell_name model_id tp replicas concurrency; do
     [ -z "$cell_name" ] && continue
     for mode in $MODES; do
       gpus=$((tp*replicas))
@@ -177,7 +202,7 @@ for dep_entry in $BUILD_DEPS; do
       [ -n "$bjid" ] && dep="afterok:$bjid"
       [ -n "$PREV" ] && dep="${dep:+$dep,}afterany:$PREV"
       sjid=$(submit "$dep" --gres=gpu:$gpus --job-name=tejudge_${gk}_${cell_name}_${mode} \
-        --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,THINKING_MODE=$mode,CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
+        --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=$mode,CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
         scripts/slurm/judge_sweep_cell.sh)
       need_jid "$sjid" "judge $gk $cell_name $mode"
       echo "submitted judge $gk $cell_name/$mode -> $sjid (gpu:$gpus)" >&2
@@ -188,3 +213,4 @@ done
 
 echo "=== submitted. reward dumps: $EVAL_ROOT/raw/<gen_key>/sweep/<cell>/<mode>/reward ==="
 echo "=== verify with: python scripts/verify_judge_completeness.py --eval_root $EVAL_ROOT ==="
+echo "chain tail job: $PREV" >&2

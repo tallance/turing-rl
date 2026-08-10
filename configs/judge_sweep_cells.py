@@ -20,6 +20,31 @@ ANCHOR = {
     "quantized": True,  # bf16 397B (~800GB) can't fit; Int4 is the forced deviation
 }
 
+# Opt-in judges used by dedicated evaluations, not appended to the default
+# Qwen family sweeps. ``concurrency`` is the per-endpoint client setting.
+_EXTRA_CELLS = {
+    "gemma4-12b": {
+        "cell_name": "gemma4-12b",
+        "model_id": "google/gemma-4-12B-it",
+        "tp": 1,
+        "replicas": 8,
+        "size_b": 12,
+        "is_moe": False,
+        "quantized": False,
+        "concurrency": 4,
+    },
+    "gemma4-31b": {
+        "cell_name": "gemma4-31b",
+        "model_id": "google/gemma-4-31B-it",
+        "tp": 8,
+        "replicas": 1,
+        "size_b": 31,
+        "is_moe": False,
+        "quantized": False,
+        "concurrency": 4,
+    },
+}
+
 # (cell_name, model_id, size_b, is_moe) — size_b is total params for dense,
 # active params for MoE.
 _FAMILIES = {
@@ -92,6 +117,23 @@ def cell_list(family: str) -> list[dict]:
     return out
 
 
+def extra_cell(cell_name: str) -> dict:
+    """Return a copy of an opt-in judge cell by name."""
+    try:
+        return dict(_EXTRA_CELLS[cell_name])
+    except KeyError as exc:
+        choices = ", ".join(sorted(_EXTRA_CELLS))
+        raise ValueError(f"unknown extra judge cell {cell_name!r}; choices: {choices}") from exc
+
+
+def resolve_cell(cell_name: str, family: str = "qwen3.5") -> dict:
+    """Resolve either a default family cell or an opt-in cell by name."""
+    for cell in cell_list(family):
+        if cell["cell_name"] == cell_name:
+            return cell
+    return extra_cell(cell_name)
+
+
 # x-axis sizes for plotting (active params for MoE); anchor plotted at 17B active.
 SIZE_MAP = {
     "qwen3-4b": 4,
@@ -107,6 +149,8 @@ SIZE_MAP = {
     # 397B sampling-variant diagnostic cells (plotted next to the 397B baseline).
     "qwen35-397b-t07": 17,     # temperature=0.7 (model card)
     "qwen35-397b-reppen": 17,  # repetition_penalty=1.1 (loop hypothesis)
+    "gemma4-12b": 12,
+    "gemma4-31b": 31,
 }
 
 ANCHOR_CELL = "qwen35-397b"
