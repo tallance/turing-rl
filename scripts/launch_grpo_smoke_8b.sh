@@ -12,14 +12,15 @@ set -uo pipefail
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?run via scripts/cluster_launch.sh}
+SBATCH=${TURING_RL_CODE_ROOT:?}/scripts/snapshot_sbatch.sh
 LOGS=$REPO/logs
 mkdir -p "$LOGS"
 
 echo "============================================"
 echo "[launch-8b] submitting 8B judge server"
 echo "============================================"
-JUDGE_JOB=$(sbatch --parsable "$REPO/scripts/slurm/judge_serve_8b.sh")
+JUDGE_JOB=$("$SBATCH" --parsable "$REPO/scripts/slurm/judge_serve_8b.sh")
 [ -z "$JUDGE_JOB" ] && { echo "judge sbatch returned no job id" >&2; exit 2; }
 echo "judge job id: $JUDGE_JOB"
 JUDGE_LOG="$LOGS/judge_serve_8b-$JUDGE_JOB.out"
@@ -75,7 +76,7 @@ done
 echo "============================================"
 echo "[launch-8b] submitting GRPO trainer (JUDGE_HOST=$JUDGE_NODE)"
 echo "============================================"
-TRAINER_JOB=$(sbatch --parsable \
+TRAINER_JOB=$("$SBATCH" --parsable \
   --export=ALL,JUDGE_HOST="$JUDGE_NODE",JUDGE_PORT=8123 \
   "$REPO/scripts/slurm/grpo_smoke_8b.sh")
 [ -z "$TRAINER_JOB" ] && { echo "trainer sbatch returned no job id" >&2; exit 7; }

@@ -13,14 +13,15 @@ set -uo pipefail
 # Unset so curl talks directly to the SLURM-assigned node.
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?run via scripts/cluster_launch.sh}
+SBATCH=${TURING_RL_CODE_ROOT:?}/scripts/snapshot_sbatch.sh
 LOGS=$REPO/logs
 mkdir -p "$LOGS"
 
 echo "============================================"
 echo "[launch] submitting CoT server"
 echo "============================================"
-SERVER_JOB=$(sbatch --parsable "$REPO/scripts/slurm/cot_server.sh")
+SERVER_JOB=$("$SBATCH" --parsable "$REPO/scripts/slurm/cot_server.sh")
 if [ -z "$SERVER_JOB" ]; then
   echo "sbatch did not return a job id" >&2
   exit 2
@@ -86,7 +87,7 @@ fi
 echo "============================================"
 echo "[launch] submitting CoT client (COT_HOST=$SERVER_NODE)"
 echo "============================================"
-CLIENT_JOB=$(sbatch --parsable \
+CLIENT_JOB=$("$SBATCH" --parsable \
   --export=ALL,COT_HOST="$SERVER_NODE",COT_PORT=8000 \
   "$REPO/scripts/slurm/cot_generate_smoke.sh")
 if [ -z "$CLIENT_JOB" ]; then

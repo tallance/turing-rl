@@ -359,7 +359,7 @@ def main() -> int:
             "chat_template_kwargs": {"enable_thinking": True},
         },
         "schemas": SCHEMAS,
-        "deployed_sha": os.environ.get("DEPLOYED_SHA"),
+        "source_sha": os.environ.get("TURING_RL_SOURCE_SHA"),
         "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
     }
     (args.out / "manifest.json").write_text(

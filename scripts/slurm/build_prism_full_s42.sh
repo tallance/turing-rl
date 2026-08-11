@@ -10,6 +10,7 @@
 #SBATCH --account=rfai
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -19,15 +20,15 @@ export HF_DATASETS_CACHE=/home/lancewicki/data/hf_cache/datasets
 export HF_HUB_OFFLINE=1
 export HF_DATASETS_OFFLINE=1
 
-if [ -f /home/lancewicki/projects/turing-rl/.env ]; then
+if [ -f $TURING_RL_STATE_ROOT/.env ]; then
   set -a
   # shellcheck disable=SC1091
-  source /home/lancewicki/projects/turing-rl/.env
+  source $TURING_RL_STATE_ROOT/.env
   set +a
 fi
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-OUT_DIR=/home/lancewicki/projects/turing-rl/data/prism/full_s42_history
+OUT_DIR=$TURING_RL_DATA_ROOT/prism/full_s42_history
 mkdir -p "$OUT_DIR"
 
 echo "============================================"
@@ -37,7 +38,7 @@ echo "Host:  $(hostname)"
 echo "Out:   $OUT_DIR"
 echo "============================================"
 
-cd /home/lancewicki/projects/turing-rl
+cd "$TURING_RL_WORK_ROOT"
 
 $PY -u -m data.prism.build \
   --output      "$OUT_DIR/train.parquet" \

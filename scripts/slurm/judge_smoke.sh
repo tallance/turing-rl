@@ -11,6 +11,7 @@
 #SBATCH --account=rfai
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -21,8 +22,10 @@ export PYTHONUNBUFFERED=1
 export VLLM_LOGGING_LEVEL=INFO
 
 PY=/home/lancewicki/miniconda3/envs/judge-vllm/bin/python
+REPO=${TURING_RL_WORK_ROOT:?}
 MODEL=Qwen/Qwen3.5-397B-A17B-GPTQ-Int4
 PORT=8000
+VLLM_LOG="$REPO/logs/vllm-${SLURM_JOB_ID}.log"
 
 echo "============================================"
 echo "Judge smoke: $MODEL"
@@ -41,7 +44,7 @@ $PY -m vllm.entrypoints.openai.api_server \
   --gpu-memory-utilization 0.85 \
   --dtype bfloat16 \
   --host 0.0.0.0 --port $PORT \
-  > /home/lancewicki/projects/turing-rl/logs/vllm-${SLURM_JOB_ID}.log 2>&1 &
+  > "$VLLM_LOG" 2>&1 &
 VLLM_PID=$!
 echo "vllm pid: $VLLM_PID, logging to logs/vllm-${SLURM_JOB_ID}.log"
 
@@ -65,7 +68,7 @@ for i in $(seq 1 240); do
   if ! kill -0 "$VLLM_PID" 2>/dev/null; then
     echo "vLLM process died before becoming ready"
     echo "--- tail of vllm log ---"
-    tail -100 /home/lancewicki/projects/turing-rl/logs/vllm-${SLURM_JOB_ID}.log
+    tail -100 "$VLLM_LOG"
     exit 2
   fi
   sleep 5
@@ -73,14 +76,14 @@ done
 if [ "$ready" -ne 1 ]; then
   echo "vLLM did not become ready within 20 minutes"
   echo "--- tail of vllm log ---"
-  tail -200 /home/lancewicki/projects/turing-rl/logs/vllm-${SLURM_JOB_ID}.log
+  tail -200 "$VLLM_LOG"
   exit 3
 fi
 
 echo "============================================"
 echo "Running smoke test"
 echo "============================================"
-$PY /home/lancewicki/projects/turing-rl/scripts/smoke_judge.py \
+$PY $TURING_RL_CODE_ROOT/scripts/smoke_judge.py \
   --base-url "http://localhost:$PORT/v1" \
   --model "$MODEL" \
   --batch-size 64

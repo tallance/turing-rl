@@ -11,6 +11,7 @@
 #SBATCH --output=/home/lancewicki/projects/turing-rl/logs/gemma31-schema-cmp-%j.out
 
 set -euo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
 REPO=${REPO:-/home/lancewicki/projects/turing-rl}
@@ -42,10 +43,9 @@ SNAPSHOT=$(cat "$MODEL_CACHE/refs/main")
 MODEL_PATH=$MODEL_CACHE/snapshots/$SNAPSHOT
 [ -f "$MODEL_PATH/config.json" ] || { echo "ERROR: incomplete model snapshot: $MODEL_PATH" >&2; exit 2; }
 
-DEPLOYED_SHA=$(cat "$REPO/DEPLOYED_SHA")
-export DEPLOYED_SHA
+export TURING_RL_SOURCE_SHA
 echo "date=$(date --iso-8601=seconds)"
-echo "host=$(hostname) job=${SLURM_JOB_ID:-local} deployed_sha=$DEPLOYED_SHA"
+echo "host=$(hostname) job=${SLURM_JOB_ID:-local} source_sha=$TURING_RL_SOURCE_SHA"
 echo "model=$MODEL snapshot=$SNAPSHOT input=$INPUT n=$N_PROMPTS concurrency=$CONCURRENCY"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 "$PYTHON" -c 'import vllm; print("vllm=" + vllm.__version__)'

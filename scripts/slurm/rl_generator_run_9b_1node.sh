@@ -20,12 +20,13 @@
 # process is killed when the trainer exits (trap). 1-node analogue of
 # rl_generator_run_9b.sh (which splits judge/trainer across 2 nodes).
 #
-# Submit: OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike \
-#           sbatch --export=ALL scripts/slurm/rl_generator_run_9b_1node.sh
+# Submit through scripts/cluster_launch.sh + scripts/submit_snapshot_job.sh with
+# OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike.
 #   B0_ROLLOUT_SYNC=1 (default) turns on the Step-3b rollout-sync hook (rollout_sync.json).
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 cd "$REPO"
 
 # wandb: source .env for WANDB_API_KEY + WANDB_BASE_URL, then force online + the

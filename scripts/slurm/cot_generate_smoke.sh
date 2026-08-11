@@ -13,6 +13,7 @@
 # launched by cot_server.sh. The launcher exports COT_HOST + COT_PORT into this job.
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -24,10 +25,10 @@ COT_PORT="${COT_PORT:-8000}"
 
 # Source HF_TOKEN etc. (.env). We override the OpenAI-related vars so the repo's
 # api_client targets our self-hosted server instead of OpenRouter.
-if [ -f /home/lancewicki/projects/turing-rl/.env ]; then
+if [ -f $TURING_RL_STATE_ROOT/.env ]; then
   set -a
   # shellcheck disable=SC1091
-  source /home/lancewicki/projects/turing-rl/.env
+  source $TURING_RL_STATE_ROOT/.env
   set +a
 fi
 
@@ -45,9 +46,9 @@ export HF_HOME=/home/lancewicki/data/hf_cache
 export HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-REPO=/home/lancewicki/projects/turing-rl
-IN_PARQUET="$REPO/data/prism/history_smoke/train.parquet"
-OUT_DIR="$REPO/data/sft"
+REPO=${TURING_RL_WORK_ROOT:?}
+IN_PARQUET="$TURING_RL_DATA_ROOT/prism/history_smoke/train.parquet"
+OUT_DIR="$TURING_RL_DATA_ROOT/sft"
 COT_PARQUET="$OUT_DIR/qwen3-8b_prism_smoke_sft_cot.parquet"
 COT_JSONL="$OUT_DIR/qwen3-8b_prism_smoke_sft_cot.jsonl"
 mkdir -p "$OUT_DIR"

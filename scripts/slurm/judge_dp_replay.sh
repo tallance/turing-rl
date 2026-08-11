@@ -15,6 +15,7 @@
 # frontend CLI. SERVER_ENV can select a separately validated vLLM environment;
 # the replay client remains in the original training environment.
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
 export HF_HOME=/home/lancewicki/data/hf_cache
@@ -26,7 +27,7 @@ export PYTHONUNBUFFERED=1
 export VLLM_LOGGING_LEVEL=INFO
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 SERVER_ENV=${SERVER_ENV:-/home/lancewicki/miniconda3/envs/turing-rl-train}
 PY_SERVER=$SERVER_ENV/bin/python
 VLLM=$SERVER_ENV/bin/vllm
@@ -74,7 +75,7 @@ echo "model=$MODEL n=$N concurrency=$CONCURRENCY timeout=$TIMEOUT duration=$DURA
 echo "input_dump=$INPUT_DUMP"
 echo "out=$OUT"
 echo "server_env=$SERVER_ENV"
-echo "deployed_sha=$(cat "$REPO/DEPLOYED_SHA" 2>/dev/null || echo missing)"
+echo "source_sha=$TURING_RL_SOURCE_SHA"
 "$PY_SERVER" -c 'import sys, torch, vllm; print("server_python={} torch={} cuda={} vllm={}".format(sys.version.split()[0], torch.__version__, torch.version.cuda, vllm.__version__))'
 "$PY_CLIENT" -c 'import aiohttp, sys; print("client_python={} aiohttp={}".format(sys.version.split()[0], aiohttp.__version__))'
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader

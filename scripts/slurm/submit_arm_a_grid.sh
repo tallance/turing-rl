@@ -1,8 +1,9 @@
 #!/bin/bash
 # Submit the 6-cell (KL x LR) Arm-A overfit grid on the PROPER (stop-token) checkpoint-78.
-# Run from the CLUSTER repo root after sync_to_cluster.sh + Task 4 (merge). preflight-job-check first.
+# Run through scripts/cluster_launch.sh after preflight-job-check and the required integration.
 set -euo pipefail
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
+SBATCH=${TURING_RL_CODE_ROOT:?}/scripts/snapshot_sbatch.sh
 cd "$REPO"
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 MERGED=checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3
@@ -21,5 +22,5 @@ PYEOF
     RUN_TAG="$TAG" \
     MERGED_SFT_MODEL_PATH="$MERGED" \
     EXTRA_OVERRIDES="$OVR $TARGET" \
-    sbatch --export=ALL scripts/slurm/rl_generator_run.sh
+    "$SBATCH" --export=ALL scripts/slurm/rl_generator_run.sh
 done

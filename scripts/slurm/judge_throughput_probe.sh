@@ -23,6 +23,7 @@
 # Env overrides: CONCURRENCIES (default 16,32,64,96), N (default 64),
 #   TIMEOUT (default 1800), PARSER (default qwen3).
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
@@ -30,7 +31,7 @@ export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1 VLLM_LOGGING_LEVEL=INFO
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 # Judge under test (default 397B anchor). Override via env for other judges,
 # e.g. MODEL=Qwen/Qwen3.5-9B TP=1 LABEL=q9b (submit with --gres=gpu:1).
 MODEL=${MODEL:-Qwen/Qwen3.5-397B-A17B-GPTQ-Int4}

@@ -15,7 +15,8 @@ set -uo pipefail
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?run via scripts/cluster_launch.sh}
+SBATCH=${TURING_RL_CODE_ROOT:?}/scripts/snapshot_sbatch.sh
 LOGS=$REPO/logs
 OUT=$REPO/results/judge_throughput
 mkdir -p "$LOGS" "$OUT"
@@ -44,7 +45,7 @@ for TP in "${TPS[@]}"; do
   PORT=${PORT_OF[$TP]}
   echo "[sweep] submitting judge tp=$TP port=$PORT..."
   QUEUE_T0[$TP]=$(date +%s)
-  JOB=$(sbatch --parsable \
+  JOB=$("$SBATCH" --parsable \
     --gres=gpu:$TP \
     --job-name=judge_8b_tp$TP \
     --export=ALL,TP=$TP,PORT=$PORT \

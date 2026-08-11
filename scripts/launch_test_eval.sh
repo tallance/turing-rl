@@ -37,7 +37,8 @@
 #   EVAL_PARQUET=<...>/grpo/train_used2048.parquet EVAL_EXPECT=train PAIRS_TAG=2048 \
 #   GEN_KEY_PREFIX=9b-grpo-train-step bash scripts/launch_test_eval.sh
 set -uo pipefail
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?run via scripts/cluster_launch.sh}
+SBATCH=${TURING_RL_CODE_ROOT:+$TURING_RL_CODE_ROOT/scripts/snapshot_sbatch.sh}
 cd "$REPO" || exit 2
 
 EVAL_ROOT=${EVAL_ROOT:-$REPO/results/2026-08-03-test-eval-9b-half}
@@ -55,7 +56,7 @@ MERGED_EP3=${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsd
 # EVAL_PARQUET is exported so generator_infer.sh / build_pairs.sh inherit it via --export=ALL.
 # EVAL_EXPECT is asserted by scripts/check_eval_split.py below: pointing this at train/val data
 # without declaring it aborts, so a train-set curve can never be published as held-out.
-export EVAL_PARQUET=${EVAL_PARQUET:-$REPO/data/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
+export EVAL_PARQUET=${EVAL_PARQUET:-$TURING_RL_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
 export EVAL_EXPECT=${EVAL_EXPECT:-heldout}
 export PAIRS_TAG=${PAIRS_TAG:-880}
 # Lets a new EVAL_ROOT reuse dense models already merged+gated under another root.
@@ -118,7 +119,8 @@ submit () {
     echo "[DRY] sbatch $deparg $*" >&2
     echo "dry$RANDOM"; return 0
   fi
-  sbatch --parsable $deparg "$@"
+  [ -n "$SBATCH" ] || { echo "FATAL: run through scripts/cluster_launch.sh" >&2; return 2; }
+  "$SBATCH" --parsable $deparg "$@"
 }
 need_jid () {
   if [ "$DRY" = "1" ]; then [ -n "$1" ] && return 0; fi

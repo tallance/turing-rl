@@ -17,16 +17,17 @@
 # shared file on FSx home; the judge srun step is killed when the trainer srun
 # step finishes.
 #
-# Submit: B0_ROLLOUT_SYNC=1 JUDGE=9b MODE=overfit OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike \
-#           sbatch --export=ALL scripts/slurm/rl_generator_run_9b.sh
+# Submit through scripts/cluster_launch.sh + scripts/submit_snapshot_job.sh with
+# B0_ROLLOUT_SYNC=1 JUDGE=9b MODE=overfit OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike.
 #   JUDGE = 9b | 397b     MODE = overfit | full | epoch1 | full5 | frac10ep10
 #   full5 = full-dataset 5-epoch production run (325 steps; ckpt + validate every 32).
 #   frac10ep10 = 10% of train (417 rows), 10 epochs (60 steps; ckpt + validate every 6),
 #                validating on 50% of the val split. Judge identical to full5.
 #   B0_ROLLOUT_SYNC=1 turns on the Step-3b rollout-sync hook (writes rollout_sync.json).
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 cd "$REPO"
 
 # wandb: source .env for WANDB_API_KEY + WANDB_BASE_URL, then force online + the

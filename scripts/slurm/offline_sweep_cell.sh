@@ -15,6 +15,7 @@
 # comparison against the served cells; raw judge output only (no scoring).
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -25,7 +26,7 @@ export PYTHONUNBUFFERED=1
 export VLLM_LOGGING_LEVEL=INFO
 
 PY=/home/lancewicki/miniconda3/envs/judge-vllm/bin/python
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 
 echo "============================================"
 echo "Offline sweep cell (Qwen3-8B thinking-off, TP=8)"

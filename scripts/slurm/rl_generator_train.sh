@@ -14,13 +14,14 @@
 # (option A) with explicit overrides + the reward env inherited from the driver. Scancels the
 # judge serve job on exit.
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
 export TMPDIR=/home/lancewicki/tmp/build PIP_CACHE_DIR=/home/lancewicki/tmp/pip-cache
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 cd "$REPO"
 # Ray worker subprocesses inherit env vars but NOT cwd/sys.path, so `-m training...`
 # resolving in the driver process is not enough — the workers must find the `training`
@@ -107,10 +108,12 @@ case "$MODE" in
   full)   : ;;   # base config (3 epochs, batch 64)
 esac
 
-echo "+ $PY -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen3_8b_grpo_turing ${OVR[*]} ${EXTRA_OVERRIDES:-}"
+echo "+ $PY -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen3_8b_grpo_turing hydra.run.dir=$TURING_RL_HYDRA_DIR hydra.job.chdir=false ${OVR[*]} ${EXTRA_OVERRIDES:-}"
 $PY -m training.grpo.run_verl_main_ppo \
   --config-dir training/grpo/configs \
   --config-name qwen3_8b_grpo_turing \
+  hydra.run.dir="$TURING_RL_HYDRA_DIR" \
+  hydra.job.chdir=false \
   "${OVR[@]}" ${EXTRA_OVERRIDES:-}
 RC=$?
 echo "=== trainer exit: $RC ==="

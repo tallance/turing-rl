@@ -3,7 +3,8 @@
 Score generator checkpoints on the 880-prompt held-out set (128 users, disjoint from SFT and
 GRPO train/val) with a frozen judge, and get a comparable table across checkpoints.
 
-Everything runs on the cluster. Deploy first: `scripts/sync_to_cluster.sh`.
+Everything runs from an immutable cluster snapshot. Run `preflight-job-check`, then use
+`scripts/cluster_launch.sh`; never submit these scripts from the mutable state root.
 
 ## The one thing that will bite you
 
@@ -20,8 +21,12 @@ model whose merge job did not exit 0.
 Stage 0 — build a dense model per checkpoint and gate it (CPU, ~3 min each):
 
 ```bash
-sbatch --export=ALL,STEP=8  scripts/slurm/merge_grpo_ckpt.sh
-sbatch --export=ALL,STEP=16 scripts/slurm/merge_grpo_ckpt.sh
+STATE=/home/lancewicki/projects/turing-rl
+RUN=$STATE/results/<EVAL_ROOT>
+scripts/cluster_launch.sh --run-root "$RUN" \
+  scripts/submit_snapshot_job.sh -- --export=ALL,STEP=8 scripts/slurm/merge_grpo_ckpt.sh
+scripts/cluster_launch.sh --run-root "$RUN" \
+  scripts/submit_snapshot_job.sh -- --export=ALL,STEP=16 scripts/slurm/merge_grpo_ckpt.sh
 ```
 
 Optional `DISTINCT_FROM=<other hf_dense>` adds a check that two checkpoints actually differ.
@@ -32,8 +37,10 @@ Stage 1+2 — generate, build pairs, judge (`STEPS` must name checkpoints Stage 
 the pre-RL SFT init and needs no merge):
 
 ```bash
-DRY=1 STEPS="0 8 16" bash scripts/launch_test_eval.sh   # print the plan
-STEPS="0 8 16" bash scripts/launch_test_eval.sh
+scripts/cluster_launch.sh --plan-only --run-root "$RUN" \
+  scripts/launch_test_eval.sh
+scripts/cluster_launch.sh --run-root "$RUN" \
+  --env EVAL_ROOT="$RUN" --env STEPS="0 8 16" scripts/launch_test_eval.sh
 ```
 
 Submits 1-GPU generations in parallel, CPU pair-builds, then 8-GPU judge cells serialized.
@@ -54,7 +61,9 @@ still exit 0, so a cell can score 850/880 and look successful to Slurm.
 Generation is decoupled from judging, so re-run only the judge stage over the existing pairs:
 
 ```bash
-DO_GEN=0 JUDGES="qwen35-27b qwen35-397b" STEPS="0 8 16" bash scripts/launch_test_eval.sh
+scripts/cluster_launch.sh --run-root "$RUN" --env EVAL_ROOT="$RUN" \
+  --env DO_GEN=0 --env JUDGES="qwen35-27b qwen35-397b" --env STEPS="0 8 16" \
+  scripts/launch_test_eval.sh
 ```
 
 ## If pairs are missing

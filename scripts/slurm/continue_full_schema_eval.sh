@@ -10,6 +10,7 @@
 #SBATCH --output=/home/lancewicki/projects/turing-rl/logs/te-eval-continue-%j.out
 
 set -euo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
 REPO=${REPO:-/home/lancewicki/projects/turing-rl}
