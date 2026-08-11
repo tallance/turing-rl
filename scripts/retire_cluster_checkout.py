@@ -59,7 +59,8 @@ def main() -> int:
     parser.add_argument("--execute", action="store_true")
     args = parser.parse_args()
     state_root = args.state_root.resolve()
-    if state_root != DEFAULT_STATE_ROOT:
+    expected_state_root = DEFAULT_STATE_ROOT.resolve()
+    if state_root != expected_state_root:
         raise SystemExit(f"refusing unexpected state root: {state_root}")
     blocked = legacy_jobs(state_root)
     if blocked:
