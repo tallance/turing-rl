@@ -62,6 +62,10 @@ shopt -u nullglob
   echo "ERROR: merged SFT model has no weights under $MERGED_SFT_MODEL_DIR" >&2
   exit 2
 }
+# The 9B recipe lives in qwen3_9b_grpo_turing.yaml. The 8B config this used to name carries
+# 8B-era lr/kl/temperature that no 9B run has ever wanted, and relying on EXTRA_OVERRIDES to
+# correct them at submit time is what silently mis-trained job 15143.
+GRPO_CONFIG_NAME=${GRPO_CONFIG_NAME:-qwen3_9b_grpo_turing}
 DATA_BASE=data/prism/full_s42_history_sft40_grpo60_test10/grpo
 TRAIN_FILE=${TRAIN_FILE:-$DATA_BASE/train.parquet}
 VAL_FILE=${VAL_FILE:-$DATA_BASE/val.parquet}
@@ -105,14 +109,14 @@ OVR=(
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
   # rollout (vLLM) --------------------------------------------------------------------------------
-  actor_rollout_ref.rollout.tensor_model_parallel_size=${RL_ROLLOUT_TP:-4}
+  actor_rollout_ref.rollout.tensor_model_parallel_size=${RL_ROLLOUT_TP:-1}
   actor_rollout_ref.rollout.free_cache_engine=True
   actor_rollout_ref.rollout.enforce_eager=True
   actor_rollout_ref.rollout.enable_prefix_caching=False
   actor_rollout_ref.rollout.enable_chunked_prefill=True   # REQUIRED: prompts ~12.5k > 4096 batch cap
   actor_rollout_ref.rollout.max_model_len=13524
   actor_rollout_ref.rollout.max_num_batched_tokens=4096
-  actor_rollout_ref.rollout.gpu_memory_utilization=${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.40}
+  actor_rollout_ref.rollout.gpu_memory_utilization=${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}
   actor_rollout_ref.rollout.calculate_log_probs=True       # feeds the B0 logprob-parity guard
   actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072   # no + (key exists)
   actor_rollout_ref.rollout.agent.num_workers=${RL_NGPUS:-8}  # rollout batch must chunk evenly in V0
@@ -233,10 +237,10 @@ case "$MODE" in
     done ;;
 esac
 
-echo "+ $PY -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen3_8b_grpo_turing ${OVR[*]} ${EXTRA_OVERRIDES:-}"
+echo "+ $PY -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name $GRPO_CONFIG_NAME ${OVR[*]} ${EXTRA_OVERRIDES:-}"
 $PY -m training.grpo.run_verl_main_ppo \
   --config-dir training/grpo/configs \
-  --config-name qwen3_8b_grpo_turing \
+  --config-name "$GRPO_CONFIG_NAME" \
   "${OVR[@]}" ${EXTRA_OVERRIDES:-}
 RC=$?
 echo "=== trainer exit: $RC ==="

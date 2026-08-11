@@ -6,6 +6,7 @@ import subprocess
 S = pathlib.Path("scripts/slurm/rl_generator_train_9b.sh").read_text()
 SINGLE_NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b_1node.sh").read_text()
 RUN_2NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b.sh").read_text()
+CFG_9B = pathlib.Path("training/grpo/configs/qwen3_9b_grpo_turing.yaml").read_text()
 
 
 def mode_arm(name: str) -> str:
@@ -203,9 +204,14 @@ def test_single_node_batch_is_divisible_by_seven_gpu_actor_dp():
 
 
 def test_single_node_tp1_reserves_enough_memory_for_rollout_model_and_cache():
-    assert "gpu_memory_utilization=${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.40}" in S
+    # Qwen3.5-9B at TP=1 loads ~17.7 GB, so 0.40 of a 40 GB A100 (16 GB) cannot hold the
+    # weights at all, let alone a KV cache -- that was Arm-B job 11735. The old 0.40 default
+    # was only survivable because TP defaulted to 4, which shards the weights. Now that the
+    # trainer defaults to the TP=1 both completed 9B runs used, the memory fraction must
+    # default to 0.55 alongside it; the two have to move together.
+    assert "tensor_model_parallel_size=${RL_ROLLOUT_TP:-1}" in S
+    assert "gpu_memory_utilization=${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}" in S
     assert 'RL_ROLLOUT_GPU_MEMORY_UTILIZATION="${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}"' in SINGLE_NODE
-
 
 def test_single_node_judge_does_not_overlap_ray_trainer_gpu_ordinals():
     # Ray renumbers the seven trainer resources to physical ordinals 0-6. Keep
@@ -223,3 +229,44 @@ def test_single_node_judge_cost_controls_keep_defaults_but_allow_debug_overrides
 def test_b0_fixed_sequence_probe_disables_batch_reordering():
     assert 'if [ "${B0_ROLLOUT_SYNC:-0}" = "1" ]; then' in S
     assert "OVR+=( trainer.balance_batch=False )" in S
+
+
+def test_9b_trainer_loads_the_9b_config_not_the_8b_one():
+    # Job 15143 trained at lr 1e-5 / kl_loss_coef 1e-3 -- 8B-era values -- because the 9B
+    # trainer hardcoded --config-name qwen3_8b_grpo_turing and the real 9B hyperparameters
+    # only ever arrived through EXTRA_OVERRIDES at submit time. Launching without that string
+    # is silent: 8B defaults are valid values, so nothing errors, the reward curve just stays
+    # flat. The recipe must therefore come from a file the 9B run loads by default.
+    assert 'GRPO_CONFIG_NAME=${GRPO_CONFIG_NAME:-qwen3_9b_grpo_turing}' in S
+    assert '--config-name "$GRPO_CONFIG_NAME"' in S
+    # The literal must be gone from the invocation (a comment may still mention the 8B file).
+    assert "--config-name qwen3_8b_grpo_turing" not in S
+
+
+def test_9b_config_pins_the_recipe_both_completed_9b_runs_used():
+    # Verbatim from the command lines of 13634 (half) and 14217 (full5), which are identical
+    # on all twelve settings. Resolved through veRL's own entry point, the new config
+    # reproduces every one of them.
+    for k in (
+        "kl_loss_coef: 0.0001",     # 8B base says 0.001 -- 10x too much KL pull
+        "lr: 0.0001",               # 8B base says 1.0e-5 -- 10x too small a step
+        "temperature: 1.0",         # 8B base says 0.6
+        "train_batch_size: 64",
+        "ppo_mini_batch_size: 64",
+        "top_p: 1.0",
+        "top_k: -1",
+    ):
+        assert k in CFG_9B, f"9B config must pin {k}"
+    # Validation sampling is narrower than training, and must not fall back to the 8B base's
+    # greedy val_kwargs (temperature 0, do_sample False).
+    for k in ("temperature: 0.7", "top_p: 0.8", "top_k: 20", "do_sample: true", "n: 1"):
+        assert k in CFG_9B, f"9B config must pin val_kwargs {k}"
+    # Inherit the shared base rather than fork it: qwen3_8b_grpo.yaml is the SSOT that
+    # tests/test_grpo_config.py locks, and 8B runs still load it.
+    assert "- qwen3_8b_grpo" in CFG_9B
+
+
+def test_9b_rollout_defaults_match_what_both_9b_runs_actually_ran():
+    # Both runs passed these as env vars every launch; the defaults were 4 and 0.40.
+    assert "${RL_ROLLOUT_TP:-1}" in S
+    assert "${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}" in S
