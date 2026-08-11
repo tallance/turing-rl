@@ -18,7 +18,7 @@ REPO=${TURING_RL_WORK_ROOT:?}
 # Chosen generator: bf16_fsdp + --no_packing (clean per-conversation attention; full Table-5
 # fidelity). --checkpoint_dir resolves to its final/ adapter via resolve_adapter_path.
 CKPT=$REPO/checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp_nopack
-TEST=$TURING_RL_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/test.parquet
+TEST=$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/test.parquet
 OUT_DIR=$REPO/results/2026-07-08-judge-sweep/raw/generator
 OUT=$OUT_DIR/heldout_inference.pkl
 mkdir -p "$OUT_DIR"; cd "$REPO"

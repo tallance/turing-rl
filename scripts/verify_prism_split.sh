@@ -9,7 +9,7 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 REPO=${TURING_RL_WORK_ROOT:?run via scripts/cluster_launch.sh}
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 TMP=$(mktemp -d /tmp/prism-verify.XXXXXX)
-CUR_SPLIT=$TURING_RL_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10
+CUR_SPLIT=$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10
 FRESH=$TMP/full_s42_history_sft40_grpo60_test10
 OUT=$REPO/results/2026-07-08-judge-sweep/derived/split_verification.md
 mkdir -p "$FRESH" "$(dirname "$OUT")"
@@ -21,7 +21,7 @@ echo "=== re-split only (upstream data.prism.split_data) ==="
 # --heldout-user-frac, --grpo-frac, --seed. To reproduce the CURRENT split
 # byte-identically, pass the SAME args scripts/slurm/split_prism_full_s42.sh used
 # (mirror that script rather than relying on defaults).
-$PY -u -m data.prism.split_data --input-dir "$TURING_RL_DATA_ROOT/prism/full_s42_history" \
+$PY -u -m data.prism.split_data --input-dir "$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history" \
     --output-dir "$FRESH" --seed 42 || { echo "split failed"; exit 2; }
 STATUS=0
 { echo "# PRISM split verification (re-split hash compare)"; echo;

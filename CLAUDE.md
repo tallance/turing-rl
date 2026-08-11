@@ -12,9 +12,10 @@ Additinal context is in `turing-rl/Adversarial-User-Simulation.md`
 ## Workflow
 - Develop in a dedicated local Git worktree and commit before cluster execution. Dirty/WIP cluster runs are prohibited.
 - Retained runs may use any clean commit containing current `lancewicki/main`. Older or divergent commits require `--debug --label <label>` and must write below `results/debug/<label>/`.
-- Launch with `scripts/cluster_launch.sh --run-root <absolute-cluster-run-root> <launcher>`. It publishes a verified read-only snapshot, fingerprints external runtimes, and submits through the snapshot gateway.
+- Launch with `scripts/cluster_launch.sh --dependency-profile <eval|training|sft|data|all> --run-root <absolute-cluster-run-root> <launcher>`. It publishes a verified read-only snapshot, fingerprints external runtimes, and submits through the snapshot gateway.
 - `scripts/snapshot_sbatch.sh` is the only maintained `sbatch` gateway. Never invoke `sbatch` directly for repository jobs.
-- Repository snapshots freeze this repository only. Per-run manifests separately fingerprint veRL, Conda environments, package versions, model revisions where available, CUDA, GPUs and Slurm context.
+- Repository snapshots freeze this repository only. Per-run manifests record the full external inventory, but startup enforcement is limited to the declared dependency profile. Manifests include veRL, Conda environments, package versions, model revisions where available, CUDA, GPUs and Slurm context.
+- Runtime paths distinguish canonical inputs (`TURING_RL_INPUT_DATA_ROOT`) from generated datasets (`TURING_RL_GENERATED_DATA_ROOT`). Do not use the temporary ambiguous `TURING_RL_DATA_ROOT` compatibility alias in new code.
 - Always use the best model (latest Opus), both for yourself and sub-agents.
 - Pull run results (plots, reports, metrics) locally into `results/<plan-name>/` (plan filename without `.md`); include a `README.txt` with provenance only: exact configuration and versions, job IDs and dates, cluster source paths, artifact filenames and checksums, mechanical validation status, and reproduction commands. Do not include results interpretation, scientific conclusions, hypothesis verdicts, or claims about what the results mean; those are for the user to decide.
 - **Multi-agent integration.** Agents work on separate branches/worktrees. Only the designated integrator updates `lancewicki/main`, while holding `scripts/integration_lock.py` exclusively. Publication takes the same lock shared. Handoffs include commit SHA, changed files, tests and known conflicts.

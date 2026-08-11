@@ -33,6 +33,7 @@ while read -r cell_name model_id tp replicas; do
     jid=$("$SBATCH" --parsable --gres=gpu:$gpus \
       --job-name=sw_${cell_name}_${mode} \
       --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,THINKING_MODE=$mode,CELL_NAME=$cell_name$EXTRA \
+      -- \
       scripts/slurm/judge_sweep_cell.sh)
     echo "submitted $cell_name $mode -> job $jid (gpu:$gpus)"
   done

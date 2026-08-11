@@ -56,7 +56,7 @@ shopt -u nullglob
   echo "ERROR: merged SFT model has no weights under $MERGED_SFT_MODEL_DIR" >&2
   exit 2
 }
-DATA_BASE=data/prism/full_s42_history_sft40_grpo60_test10/grpo
+DATA_BASE=$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/grpo
 TRAIN_FILE=${TRAIN_FILE:-$DATA_BASE/train.parquet}
 VAL_FILE=${VAL_FILE:-$DATA_BASE/val.parquet}
 OVERFIT10=${OVERFIT10:-$DATA_BASE/train_overfit10.parquet}

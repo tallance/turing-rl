@@ -22,5 +22,5 @@ PYEOF
     RUN_TAG="$TAG" \
     MERGED_SFT_MODEL_PATH="$MERGED" \
     EXTRA_OVERRIDES="$OVR $TARGET" \
-    "$SBATCH" --export=ALL scripts/slurm/rl_generator_run.sh
+    "$SBATCH" --export=ALL -- scripts/slurm/rl_generator_run.sh
 done

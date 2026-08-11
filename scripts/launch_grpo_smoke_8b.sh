@@ -20,7 +20,7 @@ mkdir -p "$LOGS"
 echo "============================================"
 echo "[launch-8b] submitting 8B judge server"
 echo "============================================"
-JUDGE_JOB=$("$SBATCH" --parsable "$REPO/scripts/slurm/judge_serve_8b.sh")
+JUDGE_JOB=$("$SBATCH" --parsable -- "$REPO/scripts/slurm/judge_serve_8b.sh")
 [ -z "$JUDGE_JOB" ] && { echo "judge sbatch returned no job id" >&2; exit 2; }
 echo "judge job id: $JUDGE_JOB"
 JUDGE_LOG="$LOGS/judge_serve_8b-$JUDGE_JOB.out"
@@ -78,6 +78,7 @@ echo "[launch-8b] submitting GRPO trainer (JUDGE_HOST=$JUDGE_NODE)"
 echo "============================================"
 TRAINER_JOB=$("$SBATCH" --parsable \
   --export=ALL,JUDGE_HOST="$JUDGE_NODE",JUDGE_PORT=8123 \
+  -- \
   "$REPO/scripts/slurm/grpo_smoke_8b.sh")
 [ -z "$TRAINER_JOB" ] && { echo "trainer sbatch returned no job id" >&2; exit 7; }
 echo "trainer job id: $TRAINER_JOB"

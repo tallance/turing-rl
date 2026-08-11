@@ -26,7 +26,7 @@ if [ -f $TURING_RL_STATE_ROOT/.env ]; then
 fi
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-OUT_DIR=$TURING_RL_DATA_ROOT/prism/history_smoke
+OUT_DIR=$TURING_RL_GENERATED_DATA_ROOT/prism/history_smoke
 mkdir -p "$OUT_DIR"
 
 echo "============================================"

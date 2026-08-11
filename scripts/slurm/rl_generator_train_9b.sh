@@ -67,7 +67,7 @@ shopt -u nullglob
 # 8B-era lr/kl/temperature that no 9B run has ever wanted, and relying on EXTRA_OVERRIDES to
 # correct them at submit time is what silently mis-trained job 15143.
 GRPO_CONFIG_NAME=${GRPO_CONFIG_NAME:-qwen3_9b_grpo_turing}
-DATA_BASE=data/prism/full_s42_history_sft40_grpo60_test10/grpo
+DATA_BASE=$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/grpo
 TRAIN_FILE=${TRAIN_FILE:-$DATA_BASE/train.parquet}
 VAL_FILE=${VAL_FILE:-$DATA_BASE/val.parquet}
 OVERFIT10=${OVERFIT10:-$DATA_BASE/train_overfit10.parquet}

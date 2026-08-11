@@ -13,8 +13,8 @@ set -uo pipefail
 source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-IN_DIR=$TURING_RL_DATA_ROOT/prism/full_s42_history
-OUT_DIR=$TURING_RL_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10
+IN_DIR=$TURING_RL_GENERATED_DATA_ROOT/prism/full_s42_history
+OUT_DIR=$TURING_RL_GENERATED_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10
 mkdir -p "$OUT_DIR"
 
 echo "============================================"

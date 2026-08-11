@@ -112,10 +112,10 @@ run_generator () {
     local gendep=""; [ -n "$PREV" ] && gendep="afterany:$PREV"
     [ -n "$sft_dep" ] && gendep="${gendep:+$gendep,}$sft_dep"
     local gjid; gjid=$(submit "$gendep" --gres=gpu:8 --job-name=gen_${gk} \
-      --export=ALL,GEN_KEY=$gk,MODEL_ID=$mid,CKPT=$ckpt,BACKEND=$backend scripts/slurm/generator_infer.sh)
+      --export=ALL,GEN_KEY=$gk,MODEL_ID=$mid,CKPT=$ckpt,BACKEND=$backend -- scripts/slurm/generator_infer.sh)
     need_jid "$gjid" "gen $gk"; PREV="$gjid"; echo "submitted gen $gk -> $gjid" >&2
     local bjid; bjid=$(submit "afterok:$gjid" --gres=gpu:0 --job-name=build_${gk} \
-      --export=ALL,GEN_KEY=$gk scripts/slurm/build_pairs.sh)
+      --export=ALL,GEN_KEY=$gk -- scripts/slurm/build_pairs.sh)
     need_jid "$bjid" "build $gk"; PREV="$bjid"; echo "submitted build $gk -> $bjid" >&2
     pairs=$REPO/results/2026-07-15-generator-sweep/raw/pairs/gen_${gk}_880.parquet
     gate="afterok:$bjid"      # first sweep waits afterok on build; rest afterany on PREV
@@ -134,6 +134,7 @@ run_generator () {
       local sjid; sjid=$(submit "$dep" --gres=gpu:$gpus --job-name=gsw_${gk}_${cell_name}_${mode} \
         --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,THINKING_MODE=$mode,\
 CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$SWROOT \
+        -- \
         scripts/slurm/judge_sweep_cell.sh)
       need_jid "$sjid" "sweep $gk $cell_name $mode"; PREV="$sjid"
       echo "submitted sweep $gk $cell_name $mode -> $sjid (gpu:$gpus)" >&2

@@ -34,9 +34,9 @@ N_REPLICAS=8
 BASE_PORT=8000
 HOSTNAME_FQDN=$(hostname)
 ENDPOINTS_FILE="$REPO/logs/cot_serve_endpoints-${SLURM_JOB_ID:-local}.txt"
-OUT_PARQUET="$TURING_RL_DATA_ROOT/sft/prism_full_s42_sft_cot.parquet"
+OUT_PARQUET="$TURING_RL_GENERATED_DATA_ROOT/sft/prism_full_s42_sft_cot.parquet"
 
-mkdir -p "$REPO/logs" "$TURING_RL_DATA_ROOT/sft"
+mkdir -p "$REPO/logs" "$TURING_RL_GENERATED_DATA_ROOT/sft"
 
 echo "============================================"
 echo "CoT serve (thinking-off): $N_REPLICAS x $MODEL (TP=1)"

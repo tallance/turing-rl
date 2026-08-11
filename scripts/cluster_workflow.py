@@ -16,6 +16,36 @@ SOURCE_MANIFEST = "SOURCE_MANIFEST.json"
 DEFAULT_MAIN_REF = "lancewicki/main"
 DEFAULT_REMOTE_SOURCE_ROOT = "/home/lancewicki/projects/turing-rl-sources"
 DEFAULT_STATE_ROOT = "/home/lancewicki/projects/turing-rl"
+ENVIRONMENT_PATHS = {
+    "train": "/home/lancewicki/miniconda3/envs/turing-rl-train",
+    "rl_qwen35": "/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35",
+    "sft_qwen35": "/home/lancewicki/miniconda3/envs/turing-rl-sft-qwen35",
+    "judge_vllm": "/home/lancewicki/miniconda3/envs/judge-vllm",
+    "gemma4": "/home/lancewicki/miniconda3/envs/turing-rl-gemma4-vllm-nightly",
+    "verl_upstream": "/home/lancewicki/miniconda3/envs/verl-upstream",
+}
+DEPENDENCY_PROFILES = {
+    "eval": {
+        "environments": ("train", "rl_qwen35", "sft_qwen35", "judge_vllm", "gemma4"),
+        "include_verl": False,
+    },
+    "training": {
+        "environments": ("train", "rl_qwen35", "judge_vllm"),
+        "include_verl": True,
+    },
+    "sft": {
+        "environments": ("train", "sft_qwen35"),
+        "include_verl": False,
+    },
+    "data": {
+        "environments": ("train", "verl_upstream"),
+        "include_verl": False,
+    },
+    "all": {
+        "environments": tuple(ENVIRONMENT_PATHS),
+        "include_verl": True,
+    },
+}
 SSH_OPTIONS = (
     "-p",
     "2223",

@@ -42,7 +42,7 @@ export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 REPO=${TURING_RL_WORK_ROOT:?}
-DATA=$TURING_RL_DATA_ROOT/sft/qwen3-8b_prism_smoke_sft_cot.jsonl
+DATA=$TURING_RL_GENERATED_DATA_ROOT/sft/qwen3-8b_prism_smoke_sft_cot.jsonl
 OUT=$REPO/results/sft/smoke
 
 mkdir -p "$OUT"

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import tarfile
 from pathlib import Path
@@ -10,8 +11,15 @@ from pathlib import Path
 import pytest
 
 from scripts.cluster_launch import parse_environment, validate_run_root
-from scripts.cluster_workflow import clean_worktree, redact_argument, sha256_file, source_manifest
+from scripts.cluster_workflow import (
+    DEPENDENCY_PROFILES,
+    clean_worktree,
+    redact_argument,
+    sha256_file,
+    source_manifest,
+)
 from scripts.publish_cluster_source import remote_publish, verify_extracted_tree
+from scripts.record_runtime_manifest import enforced_dependencies
 from scripts.retire_cluster_checkout import record_uses_legacy_source
 
 
@@ -170,6 +178,97 @@ def test_provenance_redacts_generic_secret_assignments() -> None:
     )
 
 
+def test_dependency_profiles_scope_enforcement_without_hiding_inventory() -> None:
+    inventory = {
+        "verl": {"sha": "verl-a"},
+        "environments": [
+            {"name": "train", "package_list_sha256": "train-a"},
+            {"name": "gemma4", "package_list_sha256": "gemma-a"},
+            {"name": "sft_qwen35", "package_list_sha256": "sft-a"},
+        ],
+    }
+    selected = enforced_dependencies(inventory, "sft")
+    assert selected["profile"] == "sft"
+    assert selected["verl"] is None
+    assert [item["name"] for item in selected["environments"]] == ["train", "sft_qwen35"]
+
+    unused_changed = json.loads(json.dumps(inventory))
+    unused_changed["environments"][1]["package_list_sha256"] = "gemma-b"
+    assert enforced_dependencies(unused_changed, "sft") == selected
+
+    used_changed = json.loads(json.dumps(inventory))
+    used_changed["environments"][2]["package_list_sha256"] = "sft-b"
+    assert enforced_dependencies(used_changed, "sft") != selected
+    assert set(DEPENDENCY_PROFILES) == {"all", "data", "eval", "sft", "training"}
+
+
+def test_runtime_separates_input_and_debug_generated_data(tmp_path: Path) -> None:
+    repo = make_repo(tmp_path)
+    scripts = repo / "scripts"
+    scripts.mkdir()
+    for name in ("cluster_runtime.sh", "cluster_workflow.py", "publish_cluster_source.py"):
+        shutil.copy2(REPO / "scripts" / name, scripts / name)
+    (repo / "data").mkdir()
+    (repo / "data/source-code.txt").write_text("source\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "runtime source"], cwd=repo, check=True)
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    archive = tmp_path / "source.tar"
+    subprocess.run(["git", "archive", "-o", archive, sha], cwd=repo, check=True)
+    manifest = source_manifest(repo, sha)
+    manifest.update({"archive_sha256": sha256_file(archive), "published_at_utc": "test"})
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    source = tmp_path / "sources" / sha
+    remote_publish(archive, manifest_path, source, tmp_path / "sources/.lock")
+
+    state = tmp_path / "state"
+    (state / "data").mkdir(parents=True)
+    run = state / "results/debug/profile/run"
+    env = os.environ.copy()
+    env.update(
+        {
+            "TURING_RL_CODE_ROOT": str(source),
+            "TURING_RL_STATE_ROOT": str(state),
+            "TURING_RL_SOURCE_SHA": sha,
+            "TURING_RL_RUN_CLASS": "debug",
+            "TURING_RL_RUN_ROOT": str(run),
+            "TURING_RL_DEPENDENCY_PROFILE": "eval",
+        }
+    )
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            'source "$TURING_RL_CODE_ROOT/scripts/cluster_runtime.sh"; '
+            'turing_rl_prepare_runtime test; '
+            'printf "%s\\n" "$TURING_RL_INPUT_DATA_ROOT" '
+            '"$TURING_RL_GENERATED_DATA_ROOT" "$TURING_RL_DATA_ROOT" '
+            '"$(readlink "$TURING_RL_WORK_ROOT/data")"',
+        ],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    lines = result.stdout.splitlines()
+    assert lines == [
+        str(state / "data"),
+        str(run / "data"),
+        str(run / "data"),
+        str(source / "data"),
+    ]
+
+
+def test_maintained_launchers_do_not_use_ambiguous_data_root() -> None:
+    paths = list((REPO / "scripts/slurm").glob("*.sh"))
+    paths.extend((REPO / "scripts").glob("launch*.sh"))
+    paths.append(REPO / "scripts/verify_prism_split.sh")
+    offenders = [str(path.relative_to(REPO)) for path in paths if "TURING_RL_DATA_ROOT" in path.read_text()]
+    assert offenders == []
+
+
 def test_all_maintained_slurm_scripts_bootstrap_immutable_runtime() -> None:
     scripts = sorted((REPO / "scripts/slurm").glob("*.sh"))
     maintained = [path for path in scripts if "#SBATCH" in path.read_text()]
@@ -185,6 +284,20 @@ def test_no_shell_launcher_calls_sbatch_directly() -> None:
         for number, line in enumerate(path.read_text().splitlines(), 1):
             if direct.search(line):
                 offenders.append(f"{path.relative_to(REPO)}:{number}")
+    assert offenders == []
+
+
+def test_direct_snapshot_gateway_calls_include_script_boundary() -> None:
+    offenders: list[str] = []
+    for path in sorted((REPO / "scripts").glob("launch*.sh")):
+        text = path.read_text()
+        for match in re.finditer(r'\("\$SBATCH".*?\)', text, re.DOTALL):
+            invocation = match.group(0)
+            if '"$@"' not in invocation and not re.search(r"(?:^|\s)--(?:\s|\\)", invocation):
+                offenders.append(path.name)
+    arm_grid = (REPO / "scripts/slurm/submit_arm_a_grid.sh").read_text()
+    if '"$SBATCH" --export=ALL -- scripts/slurm/rl_generator_run.sh' not in arm_grid:
+        offenders.append("submit_arm_a_grid.sh")
     assert offenders == []
 
 
@@ -220,7 +333,9 @@ def test_snapshot_sbatch_records_submission(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_sbatch = fake_bin / "sbatch"
-    fake_sbatch.write_text("#!/bin/bash\necho '12345;cluster'\n")
+    fake_sbatch.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$@" > "$FAKE_SBATCH_ARGS"\necho "12345;cluster"\n'
+    )
     fake_sbatch.chmod(0o755)
     env = os.environ.copy()
     env.update(
@@ -231,6 +346,8 @@ def test_snapshot_sbatch_records_submission(tmp_path: Path) -> None:
             "TURING_RL_SOURCE_SHA": "abc",
             "TURING_RL_RUN_CLASS": "retained",
             "TURING_RL_RUN_ROOT": str(run_root),
+            "TURING_RL_DEPENDENCY_PROFILE": "eval",
+            "FAKE_SBATCH_ARGS": str(tmp_path / "sbatch-args.txt"),
         }
     )
     result = subprocess.run(
@@ -238,7 +355,9 @@ def test_snapshot_sbatch_records_submission(tmp_path: Path) -> None:
             os.fspath(Path(os.sys.executable)),
             os.fspath(REPO / "scripts/snapshot_sbatch.py"),
             "--export=ALL,API_TOKEN=secret,MODE=full",
+            "--",
             os.fspath(script),
+            "argument-ending-in.sh",
         ],
         env=env,
         text=True,
@@ -254,6 +373,9 @@ def test_snapshot_sbatch_records_submission(tmp_path: Path) -> None:
     assert "API_TOKEN=<redacted>" in record["sbatch_arguments"][0]
     assert any(argument.startswith("--output=") for argument in record["sbatch_arguments"])
     assert any(argument.startswith("--error=") for argument in record["sbatch_arguments"])
+    submitted = (tmp_path / "sbatch-args.txt").read_text().splitlines()
+    assert str(script.resolve()) in submitted
+    assert submitted[-1] == "argument-ending-in.sh"
     assert (run_root / "logs").is_dir()
 
 
@@ -270,6 +392,7 @@ def test_snapshot_sbatch_rejects_caller_managed_output(tmp_path: Path) -> None:
             "TURING_RL_SOURCE_SHA": "abc",
             "TURING_RL_RUN_CLASS": "debug",
             "TURING_RL_RUN_ROOT": str(tmp_path / "run"),
+            "TURING_RL_DEPENDENCY_PROFILE": "eval",
         }
     )
     result = subprocess.run(
@@ -277,6 +400,7 @@ def test_snapshot_sbatch_rejects_caller_managed_output(tmp_path: Path) -> None:
             os.fspath(Path(os.sys.executable)),
             os.fspath(REPO / "scripts/snapshot_sbatch.py"),
             "--output=/tmp/escape.out",
+            "--",
             os.fspath(script),
         ],
         env=env,
@@ -286,3 +410,26 @@ def test_snapshot_sbatch_rejects_caller_managed_output(tmp_path: Path) -> None:
     )
     assert result.returncode == 2
     assert "managed below TURING_RL_RUN_ROOT" in result.stderr
+
+
+def test_snapshot_sbatch_requires_explicit_script_boundary(tmp_path: Path) -> None:
+    env = os.environ.copy()
+    env.update(
+        {
+            "TURING_RL_CODE_ROOT": str(tmp_path),
+            "TURING_RL_STATE_ROOT": str(tmp_path / "state"),
+            "TURING_RL_SOURCE_SHA": "abc",
+            "TURING_RL_RUN_CLASS": "debug",
+            "TURING_RL_RUN_ROOT": str(tmp_path / "run"),
+            "TURING_RL_DEPENDENCY_PROFILE": "eval",
+        }
+    )
+    result = subprocess.run(
+        [os.sys.executable, REPO / "scripts/snapshot_sbatch.py", "job.sh"],
+        env=env,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert result.returncode == 2
+    assert "explicit '--' boundary" in result.stderr

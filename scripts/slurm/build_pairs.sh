@@ -21,7 +21,7 @@ REPO=${TURING_RL_WORK_ROOT:?}
 GEN_KEY=${GEN_KEY:?set GEN_KEY}
 SWEEP_BASE=${SWEEP_BASE:-$REPO/results/2026-07-15-generator-sweep}
 PKL=$SWEEP_BASE/raw/generator/$GEN_KEY/heldout_inference.pkl
-TEST=${EVAL_PARQUET:-$TURING_RL_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
+TEST=${EVAL_PARQUET:-$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
 PAIRS_TAG=${PAIRS_TAG:-880}
 OUT=$SWEEP_BASE/raw/pairs/gen_${GEN_KEY}_${PAIRS_TAG}.parquet
 mkdir -p "$(dirname "$OUT")"; cd "$REPO"

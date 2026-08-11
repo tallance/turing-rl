@@ -49,6 +49,7 @@ for TP in "${TPS[@]}"; do
     --gres=gpu:$TP \
     --job-name=judge_8b_tp$TP \
     --export=ALL,TP=$TP,PORT=$PORT \
+    -- \
     "$REPO/scripts/slurm/judge_serve_8b_tp.sh")
   if [ -z "$JOB" ]; then
     echo "  sbatch returned no id for tp=$TP" >&2

@@ -7,6 +7,7 @@ turing_rl_prepare_runtime() {
   : "${TURING_RL_SOURCE_SHA:?TURING_RL_SOURCE_SHA is required}"
   : "${TURING_RL_RUN_CLASS:?TURING_RL_RUN_CLASS is required}"
   : "${TURING_RL_RUN_ROOT:?TURING_RL_RUN_ROOT is required}"
+  : "${TURING_RL_DEPENDENCY_PROFILE:?TURING_RL_DEPENDENCY_PROFILE is required}"
 
   [ "$TURING_RL_CODE_ROOT" != "$TURING_RL_STATE_ROOT" ] || {
     echo "FATAL: immutable code root and mutable state root must differ" >&2
@@ -63,11 +64,14 @@ PY
     target="$work_root/$name"
     [ -e "$target" ] || [ -L "$target" ] || ln -s "$mutable_root/$name" "$target"
   done
-  # `data/` contains both tracked source utilities and large mutable datasets. Code uses the
-  # source view; launchers must use TURING_RL_DATA_ROOT for dataset payloads.
+  # `data/` contains tracked Python utilities, canonical input datasets, and generated datasets.
+  # Keep code in the source view and make payload intent explicit in maintained launchers.
   [ -e "$work_root/data" ] || ln -s "$TURING_RL_CODE_ROOT/data" "$work_root/data"
-  export TURING_RL_DATA_ROOT="$mutable_root/data"
-  mkdir -p "$TURING_RL_DATA_ROOT"
+  export TURING_RL_INPUT_DATA_ROOT="$TURING_RL_STATE_ROOT/data"
+  export TURING_RL_GENERATED_DATA_ROOT="$mutable_root/data"
+  # Compatibility only. New code must choose INPUT_DATA_ROOT or GENERATED_DATA_ROOT.
+  export TURING_RL_DATA_ROOT="$TURING_RL_GENERATED_DATA_ROOT"
+  mkdir -p "$TURING_RL_INPUT_DATA_ROOT" "$TURING_RL_GENERATED_DATA_ROOT"
   [ ! -f "$TURING_RL_STATE_ROOT/.env" ] || ln -s "$TURING_RL_STATE_ROOT/.env" "$work_root/.env" 2>/dev/null || true
   [ -e "$work_root/outputs" ] || ln -s "$TURING_RL_RUN_ROOT/hydra/$runtime_id" "$work_root/outputs"
 

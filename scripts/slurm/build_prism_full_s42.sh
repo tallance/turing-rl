@@ -28,7 +28,7 @@ if [ -f $TURING_RL_STATE_ROOT/.env ]; then
 fi
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-OUT_DIR=$TURING_RL_DATA_ROOT/prism/full_s42_history
+OUT_DIR=$TURING_RL_GENERATED_DATA_ROOT/prism/full_s42_history
 mkdir -p "$OUT_DIR"
 
 echo "============================================"

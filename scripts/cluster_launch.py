@@ -18,6 +18,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.cluster_workflow import (
+    DEPENDENCY_PROFILES,
     DEFAULT_MAIN_REF,
     DEFAULT_REMOTE_SOURCE_ROOT,
     DEFAULT_STATE_ROOT,
@@ -114,6 +115,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--remote-source-root", default=DEFAULT_REMOTE_SOURCE_ROOT)
     parser.add_argument("--state-root", default=DEFAULT_STATE_ROOT)
     parser.add_argument("--run-root", required=True)
+    parser.add_argument(
+        "--dependency-profile",
+        choices=sorted(DEPENDENCY_PROFILES),
+        required=True,
+        help="External dependencies enforced between submission and job startup",
+    )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--label")
     parser.add_argument("--env", action="append", default=[])
@@ -175,6 +182,7 @@ def main() -> int:
         "debug_label": args.label if args.debug else None,
         "state_root": args.state_root,
         "run_root": args.run_root,
+        "dependency_profile": args.dependency_profile,
         "launcher": launcher,
         "launcher_args": [redact_argument(value) for value in args.launcher_args],
         "environment_keys": sorted(environment),
@@ -219,6 +227,7 @@ def main() -> int:
         "TURING_RL_MAIN_SHA": main_sha,
         "TURING_RL_RUN_CLASS": run_class,
         "TURING_RL_RUN_ROOT": args.run_root,
+        "TURING_RL_DEPENDENCY_PROFILE": args.dependency_profile,
     }
     if args.label:
         base_environment["TURING_RL_DEBUG_LABEL"] = args.label

@@ -8,7 +8,7 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
 REPO=${REPO:-/home/lancewicki/projects/turing-rl}
 SBATCH=${TURING_RL_CODE_ROOT:+$TURING_RL_CODE_ROOT/scripts/snapshot_sbatch.sh}
-DATA_ROOT=${TURING_RL_DATA_ROOT:-$REPO/data}
+DATA_ROOT=${TURING_RL_INPUT_DATA_ROOT:-$REPO/data}
 PY=${PY:-/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python}
 EVAL_ROOT=${EVAL_ROOT:-$REPO/results/2026-08-10-test-eval-9b-full5ep-full-schema}
 EVAL_PARQUET=${EVAL_PARQUET:-$DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
@@ -105,6 +105,7 @@ EOF
   gpus=$((tp * replicas))
   jid=$(submit "$dep" --gres=gpu:$gpus --job-name="te_${judge}_${step}" \
     --export=ALL,MODEL=$model,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=on,CELL_NAME=$judge,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
+    -- \
     "$SLURM_SCRIPT")
   need_jid "$jid" "$judge/step$step"
   PREV="$jid"
@@ -114,7 +115,7 @@ done
 if [ "$END" -lt "$TOTAL" ]; then
   dep="afterok:$PREV"
   next=$(submit "$dep" --gres=gpu:0 --job-name=te_eval_continue \
-    --export=ALL,NEXT_OFFSET=$END "$CONTINUE_SCRIPT")
+    --export=ALL,NEXT_OFFSET=$END -- "$CONTINUE_SCRIPT")
   need_jid "$next" "continuation at offset $END"
   PREV="$next"
   echo "scheduled continuation offset=$END -> $next" >&2

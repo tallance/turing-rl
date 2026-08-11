@@ -28,8 +28,8 @@ if [ -f $TURING_RL_STATE_ROOT/.env ]; then
 fi
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-BUILD_DIR=$TURING_RL_DATA_ROOT/prism/full_s42_history_run2
-SPLIT_DIR=$TURING_RL_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10_run2
+BUILD_DIR=$TURING_RL_GENERATED_DATA_ROOT/prism/full_s42_history_run2
+SPLIT_DIR=$TURING_RL_GENERATED_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10_run2
 mkdir -p "$BUILD_DIR" "$SPLIT_DIR"
 
 echo "============================================"

@@ -20,17 +20,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.cluster_workflow import canonical_json, sha256_bytes, sha256_file
-
-
-DEFAULT_ENVS = (
-    "/home/lancewicki/miniconda3/envs/turing-rl-train",
-    "/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35",
-    "/home/lancewicki/miniconda3/envs/turing-rl-sft-qwen35",
-    "/home/lancewicki/miniconda3/envs/judge-vllm",
-    "/home/lancewicki/miniconda3/envs/turing-rl-gemma4-vllm-nightly",
-    "/home/lancewicki/miniconda3/envs/verl-upstream",
+from scripts.cluster_workflow import (
+    DEPENDENCY_PROFILES,
+    ENVIRONMENT_PATHS,
+    canonical_json,
+    sha256_bytes,
+    sha256_file,
 )
+
+
 KEY_PACKAGES = ("torch", "transformers", "trl", "vllm", "hydra-core", "ray", "peft", "verl")
 
 
@@ -74,9 +72,14 @@ def fingerprint_verl(path: Path) -> dict[str, object]:
     return record
 
 
-def fingerprint_environment(path: Path) -> dict[str, object]:
+def fingerprint_environment(name: str, path: Path) -> dict[str, object]:
     python = path / "bin/python"
-    record: dict[str, object] = {"path": str(path), "python": str(python), "exists": python.exists()}
+    record: dict[str, object] = {
+        "name": name,
+        "path": str(path),
+        "python": str(python),
+        "exists": python.exists(),
+    }
     if not python.exists():
         return record
     probe = r"""
@@ -102,12 +105,35 @@ print(json.dumps({'python_version': platform.python_version(), 'executable': sys
 
 
 def external_dependencies() -> dict[str, object]:
-    env_value = os.environ.get("TURING_RL_ENV_PATHS", "")
-    envs = tuple(filter(None, env_value.split(":"))) if env_value else DEFAULT_ENVS
     verl_dir = Path(os.environ.get("TURING_RL_VERL_DIR", "/storage/home/lancewicki/src/verl"))
     return {
         "verl": fingerprint_verl(verl_dir),
-        "environments": [fingerprint_environment(Path(path)) for path in envs],
+        "environments": [
+            fingerprint_environment(name, Path(path))
+            for name, path in ENVIRONMENT_PATHS.items()
+        ],
+    }
+
+
+def enforced_dependencies(inventory: dict[str, object], profile: str) -> dict[str, object]:
+    try:
+        policy = DEPENDENCY_PROFILES[profile]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown dependency profile {profile!r}; expected one of {sorted(DEPENDENCY_PROFILES)}"
+        ) from exc
+    environments = inventory.get("environments")
+    if not isinstance(environments, list):
+        raise ValueError("external dependency inventory has no environment list")
+    by_name = {str(item.get("name")): item for item in environments if isinstance(item, dict)}
+    required_names = tuple(policy["environments"])
+    missing = [name for name in required_names if name not in by_name]
+    if missing:
+        raise ValueError(f"external dependency inventory is missing profile environments: {missing}")
+    return {
+        "profile": profile,
+        "verl": inventory.get("verl") if policy["include_verl"] else None,
+        "environments": [by_name[name] for name in required_names],
     }
 
 
@@ -140,14 +166,24 @@ def runtime_context() -> dict[str, object]:
 
 
 def build_manifest() -> dict[str, object]:
-    external = external_dependencies()
+    profile = os.environ.get("TURING_RL_DEPENDENCY_PROFILE", "")
+    if profile not in DEPENDENCY_PROFILES:
+        raise SystemExit(
+            "TURING_RL_DEPENDENCY_PROFILE must be one of "
+            + ", ".join(sorted(DEPENDENCY_PROFILES))
+        )
+    inventory = external_dependencies()
+    enforced = enforced_dependencies(inventory, profile)
     return {
-        "format_version": 1,
+        "format_version": 2,
         "source_sha": os.environ.get("TURING_RL_SOURCE_SHA"),
         "code_root": os.environ.get("TURING_RL_CODE_ROOT"),
         "run_class": os.environ.get("TURING_RL_RUN_CLASS"),
-        "external_dependencies": external,
-        "external_fingerprint_sha256": sha256_bytes(canonical_json(external)),
+        "dependency_profile": profile,
+        "external_dependencies": inventory,
+        "external_inventory_sha256": sha256_bytes(canonical_json(inventory)),
+        "enforced_dependencies": enforced,
+        "enforced_fingerprint_sha256": sha256_bytes(canonical_json(enforced)),
         "runtime_context": runtime_context(),
     }
 
@@ -173,16 +209,23 @@ def main() -> int:
             raise SystemExit(
                 f"source mismatch: expected {expected.get('source_sha')} got {manifest.get('source_sha')}"
             )
-        if expected.get("external_fingerprint_sha256") != manifest["external_fingerprint_sha256"]:
+        if expected.get("dependency_profile") != manifest["dependency_profile"]:
             raise SystemExit(
-                "external runtime changed since submission; inspect expected and per-job manifests"
+                f"dependency profile mismatch: expected {expected.get('dependency_profile')} "
+                f"got {manifest['dependency_profile']}"
+            )
+        if expected.get("enforced_fingerprint_sha256") != manifest["enforced_fingerprint_sha256"]:
+            raise SystemExit(
+                "an enforced runtime dependency changed since submission; "
+                "inspect expected and per-job manifests"
             )
     if args.initialize and args.out.exists():
         expected = json.loads(args.out.read_text())
         if (
             expected.get("source_sha") != manifest.get("source_sha")
-            or expected.get("external_fingerprint_sha256")
-            != manifest.get("external_fingerprint_sha256")
+            or expected.get("dependency_profile") != manifest.get("dependency_profile")
+            or expected.get("enforced_fingerprint_sha256")
+            != manifest.get("enforced_fingerprint_sha256")
         ):
             raise SystemExit(f"refusing to overwrite incompatible expected runtime: {args.out}")
         return 0

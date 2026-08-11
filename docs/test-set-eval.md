@@ -23,10 +23,10 @@ Stage 0 — build a dense model per checkpoint and gate it (CPU, ~3 min each):
 ```bash
 STATE=/home/lancewicki/projects/turing-rl
 RUN=$STATE/results/<EVAL_ROOT>
-scripts/cluster_launch.sh --run-root "$RUN" \
-  scripts/submit_snapshot_job.sh -- --export=ALL,STEP=8 scripts/slurm/merge_grpo_ckpt.sh
-scripts/cluster_launch.sh --run-root "$RUN" \
-  scripts/submit_snapshot_job.sh -- --export=ALL,STEP=16 scripts/slurm/merge_grpo_ckpt.sh
+scripts/cluster_launch.sh --dependency-profile eval --run-root "$RUN" \
+  scripts/submit_snapshot_job.sh --export=ALL,STEP=8 -- scripts/slurm/merge_grpo_ckpt.sh
+scripts/cluster_launch.sh --dependency-profile eval --run-root "$RUN" \
+  scripts/submit_snapshot_job.sh --export=ALL,STEP=16 -- scripts/slurm/merge_grpo_ckpt.sh
 ```
 
 Optional `DISTINCT_FROM=<other hf_dense>` adds a check that two checkpoints actually differ.
@@ -37,9 +37,9 @@ Stage 1+2 — generate, build pairs, judge (`STEPS` must name checkpoints Stage 
 the pre-RL SFT init and needs no merge):
 
 ```bash
-scripts/cluster_launch.sh --plan-only --run-root "$RUN" \
+scripts/cluster_launch.sh --plan-only --dependency-profile eval --run-root "$RUN" \
   scripts/launch_test_eval.sh
-scripts/cluster_launch.sh --run-root "$RUN" \
+scripts/cluster_launch.sh --dependency-profile eval --run-root "$RUN" \
   --env EVAL_ROOT="$RUN" --env STEPS="0 8 16" scripts/launch_test_eval.sh
 ```
 
@@ -61,7 +61,7 @@ still exit 0, so a cell can score 850/880 and look successful to Slurm.
 Generation is decoupled from judging, so re-run only the judge stage over the existing pairs:
 
 ```bash
-scripts/cluster_launch.sh --run-root "$RUN" --env EVAL_ROOT="$RUN" \
+scripts/cluster_launch.sh --dependency-profile eval --run-root "$RUN" --env EVAL_ROOT="$RUN" \
   --env DO_GEN=0 --env JUDGES="qwen35-27b qwen35-397b" --env STEPS="0 8 16" \
   scripts/launch_test_eval.sh
 ```

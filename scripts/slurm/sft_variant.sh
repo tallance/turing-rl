@@ -41,7 +41,7 @@ export WANDB_RUN_GROUP=sft-variants
 export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-DATA=$TURING_RL_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl
+DATA=$TURING_RL_GENERATED_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl
 
 VARIANT=${VARIANT:?set VARIANT=qlora_r64|bf16_fsdp|bf16_fa2}
 SMOKE=${SMOKE:-0}

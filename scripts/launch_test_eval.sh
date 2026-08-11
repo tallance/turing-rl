@@ -56,7 +56,7 @@ MERGED_EP3=${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsd
 # EVAL_PARQUET is exported so generator_infer.sh / build_pairs.sh inherit it via --export=ALL.
 # EVAL_EXPECT is asserted by scripts/check_eval_split.py below: pointing this at train/val data
 # without declaring it aborts, so a train-set curve can never be published as held-out.
-export EVAL_PARQUET=${EVAL_PARQUET:-$TURING_RL_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
+export EVAL_PARQUET=${EVAL_PARQUET:-$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
 export EVAL_EXPECT=${EVAL_EXPECT:-heldout}
 export PAIRS_TAG=${PAIRS_TAG:-880}
 # Lets a new EVAL_ROOT reuse dense models already merged+gated under another root.
@@ -160,10 +160,11 @@ for entry in $GENERATORS; do
     # gpu:1 overrides generator_infer.sh's gpu:8 header -- vLLM runs TP=1, so 7 would idle.
     gjid=$(submit "$CHAIN_AFTER" --gres=gpu:1 --job-name=tegen_${gk} \
       --export=ALL,GEN_KEY=$gk,MODEL_ID=$model,CKPT=,BACKEND=$BACKEND \
+      -- \
       scripts/slurm/generator_infer.sh)
     need_jid "$gjid" "gen $gk"; echo "submitted gen  $gk -> $gjid ($model)" >&2
     bjid=$(submit "afterok:$gjid" --gres=gpu:0 --job-name=tebuild_${gk} \
-      --export=ALL,GEN_KEY=$gk scripts/slurm/build_pairs.sh)
+      --export=ALL,GEN_KEY=$gk -- scripts/slurm/build_pairs.sh)
     need_jid "$bjid" "build $gk"; echo "submitted build $gk -> $bjid" >&2
     BUILD_DEPS="${BUILD_DEPS}${gk}|${bjid}
 "
@@ -216,6 +217,7 @@ for dep_entry in $BUILD_DEPS; do
       [ -n "$PREV" ] && dep="${dep:+$dep,}afterany:$PREV"
       sjid=$(submit "$dep" --gres=gpu:$gpus --job-name=tejudge_${gk}_${cell_name}_${mode} \
         --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=$mode,CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
+        -- \
         scripts/slurm/judge_sweep_cell.sh)
       need_jid "$sjid" "judge $gk $cell_name $mode"
       echo "submitted judge $gk $cell_name/$mode -> $sjid (gpu:$gpus)" >&2

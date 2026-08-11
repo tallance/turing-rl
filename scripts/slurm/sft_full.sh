@@ -44,7 +44,7 @@ export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 REPO=${TURING_RL_WORK_ROOT:?}
-DATA=$TURING_RL_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl
+DATA=$TURING_RL_GENERATED_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl
 OUT=$REPO/checkpoints/sft/qwen3_8b_prism_full_s42
 
 mkdir -p "$OUT"
@@ -64,7 +64,7 @@ echo "============================================"
 cd "$REPO"
 
 $PY -u -m training.sft.lora_sft --model qwen3-8b \
-    --data_path $TURING_RL_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl \
+    --data_path $TURING_RL_GENERATED_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl \
     --output_dir $REPO/checkpoints/sft/qwen3_8b_prism_full_s42 \
     --max_seq_length 8192 --resume_from_checkpoint auto --report_to wandb
 RC=$?

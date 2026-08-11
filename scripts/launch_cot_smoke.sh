@@ -21,7 +21,7 @@ mkdir -p "$LOGS"
 echo "============================================"
 echo "[launch] submitting CoT server"
 echo "============================================"
-SERVER_JOB=$("$SBATCH" --parsable "$REPO/scripts/slurm/cot_server.sh")
+SERVER_JOB=$("$SBATCH" --parsable -- "$REPO/scripts/slurm/cot_server.sh")
 if [ -z "$SERVER_JOB" ]; then
   echo "sbatch did not return a job id" >&2
   exit 2
@@ -89,6 +89,7 @@ echo "[launch] submitting CoT client (COT_HOST=$SERVER_NODE)"
 echo "============================================"
 CLIENT_JOB=$("$SBATCH" --parsable \
   --export=ALL,COT_HOST="$SERVER_NODE",COT_PORT=8000 \
+  -- \
   "$REPO/scripts/slurm/cot_generate_smoke.sh")
 if [ -z "$CLIENT_JOB" ]; then
   echo "client sbatch did not return a job id" >&2

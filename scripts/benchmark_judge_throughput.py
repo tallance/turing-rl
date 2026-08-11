@@ -269,6 +269,7 @@ def write_report(
         "",
         "```",
         "scripts/cluster_launch.sh \\",
+        "  --dependency-profile eval \\",
         "  --run-root /home/lancewicki/projects/turing-rl/results/judge_throughput \\",
         "  scripts/launch_judge_throughput_sweep.sh",
         "```",

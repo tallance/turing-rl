@@ -47,8 +47,8 @@ export HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 REPO=${TURING_RL_WORK_ROOT:?}
-IN_PARQUET="$TURING_RL_DATA_ROOT/prism/history_smoke/train.parquet"
-OUT_DIR="$TURING_RL_DATA_ROOT/sft"
+IN_PARQUET="$TURING_RL_GENERATED_DATA_ROOT/prism/history_smoke/train.parquet"
+OUT_DIR="$TURING_RL_GENERATED_DATA_ROOT/sft"
 COT_PARQUET="$OUT_DIR/qwen3-8b_prism_smoke_sft_cot.parquet"
 COT_JSONL="$OUT_DIR/qwen3-8b_prism_smoke_sft_cot.jsonl"
 mkdir -p "$OUT_DIR"

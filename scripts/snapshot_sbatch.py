@@ -24,6 +24,7 @@ REQUIRED_ENV = (
     "TURING_RL_SOURCE_SHA",
     "TURING_RL_RUN_CLASS",
     "TURING_RL_RUN_ROOT",
+    "TURING_RL_DEPENDENCY_PROFILE",
 )
 
 
@@ -42,13 +43,22 @@ def main() -> int:
             return 2
     args = sys.argv[1:]
     if not args:
-        print("usage: snapshot_sbatch.py [sbatch options] SCRIPT [args...]", file=sys.stderr)
+        print("usage: snapshot_sbatch.py [sbatch options] -- SCRIPT [args...]", file=sys.stderr)
         return 2
-    if "--wrap" in args or any(arg.startswith("--wrap=") for arg in args):
+    if "--" not in args:
+        print("FATAL: use an explicit '--' boundary before the Slurm script", file=sys.stderr)
+        return 2
+    boundary = args.index("--")
+    options = args[:boundary]
+    payload = args[boundary + 1 :]
+    if not payload:
+        print("FATAL: no Slurm script follows the explicit '--' boundary", file=sys.stderr)
+        return 2
+    if "--wrap" in options or any(arg.startswith("--wrap=") for arg in options):
         print("FATAL: --wrap bypasses immutable script validation", file=sys.stderr)
         return 2
     output_options = ("--output", "--error", "-o", "-e")
-    for arg in args:
+    for arg in options:
         if arg in output_options or any(
             arg.startswith(f"{option}=") for option in output_options
         ) or arg.startswith(("-o", "-e")) and not arg.startswith("--"):
@@ -57,22 +67,15 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 2
-    for arg in args:
+    for arg in options:
         if arg.startswith("--export="):
             exported = arg.split("=", 1)[1]
             if exported != "ALL" and not exported.startswith("ALL,"):
                 print("FATAL: --export must include ALL so TURING_RL_* provenance survives", file=sys.stderr)
                 return 2
-    args = [arg for arg in args if arg != "--parsable"]
-    script_candidates = [
-        (index, arg)
-        for index, arg in enumerate(args)
-        if not arg.startswith("-") and Path(arg).suffix == ".sh"
-    ]
-    if not script_candidates:
-        print("FATAL: no Slurm script argument found", file=sys.stderr)
-        return 2
-    script_index, script_arg = script_candidates[-1]
+    options = [arg for arg in options if arg != "--parsable"]
+    script_arg = payload[0]
+    script_arguments = payload[1:]
     script = Path(script_arg).resolve()
     code_root = Path(os.environ["TURING_RL_CODE_ROOT"]).resolve()
     try:
@@ -87,13 +90,16 @@ def main() -> int:
     run_root = Path(os.environ["TURING_RL_RUN_ROOT"])
     log_root = run_root / "logs"
     log_root.mkdir(parents=True, exist_ok=True)
-    args[script_index:script_index] = [
+    sbatch_arguments = [
+        *options,
         f"--output={log_root}/slurm-%x-%j.out",
         f"--error={log_root}/slurm-%x-%j.err",
+        str(script),
+        *script_arguments,
     ]
 
     result = subprocess.run(
-        ["sbatch", "--parsable", *args],
+        ["sbatch", "--parsable", *sbatch_arguments],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -113,7 +119,8 @@ def main() -> int:
         "code_root": str(code_root),
         "run_class": os.environ["TURING_RL_RUN_CLASS"],
         "script": str(script),
-        "sbatch_arguments": [redact_argument(value) for value in args],
+        "dependency_profile": os.environ["TURING_RL_DEPENDENCY_PROFILE"],
+        "sbatch_arguments": [redact_argument(value) for value in sbatch_arguments],
     }
     out = run_root / "provenance" / "jobs" / job_id / "submission.json"
     atomic_write(out, provenance)
