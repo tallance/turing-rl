@@ -224,7 +224,7 @@ case "$MODE" in
     # "${OVR[@]}" below. A stray ambient value -- sbatch --export=ALL propagates the submitting
     # shell, the same mechanism behind the 13634 incident -- would therefore silently beat every
     # value pinned above. Refuse to launch instead of running 21 h with a config nobody chose.
-    for _protected in data.train_max_samples data.val_max_samples data.train_batch_size \
+    for _protected in data.train_max_samples data.val_max_samples \
                       trainer.total_epochs trainer.save_freq trainer.test_freq \
                       trainer.val_before_train trainer.max_actor_ckpt_to_keep; do
       case " ${EXTRA_OVERRIDES:-} " in

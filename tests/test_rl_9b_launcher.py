@@ -86,8 +86,8 @@ def test_frac10ep10_pins_the_subsets_and_the_per_epoch_cadence():
         assert k in arm, f"frac10ep10 must pin {k}"
     # save_freq already equals steps_per_epoch, so the epoch-end hook would double-save.
     assert "export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0" in arm
-    # Batch size stays at the config default: changing it would add a second variable versus
-    # full5. (The bare key appears in the guard's protected list; only an assignment is wrong.)
+    # Batch size comes from the 9B config, not this arm; setting it here would add a second
+    # variable versus full5.
     assert "data.train_batch_size=" not in arm
     assert "overfit|full|epoch1|full5|frac10ep10" in RUN_2NODE
 
@@ -102,7 +102,6 @@ def test_frac10ep10_rejects_extra_overrides_that_collide_with_pinned_keys():
     for protected in (
         "data.train_max_samples",
         "data.val_max_samples",
-        "data.train_batch_size",
         "trainer.total_epochs",
         "trainer.save_freq",
         "trainer.test_freq",
@@ -125,6 +124,7 @@ def test_frac10ep10_extra_overrides_guard_actually_fires():
         ("data.val_max_samples=99", 5),
         ("trainer.max_actor_ckpt_to_keep=6", 5),        # the 13634 value
         ("actor_rollout_ref.actor.optim.lr=2e-5", 0),   # unpinned key: escape hatch survives
+        ("data.train_batch_size=64", 0),                # the arm does not pin it -- must pass
         ("trainer.total_epochs_extra=3", 0),            # near-miss must not false-positive
     ):
         proc = subprocess.run(["bash", "-c", script, "_", value], capture_output=True, text=True)
