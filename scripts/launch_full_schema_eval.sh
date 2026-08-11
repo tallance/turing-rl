@@ -98,7 +98,7 @@ EOF
   fi
 
   dep=""
-  [ -n "$PREV" ] && dep="afterany:$PREV"
+  [ -n "$PREV" ] && dep="afterok:$PREV"
   gpus=$((tp * replicas))
   jid=$(submit "$dep" --gres=gpu:$gpus --job-name="te_${judge}_${step}" \
     --export=ALL,MODEL=$model,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=on,CELL_NAME=$judge,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
@@ -109,7 +109,7 @@ EOF
 done
 
 if [ "$END" -lt "$TOTAL" ]; then
-  dep="afterany:$PREV"
+  dep="afterok:$PREV"
   next=$(submit "$dep" --gres=gpu:0 --job-name=te_eval_continue \
     --export=ALL,NEXT_OFFSET=$END "$CONTINUE_SCRIPT")
   need_jid "$next" "continuation at offset $END"
