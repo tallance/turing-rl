@@ -36,6 +36,28 @@ MAX_PAIRS=${MAX_PAIRS:-}
 CONCURRENCY=${CONCURRENCY:-32}
 [ $((REPLICAS*TP)) -gt 8 ] && { echo "ERROR: REPLICAS*TP>8 (asked $((REPLICAS*TP)))" >&2; exit 2; }
 
+# vLLM allocates additional TCPStore/ZMQ ports internally. Its default
+# close-before-bind probe can race when several replicas start together and
+# select the same ephemeral port. Give each replica a deterministic port band;
+# VLLM_PORT is the start of the internal scan, not the OpenAI API port below.
+VLLM_INTERNAL_PORT_BASE=${VLLM_INTERNAL_PORT_BASE:-20000}
+VLLM_INTERNAL_PORT_STRIDE=${VLLM_INTERNAL_PORT_STRIDE:-100}
+case "$VLLM_INTERNAL_PORT_BASE:$VLLM_INTERNAL_PORT_STRIDE" in
+  *[!0-9:]*|:*|*:)
+    echo "ERROR: VLLM internal port base/stride must be positive integers" >&2
+    exit 2
+    ;;
+esac
+[ "$VLLM_INTERNAL_PORT_BASE" -ge 1024 ] && [ "$VLLM_INTERNAL_PORT_STRIDE" -ge 32 ] || {
+  echo "ERROR: VLLM internal port base must be >=1024 and stride must be >=32" >&2
+  exit 2
+}
+VLLM_INTERNAL_PORT_LAST=$((VLLM_INTERNAL_PORT_BASE + REPLICAS * VLLM_INTERNAL_PORT_STRIDE - 1))
+[ "$VLLM_INTERNAL_PORT_LAST" -le 65535 ] || {
+  echo "ERROR: VLLM internal port bands exceed TCP port 65535" >&2
+  exit 2
+}
+
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1 VLLM_LOGGING_LEVEL=INFO
 # All cell models are pre-cached, so serve OFFLINE. Without this, every replica
@@ -145,15 +167,17 @@ PIDS=(); URLS=()
 for i in $(seq 0 $((REPLICAS-1))); do
   gpus=$(seq -s, $((i*TP)) $((i*TP+TP-1)))
   port=$((PORT_BASE+i))
+  internal_port=$((VLLM_INTERNAL_PORT_BASE + i * VLLM_INTERNAL_PORT_STRIDE))
+  echo "replica $i ports: api=$port internal_start=$internal_port"
   if [ "$IS_GEMMA4" = "1" ]; then
-    CUDA_VISIBLE_DEVICES=$gpus "$GEMMA_VLLM" serve "$GEMMA_MODEL_PATH" \
+    VLLM_PORT=$internal_port CUDA_VISIBLE_DEVICES=$gpus "$GEMMA_VLLM" serve "$GEMMA_MODEL_PATH" \
       --served-model-name "$MODEL" \
       --download-dir "$HF_HOME" --tensor-parallel-size "$TP" \
       --max-model-len 32768 --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" --dtype bfloat16 \
       "${RP[@]}" "${AR[@]}" "${QZ[@]}" "${SD[@]}" "${MS[@]}" "${GEMMA_ARGS[@]}" \
       --host 0.0.0.0 --port "$port" > "$MODE_DIR/vllm_server/replica_$i.log" 2>&1 &
   else
-    CUDA_VISIBLE_DEVICES=$gpus $PY_SERVER -m vllm.entrypoints.openai.api_server \
+    VLLM_PORT=$internal_port CUDA_VISIBLE_DEVICES=$gpus $PY_SERVER -m vllm.entrypoints.openai.api_server \
       --model "$MODEL" --download-dir "$HF_HOME" --tensor-parallel-size "$TP" \
       --max-model-len 32768 --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" --dtype bfloat16 \
       "${RP[@]}" "${AR[@]}" "${QZ[@]}" "${SD[@]}" "${MS[@]}" --host 0.0.0.0 --port "$port" \

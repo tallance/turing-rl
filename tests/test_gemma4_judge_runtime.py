@@ -19,3 +19,11 @@ def test_gemma_runtime_is_narrow_and_snapshot_pinned():
     assert "FLASHINFER_WORKSPACE_BASE" in source
     assert '"image":0' in source
     assert "GEMMA_GPU_MEMORY_UTILIZATION:-0.90" in source
+
+
+def test_concurrent_replicas_get_disjoint_vllm_internal_port_ranges():
+    source = CELL_SCRIPT.read_text()
+    assert "VLLM_INTERNAL_PORT_BASE" in source
+    assert "VLLM_INTERNAL_PORT_STRIDE" in source
+    assert 'internal_port=$((VLLM_INTERNAL_PORT_BASE + i * VLLM_INTERNAL_PORT_STRIDE))' in source
+    assert source.count("VLLM_PORT=$internal_port CUDA_VISIBLE_DEVICES=$gpus") == 2
