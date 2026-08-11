@@ -150,6 +150,10 @@ def main() -> None:
             gen_key = reward_dir.parents[3].name
             pairs = root / "raw" / "pairs" / f"gen_{gen_key}_{a.pairs_tag}.parquet"
             if not pairs.exists():
+                # NOT a silent skip. A scored cell with no matching pair-set means either the
+                # wrong --pairs_tag (so this run verified a subset of what exists and would still
+                # print PASS) or a half-built tree. Both must fail loudly -- silently checking
+                # fewer cells than exist is the exact blind spot this script was written for.
                 unpaired.append(f"{reward_dir}: no pair-set at {pairs}")
                 continue
             checks.append((reward_dir, pairs))

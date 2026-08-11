@@ -31,6 +31,11 @@
 #   EVAL_ROOT=$REPO/results/<new> MODELS_ROOT=$REPO/results/<old>/models \
 #   GEN_KEY_PREFIX=9b-full5ep-step STEPS="0 32 ..." DO_GEN=0 \
 #   JUDGES="gemma4-31b" bash scripts/launch_test_eval.sh
+#
+#   # a non-held-out arm: the split must be DECLARED, or check_eval_split.py aborts pre-submit
+#   EVAL_ROOT=$REPO/results/<date>-trainset-eval MODELS_ROOT=<existing>/models \
+#   EVAL_PARQUET=<...>/grpo/train_used2048.parquet EVAL_EXPECT=train PAIRS_TAG=2048 \
+#   GEN_KEY_PREFIX=9b-grpo-train-step bash scripts/launch_test_eval.sh
 set -uo pipefail
 REPO=/home/lancewicki/projects/turing-rl
 cd "$REPO" || exit 2
@@ -46,11 +51,16 @@ CHAIN_AFTER=${CHAIN_AFTER:-}
 
 MERGED_EP3=${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}
 
-# --- evaluated split and reusable artifact locations ---
+# --- what we evaluate on. Defaults reproduce the held-out test-set eval exactly. ---
+# EVAL_PARQUET is exported so generator_infer.sh / build_pairs.sh inherit it via --export=ALL.
+# EVAL_EXPECT is asserted by scripts/check_eval_split.py below: pointing this at train/val data
+# without declaring it aborts, so a train-set curve can never be published as held-out.
 export EVAL_PARQUET=${EVAL_PARQUET:-$REPO/data/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
 export EVAL_EXPECT=${EVAL_EXPECT:-heldout}
 export PAIRS_TAG=${PAIRS_TAG:-880}
+# Lets a new EVAL_ROOT reuse dense models already merged+gated under another root.
 MODELS_ROOT=${MODELS_ROOT:-$EVAL_ROOT/models}
+# Keeps gen keys (and so output dirs) distinct when several arms share a checkpoint set.
 GEN_KEY_PREFIX=${GEN_KEY_PREFIX:-9b-grpo-step}
 
 # --- generation config: Qwen3 model-card = job 13634 val_kwargs; lengths = validation caps ---
@@ -119,7 +129,8 @@ need_jid () {
 
 mkdir -p "$EVAL_ROOT/raw/pairs" "$EVAL_ROOT/raw/sweep" "$REPO/logs"
 
-# Assert and record the split before spending GPU time.
+# Split guard, PRE-SUBMIT: a mislabelled eval set costs seconds here instead of an 8-GPU night,
+# and the verdict lands in the results tree so the split is evidenced, not just asserted.
 /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python scripts/check_eval_split.py \
     --eval_parquet "$EVAL_PARQUET" --expect "$EVAL_EXPECT" \
     --out_json "$EVAL_ROOT/split_guard.json" \

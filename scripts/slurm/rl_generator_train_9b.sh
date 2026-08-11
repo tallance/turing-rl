@@ -62,6 +62,10 @@ shopt -u nullglob
   echo "ERROR: merged SFT model has no weights under $MERGED_SFT_MODEL_DIR" >&2
   exit 2
 }
+# The 9B recipe lives in qwen3_9b_grpo_turing.yaml. The 8B config this used to name carries
+# 8B-era lr/kl/temperature that no 9B run has ever wanted, and relying on EXTRA_OVERRIDES to
+# correct them at submit time is what silently mis-trained job 15143.
+GRPO_CONFIG_NAME=${GRPO_CONFIG_NAME:-qwen3_9b_grpo_turing}
 DATA_BASE=data/prism/full_s42_history_sft40_grpo60_test10/grpo
 TRAIN_FILE=${TRAIN_FILE:-$DATA_BASE/train.parquet}
 VAL_FILE=${VAL_FILE:-$DATA_BASE/val.parquet}
@@ -105,14 +109,14 @@ OVR=(
   actor_rollout_ref.ref.log_prob_micro_batch_size_per_gpu=1
   actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
   # rollout (vLLM) --------------------------------------------------------------------------------
-  actor_rollout_ref.rollout.tensor_model_parallel_size=${RL_ROLLOUT_TP:-4}
+  actor_rollout_ref.rollout.tensor_model_parallel_size=${RL_ROLLOUT_TP:-1}
   actor_rollout_ref.rollout.free_cache_engine=True
   actor_rollout_ref.rollout.enforce_eager=True
   actor_rollout_ref.rollout.enable_prefix_caching=False
   actor_rollout_ref.rollout.enable_chunked_prefill=True   # REQUIRED: prompts ~12.5k > 4096 batch cap
   actor_rollout_ref.rollout.max_model_len=13524
   actor_rollout_ref.rollout.max_num_batched_tokens=4096
-  actor_rollout_ref.rollout.gpu_memory_utilization=${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.40}
+  actor_rollout_ref.rollout.gpu_memory_utilization=${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}
   actor_rollout_ref.rollout.calculate_log_probs=True       # feeds the B0 logprob-parity guard
   actor_rollout_ref.rollout.checkpoint_engine.update_weights_bucket_megabytes=3072   # no + (key exists)
   actor_rollout_ref.rollout.agent.num_workers=${RL_NGPUS:-8}  # rollout batch must chunk evenly in V0
@@ -157,12 +161,86 @@ case "$MODE" in
     ) ;;
   epoch1) OVR+=( trainer.total_epochs=1 ) ;;
   full)   : ;;   # base config (few epochs)
+  full5)
+    # Full-dataset production run: 4174 train rows / batch 64 = 65 steps/epoch, 325 steps total.
+    # Everything cadence-related is PINNED here rather than left to EXTRA_OVERRIDES, for the same
+    # reason judge concurrency is pinned in rl_generator_run_9b.sh: job 13634 silently ran with an
+    # inherited value and nothing in the repo recorded it.
+    #
+    # save_freq=32 -> ckpts at 32,64,...,320 (~12.3 h apart). A checkpoint 32 steps INTO each epoch
+    # (step = 32 mod 65) is not expressible: save_freq is a plain multiple, and the epoch-end hook
+    # (verl_runtime_patch.py:_resolve_epoch_aligned_save_freq) returns exactly steps_per_epoch with
+    # no offset. save_freq=32 lands within 5 steps of those targets, so the hook is turned OFF here
+    # -- left on it would fire at 65,130,195,260,325, i.e. 5 near-duplicate saves 1-5 steps after
+    # the save_freq ones (~95 GB of redundant weights).
+    #
+    # test_freq=32 puts validation on the SAME step grid as the checkpoints, so every saved ckpt
+    # has a val score. Full 705-row val split at ~0.225 req/s is ~52 min per pass, 11 passes.
+    export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0
+    OVR+=(
+      trainer.total_epochs=5
+      trainer.save_freq=32
+      trainer.test_freq=32
+      trainer.val_before_train=True
+      # veRL's own default is null (keep all). 13634 was submitted with 6, which would silently
+      # delete the first four of this run's ten checkpoints.
+      trainer.max_actor_ckpt_to_keep=null
+    ) ;;
+  frac10ep10)
+    # Low-compute contrast arm to full5: 10% of the train split, 10 epochs, one checkpoint and
+    # one validation pass per epoch. The question is whether the smaller slice overfits MORE,
+    # which reads off train/val divergence WITHIN this run (10 views per sample vs full5's 5).
+    # This is NOT a matched-compute comparison: 60 steps is ~18% of full5's 325, so a final-val
+    # gap between the two runs must not be read as coverage-vs-repetition.
+    #
+    # 384 = 6 x 64, i.e. 9.2% of the 4174-row train split, NOT the round 10% (417).
+    # The train loader sets drop_last=True (ray_trainer.py:409), so with 417 rows each epoch
+    # would train on 384 and discard 33 -- and because the sampler reshuffles per epoch, a
+    # DIFFERENT 33 each time, leaving samples seen 9.21 times on average instead of 10 and
+    # unevenly. 384 divides the batch exactly: nothing is dropped, every sample is seen exactly
+    # once per epoch and exactly 10 times over the run. Step count is identical either way
+    # (6 steps/epoch, 60 total), so the clean repeat costs nothing.
+    #
+    # save_freq=test_freq=6 puts checkpoints and validation on the same epoch-aligned grid
+    # (6,12,...,60), so every saved ckpt has a val score. Because save_freq already equals
+    # steps_per_epoch, the epoch-end hook is turned OFF -- left on it would fire at the same
+    # steps and write 10 duplicate checkpoints (~190 GB).
+    #
+    # 352 = 50% of the 705-row val split. At seed 42 this is the SAME subset the half-data run
+    # used (data/.../grpo/val_used352.meta.json), so val is comparable across the two runs.
+    # Subsampling is native to veRL (rl_dataset.py: rng.choice(total, size, replace=False)
+    # under data.shuffle=true); no new parquet files are needed.
+    export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0
+    OVR+=(
+      data.train_max_samples=384
+      data.val_max_samples=352
+      trainer.total_epochs=10
+      trainer.save_freq=6
+      trainer.test_freq=6
+      trainer.val_before_train=True
+      trainer.max_actor_ckpt_to_keep=null
+    )
+    # Hydra gives the LAST occurrence of a key priority, and EXTRA_OVERRIDES is appended after
+    # "${OVR[@]}" below. A stray ambient value -- sbatch --export=ALL propagates the submitting
+    # shell, the same mechanism behind the 13634 incident -- would therefore silently beat every
+    # value pinned above. Refuse to launch instead of running 21 h with a config nobody chose.
+    for _protected in data.train_max_samples data.val_max_samples \
+                      trainer.total_epochs trainer.save_freq trainer.test_freq \
+                      trainer.val_before_train trainer.max_actor_ckpt_to_keep; do
+      case " ${EXTRA_OVERRIDES:-} " in
+        *" $_protected="*|*"+$_protected="*)
+          echo "ERROR: EXTRA_OVERRIDES sets '$_protected', which MODE=frac10ep10 pins." >&2
+          echo "       EXTRA_OVERRIDES=${EXTRA_OVERRIDES}" >&2
+          echo "       Unpinned keys are still allowed; remove this one and resubmit." >&2
+          exit 5 ;;
+      esac
+    done ;;
 esac
 
-echo "+ $PY -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen3_8b_grpo_turing ${OVR[*]} ${EXTRA_OVERRIDES:-}"
+echo "+ $PY -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name $GRPO_CONFIG_NAME ${OVR[*]} ${EXTRA_OVERRIDES:-}"
 $PY -m training.grpo.run_verl_main_ppo \
   --config-dir training/grpo/configs \
-  --config-name qwen3_8b_grpo_turing \
+  --config-name "$GRPO_CONFIG_NAME" \
   "${OVR[@]}" ${EXTRA_OVERRIDES:-}
 RC=$?
 echo "=== trainer exit: $RC ==="

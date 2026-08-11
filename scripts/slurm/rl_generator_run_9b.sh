@@ -19,7 +19,10 @@
 #
 # Submit: B0_ROLLOUT_SYNC=1 JUDGE=9b MODE=overfit OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike \
 #           sbatch --export=ALL scripts/slurm/rl_generator_run_9b.sh
-#   JUDGE = 9b | 397b     MODE = overfit | full | epoch1
+#   JUDGE = 9b | 397b     MODE = overfit | full | epoch1 | full5 | frac10ep10
+#   full5 = full-dataset 5-epoch production run (325 steps; ckpt + validate every 32).
+#   frac10ep10 = 10% of train (417 rows), 10 epochs (60 steps; ckpt + validate every 6),
+#                validating on 50% of the val split. Judge identical to full5.
 #   B0_ROLLOUT_SYNC=1 turns on the Step-3b rollout-sync hook (writes rollout_sync.json).
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
@@ -32,11 +35,19 @@ cd "$REPO"
 if [ -f "$REPO/.env" ]; then set -a; source "$REPO/.env"; set +a; fi
 export WANDB_BASE_URL="${WANDB_BASE_URL:-https://meta.wandb.io}"
 export WANDB_MODE=online
+# Keep the wandb run dir OFF FSx. Job 13634 completed all 32 steps, yet wandb kept only 30 train
+# points and 4 of 5 validations: the FSx wobble that killed the job also stalled wandb's writer,
+# so the tail never reached even the LOCAL transaction log (two `wandb sync` runs recovered
+# nothing). Node-local tmpfs is immune to that; cleanup() below syncs it and copies it back.
+export WANDB_DIR="${WANDB_DIR:-/tmp/wandb-${SLURM_JOB_ID:-$$}}"
+mkdir -p "$WANDB_DIR"
+# Arm-B trainer env (same one rl_generator_train_9b.sh runs in), used for the exit-time sync.
+WANDB_BIN=${WANDB_BIN:-/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/wandb}
 
 JUDGE=${JUDGE:?set JUDGE=9b|397b}
-MODE=${MODE:?set MODE=overfit|full|epoch1}
+MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep10}
 case "$JUDGE" in 9b|397b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
-case "$MODE" in overfit|full|epoch1) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
+case "$MODE" in overfit|full|epoch1|full5|frac10ep10) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
 case "$JUDGE" in
   9b)   JUDGE_MODEL=Qwen/Qwen3.5-9B;                  TP=1; DP=8 ;;
   397b) JUDGE_MODEL=Qwen/Qwen3.5-397B-A17B-GPTQ-Int4; TP=8; DP=1 ;;
@@ -63,7 +74,18 @@ MODEL=$JUDGE_MODEL TP=$TP DP=$DP JUDGE_ENDPOINT_FILE=$ENDPOINT_FILE \
   srun --nodes=1 --ntasks=1 --nodelist="$NODE_JUDGE" --gres=gpu:8 --overlap \
   bash scripts/slurm/judge_serve_9b_replicas.sh &
 JUDGE_PID=$!
-cleanup() { kill "$JUDGE_PID" 2>/dev/null || true; }
+# Preserve wandb before the node-local dir vanishes with the job, then push whatever the run
+# never managed to upload. Slurm sends SIGTERM before SIGKILL, so this usually gets to run;
+# the copy happens first so the transaction log survives even if the sync itself is killed.
+save_wandb() {
+  [ -d "$WANDB_DIR" ] || return 0
+  cp -r "$WANDB_DIR" "$REPO/wandb/joblocal-${SLURM_JOB_ID:-$$}" 2>/dev/null || true
+  for d in "$WANDB_DIR"/run-*; do
+    [ -d "$d" ] || continue
+    timeout 600 "$WANDB_BIN" sync "$d" 2>&1 | tail -2 || true
+  done
+}
+cleanup() { save_wandb; kill "$JUDGE_PID" 2>/dev/null || true; }
 trap cleanup EXIT TERM INT
 
 # --- wait for the judge to publish its endpoint (written only after model-verified health) ---
@@ -89,7 +111,24 @@ export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 export PERSONA_JUDGE_DUMP_RATE=1.0
 export PERSONA_REWARD_DUMP_DIR="$REWARD_DUMP_DIR"
 export PERSONA_EVAL_JUDGE_MODEL="$JUDGE_MODEL"
-export PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY="${PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY:-128}"
+# --- judge concurrency: PINNED, never inherited ---------------------------------------
+# reward.py:_reward_judge_request_limit() checks TURING_JUDGE_MAX_CONCURRENCY *before*
+# PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY, and sbatch --export=ALL propagates the submitting
+# shell. So a stray ambient TURING_JUDGE_MAX_CONCURRENCY silently beats the value set here
+# and leaves no trace in the repo. That is exactly what happened to job 13634: it inherited
+# 8 (confirmed in its log: "[reward_judge] max concurrent requests per process: 8") and spent
+# 41.5 of 44.1 h judge-bound at an effective concurrency of 6.3.
+# Probe 13999 on this same DP-8 judge topology: throughput scales 6.4x from 8 -> 64 with FLAT
+# latency (p50 116->124 s, p95 ~140 s), saturating at 64. See docs/default-params.md.
+# Set JUDGE_CONC to change this deliberately; do NOT rely on ambient env.
+JUDGE_CONC="${JUDGE_CONC:-64}"
+export TURING_JUDGE_MAX_CONCURRENCY="$JUDGE_CONC"
+export PERSONA_OPENAI_JUDGE_MAX_CONCURRENCY="$JUDGE_CONC"
+# reward.py's own fallback is 400 s. At concurrency 64 the measured p95 is 140 s, but the
+# 400 s default is what turned the job-13628 flood into a total-failure cascade, so keep the
+# headroom: the cost of a long timeout is bounded, the cost of a false timeout is a lost pair.
+export PERSONA_OPENAI_TIMEOUT_SECONDS="${PERSONA_OPENAI_TIMEOUT_SECONDS:-1800}"
+echo "=== judge concurrency pinned: $JUDGE_CONC (timeout ${PERSONA_OPENAI_TIMEOUT_SECONDS}s) ==="
 export PERSONA_OPENAI_MAX_RETRIES="${PERSONA_OPENAI_MAX_RETRIES:-3}"
 export WANDB_PROJECT="${WANDB_PROJECT:-2026-07-15-rl-generator-vs-fixed-judge}"
 export MERGED_SFT_MODEL_PATH="${MERGED_SFT_MODEL_PATH:-checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}"
@@ -101,8 +140,17 @@ export RL_JUDGE_JOB_ID=""   # no separate judge job; teardown handled here by ki
 export B0_ROLLOUT_SYNC="${B0_ROLLOUT_SYNC:-}"
 
 # --- trainer step on node1 (foreground) — 9B variant ---
+# Run the trainer script from node-local disk, NOT from FSx. bash reads a script LAZILY, holding
+# the file open and re-reading as it executes, so a multi-day job keeps an FSx handle alive for
+# its whole life. Job 13634 died that way after completing all 32 steps:
+#   scripts/slurm/rl_generator_train_9b.sh: error reading input file: Stale file handle
+# Copying it once removes that entire failure mode.
+# The copy must happen ON the trainer node: /tmp is node-local, and this launcher runs on a
+# different node than $NODE_TRAIN. bash -c receives its program as a string (already in memory),
+# so nothing is re-read from FSx once the copy is done.
 srun --nodes=1 --ntasks=1 --nodelist="$NODE_TRAIN" --gres=gpu:8 --overlap \
-  bash scripts/slurm/rl_generator_train_9b.sh
+  bash -c 'L=/tmp/rl_gen_train-${SLURM_JOB_ID:-$$}.sh; cp "$0" "$L" || exit 2; exec bash "$L"' \
+  "$REPO/scripts/slurm/rl_generator_train_9b.sh"
 RC=$?
 echo "=== trainer step exit: $RC ; tearing down judge step ==="
 kill "$JUDGE_PID" 2>/dev/null || true
