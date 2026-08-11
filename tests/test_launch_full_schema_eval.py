@@ -42,6 +42,7 @@ def test_first_batch_is_qwen9_and_queue_bounded(tmp_path):
     assert all("qwen35-9b" in line for line in planned[:8])
     assert "NEXT_OFFSET=8" in planned[-1]
     assert sum("--dependency=afterok:" in line for line in planned) == 8
+    assert all(" -- " in line for line in planned)
 
 
 def test_model_major_boundary_is_qwen9_then_gemma12(tmp_path):

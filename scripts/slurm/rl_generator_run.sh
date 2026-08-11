@@ -16,11 +16,13 @@
 # Endpoint handed off via a shared file on FSx home; the judge srun step is
 # killed when the trainer srun step finishes.
 #
-# Submit: JUDGE=9b MODE=overfit OVERFIT_EPOCHS=2 sbatch --export=ALL scripts/slurm/rl_generator_run.sh
+# Submit through scripts/cluster_launch.sh + scripts/submit_snapshot_job.sh with
+# JUDGE=9b MODE=overfit OVERFIT_EPOCHS=2.
 #   JUDGE = 9b | 397b     MODE = overfit | full | epoch1
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 cd "$REPO"
 
 # wandb: source .env for WANDB_API_KEY + WANDB_BASE_URL, then force online + the

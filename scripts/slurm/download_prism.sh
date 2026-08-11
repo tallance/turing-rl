@@ -10,6 +10,7 @@
 #SBATCH --account=rfai
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -18,10 +19,10 @@ export HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_DATASETS_CACHE=/home/lancewicki/data/hf_cache/datasets
 
 # Read HF_TOKEN from .env so the gated dataset can be authenticated
-if [ -f /home/lancewicki/projects/turing-rl/.env ]; then
+if [ -f $TURING_RL_STATE_ROOT/.env ]; then
   set -a
   # shellcheck disable=SC1091
-  source /home/lancewicki/projects/turing-rl/.env
+  source $TURING_RL_STATE_ROOT/.env
   set +a
 fi
 
@@ -35,7 +36,7 @@ echo "Cache: $HF_DATASETS_CACHE"
 echo "Token set: $([ -n "${HF_TOKEN:-}" ] && echo yes || echo NO)"
 echo "============================================"
 
-cd /home/lancewicki/projects/turing-rl
+cd "$TURING_RL_WORK_ROOT"
 
 $PY -c "
 import os

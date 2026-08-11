@@ -24,6 +24,7 @@
 #   JUDGE_PORT   - port (default 8000)
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -33,7 +34,7 @@ if [ -z "${JUDGE_HOST:-}" ]; then
 fi
 JUDGE_PORT="${JUDGE_PORT:-8123}"
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 
 if [ -f "$REPO/.env" ]; then

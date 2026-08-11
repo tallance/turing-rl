@@ -19,6 +19,7 @@
 # Optional env: PORT_BASE (default 8130), MAX_PAIRS (cap pairs for calibration/smoke)
 # Submit with --gres=gpu:$((TP*REPLICAS)) (the launcher does this).
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
 for v in MODEL TP REPLICAS THINKING_MODE CELL_NAME; do

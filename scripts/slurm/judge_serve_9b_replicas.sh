@@ -20,6 +20,7 @@
 #   PORT (default derived from job id), REASONING_PARSER (default qwen3),
 #   JUDGE_ENDPOINT_FILE (default logs/judge_endpoint-<jobid>.txt).
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
@@ -27,7 +28,7 @@ export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1 VLLM_LOGGING_LEVEL=INFO
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 TP=${TP:-1}
 DP=${DP:-8}

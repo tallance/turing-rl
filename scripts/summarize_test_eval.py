@@ -60,7 +60,6 @@ def declared_split(eval_root: Path) -> str:
         f"parquet={record.get('eval_parquet', '?')}"
     )
 
-
 def load_rows(reward_dir: Path) -> list[dict]:
     rows = []
     for f in sorted(glob.glob(str(reward_dir / "*.jsonl"))):
@@ -110,6 +109,8 @@ def main() -> None:
     order = [k for k in PREFERRED if k in found] + sorted(
         set(found) - set(PREFERRED), key=_step_order
     )
+    # State the split this table is scored on. Without it a train-set table is visually identical
+    # to a held-out one, which is precisely how an overfit curve gets published as generalisation.
     split_note = f"# split: {declared_split(root)}"
     print(split_note + "\n")
 
@@ -183,6 +184,8 @@ def main() -> None:
             ",".join(cols) + "\n" + "\n".join(",".join(str(r[c]) for c in cols) for r in rows_out) + "\n")
         print(f"\nwrote {a.out_csv}", file=sys.stderr)
     if a.out_md:
+        # The note travels with the artifact, not just the console: the .md is what gets pasted
+        # into write-ups. (Left out of the CSV, where a comment line would break parsing.)
         Path(a.out_md).write_text(f"{split_note}\n\n{md}\n")
         print(f"wrote {a.out_md}", file=sys.stderr)
 

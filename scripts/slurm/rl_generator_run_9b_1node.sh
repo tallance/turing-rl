@@ -20,12 +20,13 @@
 # process is killed when the trainer exits (trap). 1-node analogue of
 # rl_generator_run_9b.sh (which splits judge/trainer across 2 nodes).
 #
-# Submit: OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike \
-#           sbatch --export=ALL scripts/slurm/rl_generator_run_9b_1node.sh
+# Submit through scripts/cluster_launch.sh + scripts/submit_snapshot_job.sh with
+# OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike.
 #   B0_ROLLOUT_SYNC=1 (default) turns on the Step-3b rollout-sync hook (rollout_sync.json).
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 cd "$REPO"
 
 # wandb: source .env for WANDB_API_KEY + WANDB_BASE_URL, then force online + the
@@ -33,6 +34,12 @@ cd "$REPO"
 if [ -f "$REPO/.env" ]; then set -a; source "$REPO/.env"; set +a; fi
 export WANDB_BASE_URL="${WANDB_BASE_URL:-https://meta.wandb.io}"
 export WANDB_MODE=online
+# wandb run dir on node-local tmpfs, not FSx: an FSx stall can wedge wandb's writer so the tail
+# never lands even in the LOCAL transaction log (job 13634 lost 2 train steps + 1 validation that
+# way, unrecoverable by `wandb sync`). cleanup() copies it back and syncs on exit.
+export WANDB_DIR="${WANDB_DIR:-/tmp/wandb-${SLURM_JOB_ID:-$$}}"
+mkdir -p "$WANDB_DIR"
+WANDB_BIN=${WANDB_BIN:-/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/wandb}
 
 # Fixed 9B config for the B0 spike (single node, frozen 9B judge).
 JUDGE=9b
@@ -64,7 +71,15 @@ CUDA_VISIBLE_DEVICES=7 \
     --reasoning-parser qwen3 --gpu-memory-utilization 0.85 \
     --download-dir /home/lancewicki/data/hf_cache &
 JUDGE_PID=$!
-cleanup() { kill "$JUDGE_PID" 2>/dev/null || true; }
+save_wandb() {
+  [ -d "$WANDB_DIR" ] || return 0
+  cp -r "$WANDB_DIR" "$REPO/wandb/joblocal-${SLURM_JOB_ID:-$$}" 2>/dev/null || true
+  for d in "$WANDB_DIR"/run-*; do
+    [ -d "$d" ] || continue
+    timeout 600 "$WANDB_BIN" sync "$d" 2>&1 | tail -2 || true
+  done
+}
+cleanup() { save_wandb; kill "$JUDGE_PID" 2>/dev/null || true; }
 trap cleanup EXIT TERM INT
 
 # --- wait for the judge to serve OUR model on /v1/models (up to 30 min warmup) ---
@@ -112,8 +127,13 @@ export RL_ROLLOUT_GPU_MEMORY_UTILIZATION="${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0
 
 # --- trainer step on GPUs 0-6 (foreground). RL_NGPUS/RL_ROLLOUT_TP make the 9B
 #     trainer use 7 GPUs + rollout TP=1 (env-overridable in rl_generator_train_9b.sh). ---
+# Run from node-local disk, not FSx: bash reads a script LAZILY and keeps the handle open for the
+# life of the job, so a transient FSx stale handle can kill a multi-day run mid-execution (job
+# 13634 died exactly that way, after finishing all 32 steps). Same node here, so a plain copy works.
+TRAIN_SH_LOCAL=/tmp/rl_gen_train-${SLURM_JOB_ID:-$$}.sh
+cp "$REPO/scripts/slurm/rl_generator_train_9b.sh" "$TRAIN_SH_LOCAL" || exit 2
 CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6 RL_NGPUS=7 RL_ROLLOUT_TP=1 B0_ROLLOUT_SYNC="${B0_ROLLOUT_SYNC:-1}" \
-  bash scripts/slurm/rl_generator_train_9b.sh
+  bash "$TRAIN_SH_LOCAL"
 RC=$?
 echo "=== trainer step exit: $RC ; tearing down judge process ==="
 kill "$JUDGE_PID" 2>/dev/null || true

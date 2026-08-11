@@ -11,6 +11,7 @@
 #SBATCH --account=rfai
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -48,7 +49,7 @@ echo "=== installing full requirements.txt + bitsandbytes ==="
 #     CUDA toolkit is 12.8 vs torch's cu13.0). vLLM will fall back to FlashInfer attention.
 #     We filter flash_attn out; it's a perf knob, not load-bearing.
 REQS_FILTERED=$TMPDIR/requirements_filtered.txt
-grep -v '^flash_attn==' /home/lancewicki/projects/turing-rl/requirements.txt > "$REQS_FILTERED"
+grep -v '^flash_attn==' "$TURING_RL_CODE_ROOT/requirements.txt" > "$REQS_FILTERED"
 echo "filtered requirements at $REQS_FILTERED"
 
 # Pass 1: install all pinned versions verbatim, bypassing pip's resolver.

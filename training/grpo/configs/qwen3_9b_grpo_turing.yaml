@@ -1,0 +1,61 @@
+# veRL GRPO config for Qwen3.5-9B Turing reward training.
+#
+# WHY THIS FILE EXISTS
+# --------------------
+# Every 9B GRPO run before this used --config-name qwen3_8b_grpo_turing, whose values are
+# 8B-era: lr 1.0e-5, kl_loss_coef 0.001, temperature 0.6. No 9B run has ever wanted those.
+# Both completed 9B runs -- 13634 (half) and 14217 (full5) -- passed the SAME twelve
+# overrides on the command line via EXTRA_OVERRIDES, retyped identically each launch:
+#
+#   data.train_batch_size=64                     actor.kl_loss_coef=0.0001
+#   actor.ppo_mini_batch_size=64                 actor.optim.lr=0.0001
+#   rollout.temperature=1                        rollout.top_p=1  rollout.top_k=-1
+#   rollout.val_kwargs.temperature=0.7  .top_p=0.8  .top_k=20  .do_sample=true  .n=1
+#
+# That is not a per-experiment choice, it is the 9B recipe, and keeping it in a submit-time
+# string made it silently droppable. Job 15143 was launched with EXTRA_OVERRIDES empty and
+# therefore trained at lr 1.0e-5 with kl_loss_coef 0.001 -- a tenth of the step size against
+# ten times the KL pull. Its reward curve was flat for 43 steps while the runs it was meant
+# to match had climbed from 0.44 to 0.60 over the same span. Nothing in the log said the
+# hyperparameters were missing, because 8B defaults are perfectly valid values.
+#
+# Inherits the shared base for everything structural. qwen3_8b_grpo.yaml is the SSOT that
+# tests/test_grpo_config.py locks, and it is left untouched.
+defaults:
+  - qwen3_8b_grpo
+  - _self_
+
+data:
+  train_batch_size: 64
+
+actor_rollout_ref:
+  actor:
+    ppo_mini_batch_size: 64
+    use_kl_loss: true
+    # 1e-4, not the 8B config's 1e-3. At 1e-3 the policy is held against the reference and
+    # the reward curve stays flat.
+    kl_loss_coef: 0.0001
+    optim:
+      # 1e-4, not the 8B config's 1e-5.
+      lr: 0.0001
+  rollout:
+    # Training rollouts sample at temperature 1.0 (the "temp1" in the run tags). The 8B base
+    # sets 0.6, which is the value 15143 accidentally ran with.
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    # Validation sampling is deliberately narrower than training.
+    val_kwargs:
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      do_sample: true
+      n: 1
+
+critic:
+  optim:
+    lr: 0.0001
+
+trainer:
+  default_local_dir: results/grpo/checkpoints_turing_9b
+  experiment_name: qwen35-9b-grpo-turing
