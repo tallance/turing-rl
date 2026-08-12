@@ -2078,7 +2078,10 @@ def _resolve_response_format() -> dict | None:
                 "schema": TURING_RESPONSE_SCHEMA,
             },
         }
-    if str(mode).strip().lower() == "none":
+    # `mode is not None` is load-bearing: str(None).strip().lower() == "none", so the
+    # obvious `str(mode).strip().lower() == "none"` would make the UNSET env take this
+    # branch and silently drop response_format for every existing generator run.
+    if mode is not None and mode.strip().lower() == "none":
         return None
     return {"type": "json_object"}
 ```
