@@ -3172,9 +3172,12 @@ def order_consistency(df: pd.DataFrame) -> pd.DataFrame:
 
     Only pairs with both orders present are counted; a pair seen once cannot be
     self-inconsistent. Ties count as disagreement with everything, including another tie,
-    because a tie names no side.
+    because a tie names no side. Unrecovered verdicts are dropped FIRST, so a pair whose
+    second order failed to parse is treated as incomplete rather than counted consistent —
+    and `int(nan)` never reaches the comparison below.
     """
     _check_columns(df)
+    df = _drop_unrecovered(df)
     rows = []
     for model, model_df in df.groupby("model", sort=True):
         consistent = 0
@@ -3226,7 +3229,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_analyze_judge_training.py -q`
-Expected: PASS, 12 tests
+Expected: PASS, 11 tests
 
 - [ ] **Step 5: Run the full suite one last time**
 
