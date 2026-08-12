@@ -3032,6 +3032,44 @@ def test_order_consistency_is_zero_for_a_fixed_slot_answer():
 def test_order_consistency_ignores_pairs_missing_an_order():
     df = _rows([("m", "p1", "human_a", 1, False)])
     assert order_consistency(df).set_index("model").loc["m", "n_pairs"] == 0
+
+
+def test_unrecovered_verdicts_do_not_crash_the_summary():
+    """probe_judge_format writes rating=None for unrecoverable verdicts -> NaN on CSV."""
+    df = _rows([("m", "p1", "human_a", 1, False), ("m", "p1", "human_b", 7, True)])
+    df.loc[len(df)] = {
+        "model": "m", "pair_id": "p2", "order": "human_a",
+        "rating": float("nan"), "human_is_b": False,
+    }
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["m", "n"] == 2
+    assert summary.loc["m", "accuracy"] == 1.0
+
+
+def test_summary_reports_how_much_of_the_eval_set_was_unrecoverable():
+    """Accuracy over a shrunken, non-random subset flatters a low-compliance model."""
+    df = _rows([("m", "p1", "human_a", 1, False)])
+    for pair in ("p2", "p3", "p4"):
+        df.loc[len(df)] = {
+            "model": "m", "pair_id": pair, "order": "human_a",
+            "rating": float("nan"), "human_is_b": False,
+        }
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["m", "n"] == 1
+    assert summary.loc["m", "n_total"] == 4
+    assert summary.loc["m", "unrecovered_rate"] == pytest.approx(0.75)
+    # The flattering part: perfect accuracy on the quarter it managed to parse.
+    assert summary.loc["m", "accuracy"] == 1.0
+
+
+def test_order_consistency_drops_unrecovered_rows():
+    df = _rows([("m", "p1", "human_a", 1, False)])
+    df.loc[len(df)] = {
+        "model": "m", "pair_id": "p1", "order": "human_b",
+        "rating": float("nan"), "human_is_b": True,
+    }
+    # p1's second order is unrecoverable, so the pair is incomplete, not consistent.
+    assert order_consistency(df).set_index("model").loc["m", "n_pairs"] == 0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -3078,10 +3116,29 @@ def _row_accuracy(rating: int, human_is_b: bool) -> float:
     return 1.0 if (rating > TIE_RATING) == bool(human_is_b) else 0.0
 
 
+def _drop_unrecovered(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows with no rating.
+
+    probe_judge_format.py::dump_row writes rating=None when a verdict could not be
+    recovered, which becomes NaN on the CSV round trip. Those rows carry no signal about
+    which side the judge picked, so they are excluded rather than left to blow up
+    `int(nan)` downstream.
+    """
+    return df.dropna(subset=["rating"]).copy()
+
+
 def summarize_judge_eval(df: pd.DataFrame) -> pd.DataFrame:
-    """One row per model: accuracy, ties, slot bias, confidence and Brier."""
+    """One row per model: accuracy, ties, slot bias, confidence, Brier, and coverage.
+
+    `unrecovered_rate` is not decoration. Accuracy is computed only over verdicts that
+    parsed, and that subset is NOT random — it is the cases the model handled well. A model
+    with poor format compliance therefore gets a flattering accuracy over a shrunken
+    sample, which is exactly the artifact this table exists to expose. Read accuracy
+    together with unrecovered_rate or not at all.
+    """
     _check_columns(df)
-    work = df.copy()
+    n_total = df.groupby("model", sort=True).size()
+    work = _drop_unrecovered(df)
     work["_acc"] = [
         _row_accuracy(int(r), bool(h)) for r, h in zip(work["rating"], work["human_is_b"])
     ]
@@ -3103,8 +3160,11 @@ def summarize_judge_eval(df: pd.DataFrame) -> pd.DataFrame:
             "conf_mean": grouped["_conf"].mean(),
             "rating_mean": grouped["rating"].mean(),
         }
-    ).reset_index()
-    return summary
+    )
+    # Coverage: how much of each model's eval set is actually behind its accuracy.
+    summary["n_total"] = n_total.reindex(summary.index).fillna(0).astype(int)
+    summary["unrecovered_rate"] = 1.0 - (summary["n"] / summary["n_total"])
+    return summary.reset_index()
 
 
 def order_consistency(df: pd.DataFrame) -> pd.DataFrame:
@@ -3166,7 +3226,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_analyze_judge_training.py -q`
-Expected: PASS, 8 tests
+Expected: PASS, 12 tests
 
 - [ ] **Step 5: Run the full suite one last time**
 
