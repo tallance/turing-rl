@@ -1889,7 +1889,7 @@ inherited values are proven in practice rather than merely plausible.
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_grpo_config.py -q`
-Expected: PASS, 12 tests
+Expected: PASS, 11 tests
 
 - [ ] **Step 5: Commit**
 
