@@ -342,9 +342,19 @@ def compute_turing_length_info(response: str, ground_truth: str) -> dict[str, fl
     }
 
 
-def _resolve_response_format() -> dict:
-    """Use the full prompt-matched schema when explicitly enabled."""
-    if os.environ.get("PERSONA_JUDGE_JSON_SCHEMA") == "1":
+def _resolve_response_format() -> dict | None:
+    """Select the decoding constraint for a judge call.
+
+    ``PERSONA_JUDGE_JSON_SCHEMA=1``     -> full 37-field ordered schema (the eval regime)
+    ``PERSONA_JUDGE_JSON_SCHEMA=none``  -> no constraint at all (the training-rollout regime)
+    unset or anything else              -> ``{"type": "json_object"}`` (valid JSON, free fields)
+
+    The "none" mode exists for scripts/probe_judge_format.py. veRL builds SamplingParams
+    directly and never sends response_format, so probing through a constrained path would
+    report near-total compliance and say nothing about real rollouts.
+    """
+    mode = os.environ.get("PERSONA_JUDGE_JSON_SCHEMA")
+    if mode == "1":
         return {
             "type": "json_schema",
             "json_schema": {
@@ -352,6 +362,8 @@ def _resolve_response_format() -> dict:
                 "schema": TURING_RESPONSE_SCHEMA,
             },
         }
+    if mode is not None and mode.strip().lower() == "none":
+        return None
     return {"type": "json_object"}
 
 
