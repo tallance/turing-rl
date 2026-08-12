@@ -115,3 +115,39 @@ def test_training_never_re_enables_the_v1_controller():
     """
     assert "trainer.use_v1=True" not in _text(TRAIN)
     assert "trainer.use_v1=true" not in _text(TRAIN)
+
+
+LAUNCH = os.path.join(ROOT, "scripts", "launch_judge_pairs.sh")
+
+
+def test_pair_launcher_exists_and_submits_through_the_gateway():
+    """cluster_launch.sh runs its argument on the login node, so a JOB script cannot be
+    handed to it directly — it needs this launcher to sbatch judge_train_gen.sh."""
+    text = _text(LAUNCH)
+    assert "snapshot_sbatch.sh" in text
+    assert "scripts/slurm/judge_train_gen.sh" in text
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        assert not stripped.startswith("sbatch "), "direct sbatch is forbidden"
+
+
+def test_pair_launcher_is_not_itself_a_job_script():
+    """It runs on the login node: no #SBATCH directives, no bootstrap needing SLURM_JOB_ID.
+
+    Checks line starts specifically — the file's header comment mentions "#SBATCH" while
+    explaining why this launcher exists, and that prose is not a directive.
+    """
+    text = _text(LAUNCH)
+    directives = [l for l in text.splitlines() if l.startswith("#SBATCH")]
+    assert not directives, f"launcher must not carry job directives: {directives}"
+    assert "cluster_job_bootstrap.sh" not in text
+
+
+def test_pair_launcher_rejects_an_unknown_split():
+    assert "SPLITS entries must be train or val" in _text(LAUNCH)
+
+
+def test_pair_launcher_clears_the_stale_v2_proxy_vars():
+    assert "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY" in _text(LAUNCH)
