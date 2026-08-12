@@ -74,3 +74,41 @@ def test_order_consistency_is_zero_for_a_fixed_slot_answer():
 def test_order_consistency_ignores_pairs_missing_an_order():
     df = _rows([("m", "p1", "human_a", 1, False)])
     assert order_consistency(df).set_index("model").loc["m", "n_pairs"] == 0
+
+
+def test_unrecovered_verdicts_do_not_crash_the_summary():
+    """probe_judge_format writes rating=None for unrecoverable verdicts -> NaN on CSV."""
+    df = _rows([("m", "p1", "human_a", 1, False), ("m", "p1", "human_b", 7, True)])
+    df.loc[len(df)] = {
+        "model": "m", "pair_id": "p2", "order": "human_a",
+        "rating": float("nan"), "human_is_b": False,
+    }
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["m", "n"] == 2
+    assert summary.loc["m", "accuracy"] == 1.0
+
+
+def test_summary_reports_how_much_of_the_eval_set_was_unrecoverable():
+    """Accuracy over a shrunken, non-random subset flatters a low-compliance model."""
+    df = _rows([("m", "p1", "human_a", 1, False)])
+    for pair in ("p2", "p3", "p4"):
+        df.loc[len(df)] = {
+            "model": "m", "pair_id": pair, "order": "human_a",
+            "rating": float("nan"), "human_is_b": False,
+        }
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["m", "n"] == 1
+    assert summary.loc["m", "n_total"] == 4
+    assert summary.loc["m", "unrecovered_rate"] == pytest.approx(0.75)
+    # The flattering part: perfect accuracy on the quarter it managed to parse.
+    assert summary.loc["m", "accuracy"] == 1.0
+
+
+def test_order_consistency_drops_unrecovered_rows():
+    df = _rows([("m", "p1", "human_a", 1, False)])
+    df.loc[len(df)] = {
+        "model": "m", "pair_id": "p1", "order": "human_b",
+        "rating": float("nan"), "human_is_b": True,
+    }
+    # p1's second order is unrecoverable, so the pair is incomplete, not consistent.
+    assert order_consistency(df).set_index("model").loc["m", "n_pairs"] == 0

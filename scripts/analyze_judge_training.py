@@ -44,8 +44,16 @@ def _row_accuracy(rating: int, human_is_b: bool) -> float:
 
 
 def summarize_judge_eval(df: pd.DataFrame) -> pd.DataFrame:
-    """One row per model: accuracy, ties, slot bias, confidence and Brier."""
+    """One row per model: accuracy, ties, slot bias, confidence, Brier, and coverage.
+
+    `unrecovered_rate` is not decoration. Accuracy is computed only over verdicts that
+    parsed, and that subset is NOT random — it is the cases the model handled well. A model
+    with poor format compliance therefore gets a flattering accuracy over a shrunken
+    sample, which is exactly the artifact this table exists to expose. Read accuracy
+    together with unrecovered_rate or not at all.
+    """
     _check_columns(df)
+    n_total = df.groupby("model", sort=True).size()
     work = _drop_unrecovered(df)
     work["_acc"] = [
         _row_accuracy(int(r), bool(h)) for r, h in zip(work["rating"], work["human_is_b"])
@@ -68,8 +76,11 @@ def summarize_judge_eval(df: pd.DataFrame) -> pd.DataFrame:
             "conf_mean": grouped["_conf"].mean(),
             "rating_mean": grouped["rating"].mean(),
         }
-    ).reset_index()
-    return summary
+    )
+    # Coverage: how much of each model's eval set is actually behind its accuracy.
+    summary["n_total"] = n_total.reindex(summary.index).fillna(0).astype(int)
+    summary["unrecovered_rate"] = 1.0 - (summary["n"] / summary["n_total"])
+    return summary.reset_index()
 
 
 def order_consistency(df: pd.DataFrame) -> pd.DataFrame:
@@ -77,7 +88,8 @@ def order_consistency(df: pd.DataFrame) -> pd.DataFrame:
 
     Only pairs with both orders present are counted; a pair seen once cannot be
     self-inconsistent. Ties count as disagreement with everything, including another tie,
-    because a tie names no side.
+    because a tie names no side. An unrecovered rating on either side also makes the pair
+    incomplete, for the same reason a missing order does: there is no verdict to compare.
     """
     _check_columns(df)
     work = _drop_unrecovered(df)
