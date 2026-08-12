@@ -143,6 +143,21 @@ def order_consistency(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["model", "n_pairs", "order_consistency"])
 
 
+def render_summary(summary: pd.DataFrame) -> str:
+    """Markdown if `tabulate` is installed, plain text otherwise.
+
+    `DataFrame.to_markdown` needs the optional `tabulate` package. The CSV is the
+    authoritative output and is already written by the time this runs, so a missing
+    pretty-printer must not fail the run: in a Slurm chain joined with `&&` a non-zero exit
+    would silently skip the downstream step, and an operator reading only the exit code
+    would conclude the analysis failed when it in fact succeeded.
+    """
+    try:
+        return summary.to_markdown(index=False)
+    except ImportError:
+        return summary.to_string(index=False)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Summarise judge eval results")
     parser.add_argument("--eval_csv", required=True, help="long-format CSV of judge verdicts")
@@ -153,7 +168,7 @@ def main() -> None:
     summary = summarize_judge_eval(df).merge(order_consistency(df), on="model", how="left")
     os.makedirs(os.path.dirname(os.path.abspath(args.out_csv)), exist_ok=True)
     summary.to_csv(args.out_csv, index=False)
-    print(summary.to_markdown(index=False))
+    print(render_summary(summary))
     print(f"\nWrote {args.out_csv}")
 
 

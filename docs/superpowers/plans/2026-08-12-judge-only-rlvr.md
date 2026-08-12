@@ -3348,10 +3348,17 @@ Create `tests/test_analyze_judge_training.py`:
 ```python
 """Unit tests for judge eval analysis."""
 
+import sys
+
 import pandas as pd
 import pytest
 
-from scripts.analyze_judge_training import order_consistency, summarize_judge_eval
+import scripts.analyze_judge_training as analyze
+from scripts.analyze_judge_training import (
+    order_consistency,
+    render_summary,
+    summarize_judge_eval,
+)
 
 
 def _rows(records):
@@ -3524,6 +3531,39 @@ def test_the_regime_column_is_surfaced_when_present():
 def test_a_dump_without_a_regime_column_is_still_accepted():
     summary = summarize_judge_eval(_multi_model_df())
     assert "regime" not in summary.columns
+
+
+def _raise_import_error(*_args, **_kwargs):
+    raise ImportError("`Import tabulate` failed.")
+
+
+def test_rendering_falls_back_to_plain_text_without_tabulate(monkeypatch):
+    """to_markdown needs the optional `tabulate`. Forced deterministically rather than
+    depending on whether it happens to be installed where the suite runs."""
+    summary = summarize_judge_eval(_multi_model_df())
+    monkeypatch.setattr(pd.DataFrame, "to_markdown", _raise_import_error, raising=True)
+    rendered = render_summary(summary)
+    assert "compliant" in rendered and "silent" in rendered
+
+
+def test_main_exits_zero_and_writes_the_csv_without_tabulate(monkeypatch, tmp_path, capsys):
+    """The CSV is the authoritative output; a missing pretty-printer must not fail the run.
+
+    Under `&&` in a Slurm chain a non-zero exit would silently skip the downstream step.
+    """
+    eval_csv = tmp_path / "eval.csv"
+    out_csv = tmp_path / "derived" / "summary.csv"
+    _multi_model_df().to_csv(eval_csv, index=False)
+    monkeypatch.setattr(pd.DataFrame, "to_markdown", _raise_import_error, raising=True)
+    monkeypatch.setattr(
+        sys, "argv", ["analyze_judge_training.py", "--eval_csv", str(eval_csv),
+                      "--out_csv", str(out_csv)],
+    )
+    assert analyze.main() is None  # i.e. no raise, and no non-zero SystemExit
+    assert out_csv.exists()
+    written = pd.read_csv(out_csv).set_index("model")
+    assert written.loc["silent", "n"] == 0
+    assert "silent" in capsys.readouterr().out
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -3682,6 +3722,21 @@ def order_consistency(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=["model", "n_pairs", "order_consistency"])
 
 
+def render_summary(summary: pd.DataFrame) -> str:
+    """Markdown if `tabulate` is installed, plain text otherwise.
+
+    `DataFrame.to_markdown` needs the optional `tabulate` package. The CSV is the
+    authoritative output and is already written by the time this runs, so a missing
+    pretty-printer must not fail the run: in a Slurm chain joined with `&&` a non-zero exit
+    would silently skip the downstream step, and an operator reading only the exit code
+    would conclude the analysis failed when it in fact succeeded.
+    """
+    try:
+        return summary.to_markdown(index=False)
+    except ImportError:
+        return summary.to_string(index=False)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Summarise judge eval results")
     parser.add_argument("--eval_csv", required=True, help="long-format CSV of judge verdicts")
@@ -3692,7 +3747,7 @@ def main() -> None:
     summary = summarize_judge_eval(df).merge(order_consistency(df), on="model", how="left")
     os.makedirs(os.path.dirname(os.path.abspath(args.out_csv)), exist_ok=True)
     summary.to_csv(args.out_csv, index=False)
-    print(summary.to_markdown(index=False))
+    print(render_summary(summary))
     print(f"\nWrote {args.out_csv}")
 
 
@@ -3703,7 +3758,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_analyze_judge_training.py -q`
-Expected: PASS, 16 tests
+Expected: PASS, 18 tests
 
 - [ ] **Step 5: Run the full suite one last time**
 
@@ -3781,7 +3836,7 @@ committed.** All 93 tests across tasks 1–7, 9 and 10 pass, and the per-task co
 each "Expected: PASS, N tests" line are the counts actually observed. Those counts were
 raised after a whole-branch review added coverage for defects found in the cluster-wiring
 layer; they now read: slice 10, pairs 12, verdict 16, reward 16, metric patch 7, config 16,
-probe 14, launchers 14, overfit 13, analysis 16. The implementer is still expected to do the
+probe 14, launchers 14, overfit 13, analysis 18. The implementer is still expected to do the
 TDD cycle — the point of running it here was to make sure they are not debugging *my* typos.
 Task 8's launcher test is the exception: it asserts against shell scripts, so it can only
 pass once those files exist.

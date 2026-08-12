@@ -1,9 +1,16 @@
 """Unit tests for judge eval analysis."""
 
+import sys
+
 import pandas as pd
 import pytest
 
-from scripts.analyze_judge_training import order_consistency, summarize_judge_eval
+import scripts.analyze_judge_training as analyze
+from scripts.analyze_judge_training import (
+    order_consistency,
+    render_summary,
+    summarize_judge_eval,
+)
 
 
 def _rows(records):
@@ -176,3 +183,36 @@ def test_the_regime_column_is_surfaced_when_present():
 def test_a_dump_without_a_regime_column_is_still_accepted():
     summary = summarize_judge_eval(_multi_model_df())
     assert "regime" not in summary.columns
+
+
+def _raise_import_error(*_args, **_kwargs):
+    raise ImportError("`Import tabulate` failed.")
+
+
+def test_rendering_falls_back_to_plain_text_without_tabulate(monkeypatch):
+    """to_markdown needs the optional `tabulate`. Forced deterministically rather than
+    depending on whether it happens to be installed where the suite runs."""
+    summary = summarize_judge_eval(_multi_model_df())
+    monkeypatch.setattr(pd.DataFrame, "to_markdown", _raise_import_error, raising=True)
+    rendered = render_summary(summary)
+    assert "compliant" in rendered and "silent" in rendered
+
+
+def test_main_exits_zero_and_writes_the_csv_without_tabulate(monkeypatch, tmp_path, capsys):
+    """The CSV is the authoritative output; a missing pretty-printer must not fail the run.
+
+    Under `&&` in a Slurm chain a non-zero exit would silently skip the downstream step.
+    """
+    eval_csv = tmp_path / "eval.csv"
+    out_csv = tmp_path / "derived" / "summary.csv"
+    _multi_model_df().to_csv(eval_csv, index=False)
+    monkeypatch.setattr(pd.DataFrame, "to_markdown", _raise_import_error, raising=True)
+    monkeypatch.setattr(
+        sys, "argv", ["analyze_judge_training.py", "--eval_csv", str(eval_csv),
+                      "--out_csv", str(out_csv)],
+    )
+    assert analyze.main() is None  # i.e. no raise, and no non-zero SystemExit
+    assert out_csv.exists()
+    written = pd.read_csv(out_csv).set_index("model")
+    assert written.loc["silent", "n"] == 0
+    assert "silent" in capsys.readouterr().out
