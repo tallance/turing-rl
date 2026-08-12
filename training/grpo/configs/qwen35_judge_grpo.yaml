@@ -1,0 +1,76 @@
+# veRL GRPO config for judge-only RLVR (Qwen3.5 2B / 4B / 9B discriminators).
+#
+# Composes the shared 8B base for structure, then overrides what the judge side needs
+# differently:
+#   - reward is training/grpo/judge_reward.py: local, label-verifiable, no judge server
+#   - thinking ON, matching what generator RL actually ran against
+#   - long prompts: a rendered TURING_PROMPT is ~6k tokens against ~1k for a generator prompt
+#   - the 9B optimiser recipe (lr 1e-4, kl 1e-4, rollout T=1.0), not the 8B-era defaults
+#
+# actor_rollout_ref.model.path is set per run by scripts/slurm/judge_grpo_train.sh.
+defaults:
+  - qwen3_8b_grpo
+  - _self_
+
+data:
+  train_files: data/prism/judge/iter1/train.parquet
+  val_files: data/prism/judge/iter1/val.parquet
+  train_batch_size: 64
+  # The rendered prompt is ~22k chars (~6k tokens); the headroom absorbs long user histories.
+  max_prompt_length: 10240
+  # Thinking plus a 37-field verdict. Deliberately below the 8192 eval budget to bound
+  # rollout cost; judge_truncation_rate from the Task 7 probe says whether this is too tight.
+  max_response_length: 6144
+  truncation: left
+  filter_overlong_prompts: true
+  apply_chat_template_kwargs:
+    enable_thinking: true
+
+actor_rollout_ref:
+  model:
+    # MUST stay an explicit list. The base config says all-linear, which on a Qwen3.5
+    # hybrid would attach LoRA to the Gated-DeltaNet backbone (destructive; arXiv:2604.22127).
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+    exclude_modules: '.*(visual|mtp).*'
+    lora_rank: 64
+    lora_alpha: 32
+    lora_adapter_path: null
+    enable_gradient_checkpointing: true
+  actor:
+    ppo_mini_batch_size: 64
+    ppo_micro_batch_size_per_gpu: 1
+    use_kl_loss: true
+    kl_loss_coef: 0.0001
+    strategy: fsdp2
+    use_dynamic_bsz: false
+    optim:
+      lr: 0.0001
+  ref:
+    strategy: fsdp2
+  rollout:
+    n: 4
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    max_model_len: 16384
+    max_num_batched_tokens: 16384
+    response_length: 6144
+    val_kwargs:
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      do_sample: true
+      n: 1
+
+critic:
+  optim:
+    lr: 0.0001
+
+custom_reward_function:
+  path: training/grpo/judge_reward.py
+  name: compute_score
+
+trainer:
+  default_local_dir: results/grpo/checkpoints_judge
+  experiment_name: qwen35-judge-grpo
+  total_epochs: 3
