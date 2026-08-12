@@ -70,3 +70,33 @@ def test_skip_split_guard_is_dry_run_only(tmp_path):
     )
     assert result.returncode != 0
     assert "allowed only with DRY=1" in result.stderr
+
+
+def test_steps_judges_pair_tag_and_job_prefix_are_configurable(tmp_path):
+    env = _dry_env(tmp_path)
+    pairs = Path(env["EVAL_ROOT"]) / "raw" / "pairs"
+    for path in pairs.glob("*.parquet"):
+        path.unlink()
+    for step in (0, 6, 12):
+        (pairs / f"gen_9b-train10pct-step{step}_440.parquet").touch()
+    env.update(
+        {
+            "STEPS": "0 6 12",
+            "JUDGES": "qwen35-9b gemma4-12b",
+            "GEN_KEY_PREFIX": "9b-train10pct-step",
+            "PAIRS_TAG": "440",
+            "JOB_PREFIX": "te_t10t50",
+        }
+    )
+
+    result = subprocess.run(
+        ["bash", str(LAUNCHER)], env=env, text=True, capture_output=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    planned = [line for line in result.stderr.splitlines() if line.startswith("[DRY] sbatch")]
+    assert len(planned) == 6
+    assert all("qwen35-9b" in line for line in planned[:3])
+    assert all("gemma4-12b" in line for line in planned[3:])
+    assert all("--job-name=te_t10t50_" in line for line in planned)
+    assert all("_440.parquet" in line for line in planned)

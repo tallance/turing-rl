@@ -16,15 +16,22 @@ SLURM_SCRIPT=${SLURM_SCRIPT:-$REPO/scripts/slurm/judge_sweep_cell.sh}
 CONTINUE_SCRIPT=${CONTINUE_SCRIPT:-$REPO/scripts/slurm/continue_full_schema_eval.sh}
 GEN_KEY_PREFIX=${GEN_KEY_PREFIX:-9b-full5ep-step}
 PAIRS_TAG=${PAIRS_TAG:-880}
+JOB_PREFIX=${JOB_PREFIX:-te}
 OFFSET=${OFFSET:-0}
 BATCH_SIZE=${BATCH_SIZE:-8}
 CHAIN_AFTER=${CHAIN_AFTER:-}
 DRY=${DRY:-0}
 SKIP_SPLIT_GUARD=${SKIP_SPLIT_GUARD:-0}
 
-STEPS=(0 32 64 96 128 160 192 224 256 288 320)
-JUDGES=(qwen35-9b gemma4-12b gemma4-31b qwen35-4b qwen35-27b)
-TOTAL=$((${#STEPS[@]} * ${#JUDGES[@]}))
+STEPS=${STEPS:-"0 32 64 96 128 160 192 224 256 288 320"}
+JUDGES=${JUDGES:-"qwen35-9b gemma4-12b gemma4-31b qwen35-4b qwen35-27b"}
+read -r -a STEP_VALUES <<< "$STEPS"
+read -r -a JUDGE_VALUES <<< "$JUDGES"
+[ "${#STEP_VALUES[@]}" -gt 0 ] && [ "${#JUDGE_VALUES[@]}" -gt 0 ] || {
+  echo "FATAL: STEPS and JUDGES must each contain at least one value" >&2
+  exit 2
+}
+TOTAL=$((${#STEP_VALUES[@]} * ${#JUDGE_VALUES[@]}))
 
 case "$OFFSET:$BATCH_SIZE" in
   *[!0-9:]*|:*|*:) echo "FATAL: OFFSET and BATCH_SIZE must be non-negative integers" >&2; exit 2 ;;
@@ -50,7 +57,8 @@ export PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'
 export TURING_JUDGE_SCORE_CLIP_MAX=7
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 export PERSONA_OPENAI_TIMEOUT_SECONDS=1800
-export REPO EVAL_ROOT EVAL_PARQUET SLURM_SCRIPT CONTINUE_SCRIPT GEN_KEY_PREFIX PAIRS_TAG BATCH_SIZE
+export REPO EVAL_ROOT EVAL_PARQUET SLURM_SCRIPT CONTINUE_SCRIPT GEN_KEY_PREFIX PAIRS_TAG
+export BATCH_SIZE STEPS JUDGES JOB_PREFIX
 
 submit() {
   local dep="$1"; shift
@@ -77,10 +85,10 @@ END=$((OFFSET + BATCH_SIZE))
 PREV="$CHAIN_AFTER"
 
 for ((idx=OFFSET; idx<END; idx++)); do
-  judge_index=$((idx / ${#STEPS[@]}))
-  step_index=$((idx % ${#STEPS[@]}))
-  judge=${JUDGES[$judge_index]}
-  step=${STEPS[$step_index]}
+  judge_index=$((idx / ${#STEP_VALUES[@]}))
+  step_index=$((idx % ${#STEP_VALUES[@]}))
+  judge=${JUDGE_VALUES[$judge_index]}
+  step=${STEP_VALUES[$step_index]}
   gen_key=${GEN_KEY_PREFIX}${step}
   pairs=$EVAL_ROOT/raw/pairs/gen_${gen_key}_${PAIRS_TAG}.parquet
   [ -f "$pairs" ] || { echo "FATAL: missing pair set: $pairs" >&2; exit 2; }
@@ -103,7 +111,7 @@ EOF
   dep=""
   [ -n "$PREV" ] && dep="afterok:$PREV"
   gpus=$((tp * replicas))
-  jid=$(submit "$dep" --gres=gpu:$gpus --job-name="te_${judge}_${step}" \
+  jid=$(submit "$dep" --gres=gpu:$gpus --job-name="${JOB_PREFIX}_${judge}_${step}" \
     --export=ALL,MODEL=$model,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=on,CELL_NAME=$judge,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
     -- \
     "$SLURM_SCRIPT")
@@ -114,7 +122,7 @@ done
 
 if [ "$END" -lt "$TOTAL" ]; then
   dep="afterok:$PREV"
-  next=$(submit "$dep" --gres=gpu:0 --job-name=te_eval_continue \
+  next=$(submit "$dep" --gres=gpu:0 --job-name="${JOB_PREFIX}_continue" \
     --export=ALL,NEXT_OFFSET=$END -- "$CONTINUE_SCRIPT")
   need_jid "$next" "continuation at offset $END"
   PREV="$next"
