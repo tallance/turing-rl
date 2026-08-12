@@ -1644,3 +1644,1519 @@ git commit -m "feat: discover judge_ reward metrics and add GRPO group-health me
 ```
 
 ---
+
+## Task 6: veRL config for judge GRPO
+
+**Files:**
+- Create: `training/grpo/configs/qwen35_judge_grpo.yaml`
+- Test: `tests/test_judge_grpo_config.py`
+
+**Interfaces:**
+- Consumes: `training/grpo/judge_reward.py` (as `custom_reward_function.path`)
+- Produces: Hydra config name `qwen35_judge_grpo`, passed as `--config-name` by Task 8's launcher
+
+The single most important override here is `target_modules`. The shared base sets
+`all-linear`, which on a Qwen3.5 hybrid model would attach LoRA to the Gated-DeltaNet
+backbone — destructive per arXiv:2604.22127. The explicit attention+MLP list is mandatory
+for all three sizes, and the test locks it.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_judge_grpo_config.py`:
+
+```python
+"""Regression guard for the judge GRPO config.
+
+Locks the values that make this a *judge* run rather than a generator run: the local
+reward function, thinking-on, the long-prompt budget, and — most importantly — a
+target_modules list that never touches the Gated-DeltaNet backbone.
+"""
+
+import os
+
+import yaml
+
+CFG = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "training", "grpo", "configs", "qwen35_judge_grpo.yaml",
+)
+
+# Gated-DeltaNet backbone projections. LoRA on any of these is destructive.
+GDN_MODULES = ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+
+
+def _load():
+    with open(CFG) as handle:
+        return yaml.safe_load(handle)
+
+
+def test_uses_the_local_judge_reward():
+    c = _load()
+    assert c["custom_reward_function"]["path"] == "training/grpo/judge_reward.py"
+    assert c["custom_reward_function"]["name"] == "compute_score"
+
+
+def test_thinking_is_enabled():
+    assert _load()["data"]["apply_chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_target_modules_never_touch_the_deltanet_backbone():
+    modules = _load()["actor_rollout_ref"]["model"]["target_modules"]
+    assert isinstance(modules, list), "must be an explicit list, never the base's all-linear"
+    assert set(modules) == {
+        "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"
+    }
+    for banned in GDN_MODULES:
+        assert banned not in modules
+
+
+def test_vision_and_mtp_are_excluded():
+    assert _load()["actor_rollout_ref"]["model"]["exclude_modules"] == ".*(visual|mtp).*"
+
+
+def test_prompt_and_response_budgets_fit_the_context_window():
+    c = _load()
+    data = c["data"]
+    rollout = c["actor_rollout_ref"]["rollout"]
+    assert data["max_prompt_length"] + data["max_response_length"] <= rollout["max_model_len"]
+    assert data["max_response_length"] == rollout["response_length"]
+
+
+def test_optimiser_follows_the_9b_recipe():
+    c = _load()
+    actor = c["actor_rollout_ref"]["actor"]
+    assert float(actor["optim"]["lr"]) == 1e-4
+    assert float(actor["kl_loss_coef"]) == 1e-4
+    assert actor["use_kl_loss"] is True
+    assert float(c["actor_rollout_ref"]["rollout"]["temperature"]) == 1.0
+
+
+def test_validation_sampling_is_narrower_than_training():
+    val = _load()["actor_rollout_ref"]["rollout"]["val_kwargs"]
+    assert float(val["temperature"]) == 0.7
+    assert float(val["top_p"]) == 0.8
+    assert val["top_k"] == 20
+    assert val["n"] == 1
+
+
+def test_fsdp2_is_selected_for_actor_and_ref():
+    c = _load()
+    assert c["actor_rollout_ref"]["actor"]["strategy"] == "fsdp2"
+    assert c["actor_rollout_ref"]["ref"]["strategy"] == "fsdp2"
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_grpo_config.py -q`
+Expected: FAIL with `FileNotFoundError` on `qwen35_judge_grpo.yaml`
+
+- [ ] **Step 3: Write minimal implementation**
+
+Create `training/grpo/configs/qwen35_judge_grpo.yaml`:
+
+```yaml
+# veRL GRPO config for judge-only RLVR (Qwen3.5 2B / 4B / 9B discriminators).
+#
+# Composes the shared 8B base for structure, then overrides what the judge side needs
+# differently:
+#   - reward is training/grpo/judge_reward.py: local, label-verifiable, no judge server
+#   - thinking ON, matching what generator RL actually ran against
+#   - long prompts: a rendered TURING_PROMPT is ~6k tokens against ~1k for a generator prompt
+#   - the 9B optimiser recipe (lr 1e-4, kl 1e-4, rollout T=1.0), not the 8B-era defaults
+#
+# actor_rollout_ref.model.path is set per run by scripts/slurm/judge_grpo_train.sh.
+defaults:
+  - qwen3_8b_grpo
+  - _self_
+
+data:
+  train_files: data/prism/judge/iter1/train.parquet
+  val_files: data/prism/judge/iter1/val.parquet
+  train_batch_size: 64
+  # The rendered prompt is ~22k chars (~6k tokens); the headroom absorbs long user histories.
+  max_prompt_length: 10240
+  # Thinking plus a 37-field verdict. Deliberately below the 8192 eval budget to bound
+  # rollout cost; judge_truncation_rate from the Task 7 probe says whether this is too tight.
+  max_response_length: 6144
+  truncation: left
+  filter_overlong_prompts: true
+  apply_chat_template_kwargs:
+    enable_thinking: true
+
+actor_rollout_ref:
+  model:
+    # MUST stay an explicit list. The base config says all-linear, which on a Qwen3.5
+    # hybrid would attach LoRA to the Gated-DeltaNet backbone (destructive; arXiv:2604.22127).
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+    exclude_modules: '.*(visual|mtp).*'
+    lora_rank: 64
+    lora_alpha: 32
+    lora_adapter_path: null
+    enable_gradient_checkpointing: true
+  actor:
+    ppo_mini_batch_size: 64
+    ppo_micro_batch_size_per_gpu: 1
+    use_kl_loss: true
+    kl_loss_coef: 0.0001
+    strategy: fsdp2
+    use_dynamic_bsz: false
+    optim:
+      lr: 0.0001
+  ref:
+    strategy: fsdp2
+  rollout:
+    n: 4
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    max_model_len: 16384
+    max_num_batched_tokens: 16384
+    response_length: 6144
+    val_kwargs:
+      temperature: 0.7
+      top_p: 0.8
+      top_k: 20
+      do_sample: true
+      n: 1
+
+critic:
+  optim:
+    lr: 0.0001
+
+custom_reward_function:
+  path: training/grpo/judge_reward.py
+  name: compute_score
+
+trainer:
+  default_local_dir: results/grpo/checkpoints_judge
+  experiment_name: qwen35-judge-grpo
+  total_epochs: 3
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_grpo_config.py -q`
+Expected: PASS, 8 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add training/grpo/configs/qwen35_judge_grpo.yaml tests/test_judge_grpo_config.py
+git commit -m "feat: veRL config for judge GRPO with GDN-safe LoRA targets"
+```
+
+---
+
+## Task 7: Three-regime zero-shot format probe
+
+The Phase 0 gate. Measures what unconstrained rollouts actually look like, which is the
+only thing that predicts whether GRPO has format signal to learn from.
+
+**Files:**
+- Modify: `training/grpo/reward.py` (`_resolve_response_format`, ~line 345)
+- Create: `scripts/probe_judge_format.py`
+- Test: `tests/test_probe_judge_format.py`
+
+**Interfaces:**
+- Consumes: `training.grpo.judge_verdict.parse_judge_verdict`; `training.grpo.judge_reward.directional_task_reward`; `shared.api_client.post_chat_async`
+- Produces: `REGIMES: tuple[str, ...]`; `response_format_for_regime(regime: str) -> dict | None`; `probe_record(completion: str | None, finish_reason: str, human_is_b: bool) -> dict`; `dump_row(model: str, row: dict, record: dict) -> dict`; `summarize_probe(records: list[dict]) -> dict`
+
+This script does double duty. Besides the Phase 0 gate, its `--dump_csv` output is the
+long-format CSV that Task 10 analyses — so scoring a trained judge or a zero-shot baseline
+on the 880-pair eval set is the same command with `--regimes json_schema`. Nothing else in
+the plan produces that CSV.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_probe_judge_format.py`:
+
+```python
+"""Unit tests for the zero-shot judge format probe.
+
+Network calls are out of scope here; these lock the regime mapping and the summary
+arithmetic, which are the parts that decide the Phase 0 gate.
+"""
+
+import json
+
+import pytest
+
+from shared.judge_prompts import TURING_RESPONSE_PROPERTIES
+from scripts.probe_judge_format import (
+    REGIMES,
+    dump_row,
+    probe_record,
+    response_format_for_regime,
+    summarize_probe,
+)
+
+
+def _full_verdict(rating: int = 7) -> str:
+    data = {}
+    for name, schema in TURING_RESPONSE_PROPERTIES.items():
+        data[name] = "text" if schema["type"] == "string" else 0.0
+    data["immediate_target_score_b"] = 1.0
+    data["human_goal_score_b"] = 1.0
+    data["communication_style_score_b"] = 1.0
+    data["base_score_a"] = 0.0
+    data["base_score_b"] = 3.0
+    data["penalty_a"] = 0.0
+    data["penalty_b"] = 0.0
+    data["response_a_score"] = 0.0
+    data["response_b_score"] = 3.0
+    data["score_gap"] = 3.0
+    data["rating"] = rating
+    return json.dumps(data)
+
+
+def test_regimes_are_the_three_documented_ones():
+    assert REGIMES == ("json_schema", "json_object", "freeform")
+
+
+def test_freeform_sends_no_response_format():
+    assert response_format_for_regime("freeform") is None
+
+
+def test_json_object_sends_the_loose_constraint():
+    assert response_format_for_regime("json_object") == {"type": "json_object"}
+
+
+def test_json_schema_sends_the_full_ordered_schema():
+    fmt = response_format_for_regime("json_schema")
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["schema"]["required"] == list(TURING_RESPONSE_PROPERTIES)
+
+
+def test_unknown_regime_raises():
+    with pytest.raises(ValueError):
+        response_format_for_regime("nonsense")
+
+
+def test_probe_record_scores_a_well_formed_verdict():
+    record = probe_record(_full_verdict(7), "stop", human_is_b=True)
+    assert record["fmt_all_fields"] == 1.0
+    assert record["recovered"] == 1.0
+    assert record["correct"] == 1.0
+    assert record["truncated"] == 0.0
+    assert record["rung"] == "dimensions"
+
+
+def test_probe_record_marks_a_length_stop_as_truncated():
+    assert probe_record(_full_verdict(), "length", human_is_b=True)["truncated"] == 1.0
+
+
+def test_probe_record_handles_an_unusable_completion():
+    record = probe_record("nothing useful", "stop", human_is_b=True)
+    assert record["recovered"] == 0.0
+    assert record["fmt_all_fields"] == 0.0
+    assert record["correct"] == 0.0
+
+
+def test_summary_averages_the_gate_metrics():
+    records = [
+        probe_record(_full_verdict(7), "stop", human_is_b=True),
+        probe_record("nothing useful", "stop", human_is_b=True),
+    ]
+    summary = summarize_probe(records)
+    assert summary["n"] == 2
+    assert summary["fmt_all_fields_rate"] == 0.5
+    assert summary["recovered_rate"] == 0.5
+    assert summary["accuracy"] == 0.5
+    assert summary["truncation_rate"] == 0.0
+    assert summary["rung_counts"]["dimensions"] == 1
+    assert summary["rung_counts"]["none"] == 1
+
+
+def test_summary_of_no_records_is_empty_not_a_crash():
+    assert summarize_probe([])["n"] == 0
+
+
+def test_dump_row_emits_the_five_canonical_analysis_columns():
+    row = {
+        "prompt": [{"role": "user", "content": "x"}],
+        "extra_info": {"pair_id": "p1::g0", "order": "human_b", "human_is_b": True},
+    }
+    record = probe_record(_full_verdict(7), "stop", human_is_b=True)
+    assert dump_row("qwen35-4b", row, record) == {
+        "model": "qwen35-4b",
+        "pair_id": "p1::g0",
+        "order": "human_b",
+        "rating": 7,
+        "human_is_b": True,
+    }
+
+
+def test_dump_row_carries_a_null_rating_when_nothing_was_recovered():
+    row = {
+        "prompt": [{"role": "user", "content": "x"}],
+        "extra_info": {"pair_id": "p1::g0", "order": "human_a", "human_is_b": False},
+    }
+    record = probe_record("garbage", "stop", human_is_b=False)
+    assert dump_row("m", row, record)["rating"] is None
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_probe_judge_format.py -q`
+Expected: FAIL with `ModuleNotFoundError: No module named 'scripts.probe_judge_format'`
+
+- [ ] **Step 3a: Add the third response-format mode**
+
+In `training/grpo/reward.py`, replace `_resolve_response_format` (currently lines 345-355) with:
+
+```python
+def _resolve_response_format() -> dict | None:
+    """Select the decoding constraint for a judge call.
+
+    ``PERSONA_JUDGE_JSON_SCHEMA=1``     -> full 37-field ordered schema (the eval regime)
+    ``PERSONA_JUDGE_JSON_SCHEMA=none``  -> no constraint at all (the training-rollout regime)
+    unset or anything else              -> ``{"type": "json_object"}`` (valid JSON, free fields)
+
+    The "none" mode exists for scripts/probe_judge_format.py. veRL builds SamplingParams
+    directly and never sends response_format, so probing through a constrained path would
+    report near-total compliance and say nothing about real rollouts.
+    """
+    mode = os.environ.get("PERSONA_JUDGE_JSON_SCHEMA")
+    if mode == "1":
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "turing_verdict",
+                "schema": TURING_RESPONSE_SCHEMA,
+            },
+        }
+    if str(mode).strip().lower() == "none":
+        return None
+    return {"type": "json_object"}
+```
+
+This is additive: unset and `=1` behave exactly as before, so no existing run changes.
+`build_chat_payload` already omits the key when the value is falsy (`shared/api_client.py:102`).
+
+- [ ] **Step 3b: Write the probe**
+
+Create `scripts/probe_judge_format.py`:
+
+```python
+"""Zero-shot judge format probe across three decoding regimes.
+
+Phase 0 gate for judge-only RLVR. veRL cannot constrain rollout decoding, so the number
+that matters is how often an *unconstrained* model emits a usable 37-field verdict. The
+json_schema and json_object arms are the controls: comparing accuracy across the three
+says whether the format scaffold buys verdict quality or only parseability.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import os
+import sys
+from collections import Counter
+from typing import Any
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pandas as pd
+
+from shared.api_client import (
+    build_chat_payload,
+    get_judge_call_meta,
+    post_chat_async,
+    resolve_judge_api_key,
+)
+from shared.judge_prompts import TURING_RESPONSE_SCHEMA
+from training.grpo.judge_reward import directional_task_reward
+from training.grpo.judge_verdict import parse_judge_verdict
+
+REGIMES: tuple[str, ...] = ("json_schema", "json_object", "freeform")
+
+
+def response_format_for_regime(regime: str) -> dict | None:
+    """Map a probe regime to the response_format the request should carry."""
+    if regime == "json_schema":
+        return {
+            "type": "json_schema",
+            "json_schema": {"name": "turing_verdict", "schema": TURING_RESPONSE_SCHEMA},
+        }
+    if regime == "json_object":
+        return {"type": "json_object"}
+    if regime == "freeform":
+        return None
+    raise ValueError(f"unknown regime {regime!r}; expected one of {REGIMES}")
+
+
+def probe_record(completion: str | None, finish_reason: str, human_is_b: bool) -> dict[str, Any]:
+    """Score one probe completion into the fields the gate cares about."""
+    verdict = parse_judge_verdict(completion)
+    correct = (
+        directional_task_reward(verdict.rating, human_is_b) if verdict.recovered else 0.0
+    )
+    return {
+        "rung": verdict.recovery_rung,
+        "recovered": float(verdict.recovered),
+        "fmt_json_valid": float(verdict.fmt_json_valid),
+        "fmt_all_fields": float(verdict.fmt_all_fields),
+        "fmt_arith": float(verdict.fmt_arith),
+        "format_score": verdict.format_score,
+        "correct": float(correct == 1.0),
+        "acc": float(correct),
+        "truncated": 1.0 if finish_reason == "length" else 0.0,
+        "rating": verdict.rating if verdict.recovered else None,
+        "completion_chars": len(completion or ""),
+    }
+
+
+def summarize_probe(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """Aggregate probe records into the Phase 0 gate table."""
+    if not records:
+        return {"n": 0}
+
+    def mean(key: str) -> float:
+        return sum(float(r[key]) for r in records) / len(records)
+
+    return {
+        "n": len(records),
+        "fmt_all_fields_rate": mean("fmt_all_fields"),
+        "fmt_json_valid_rate": mean("fmt_json_valid"),
+        "fmt_arith_rate": mean("fmt_arith"),
+        "format_score_mean": mean("format_score"),
+        "recovered_rate": mean("recovered"),
+        "accuracy": mean("acc"),
+        "truncation_rate": mean("truncated"),
+        "completion_chars_mean": mean("completion_chars"),
+        "rung_counts": dict(Counter(r["rung"] for r in records)),
+    }
+
+
+def dump_row(model: str, row: dict, record: dict[str, Any]) -> dict[str, Any]:
+    """One long-format row for scripts/analyze_judge_training.py."""
+    extra = row["extra_info"]
+    return {
+        "model": model,
+        "pair_id": extra["pair_id"],
+        "order": extra["order"],
+        "rating": record["rating"],
+        "human_is_b": bool(extra["human_is_b"]),
+    }
+
+
+async def _run_regime(
+    rows: list[dict], regime: str, model: str, max_tokens: int
+) -> list[tuple[dict, dict]]:
+    """Score every row in one decoding regime; returns (record, source_row) pairs.
+
+    The payload is assembled exactly as reward.py::_openai_chat does, so the probe
+    exercises the same sampling, thinking flag and transport as the real judge path.
+    """
+    import aiohttp
+
+    api_key = resolve_judge_api_key()
+    response_format = response_format_for_regime(regime)
+    sampling_raw = os.environ.get("PERSONA_JUDGE_SAMPLING")
+    sampling = json.loads(sampling_raw) if sampling_raw else None
+    thinking = os.environ.get("PERSONA_JUDGE_ENABLE_THINKING")
+    chat_template_kwargs = {"enable_thinking": thinking == "1"} if thinking in ("0", "1") else None
+
+    semaphore = asyncio.Semaphore(int(os.environ.get("JUDGE_PROBE_CONCURRENCY", "8")))
+    timeout = aiohttp.ClientTimeout(
+        total=float(os.environ.get("PERSONA_OPENAI_TIMEOUT_SECONDS", "1800"))
+    )
+
+    async def _one(row: dict) -> tuple[dict, dict]:
+        payload = build_chat_payload(
+            model=model,
+            messages=[{"role": "user", "content": row["prompt"][0]["content"]}],
+            max_completion_tokens=max_tokens,
+            response_format=response_format,
+            reasoning=False,
+            sampling=sampling,
+            chat_template_kwargs=chat_template_kwargs,
+        )
+        content = await post_chat_async(session, payload, semaphore=semaphore, api_key=api_key)
+        # Telemetry for THIS call: post_chat_async stashes it in a ContextVar, and each
+        # gather task carries its own context copy, so this is not cross-talk.
+        meta = get_judge_call_meta() or {}
+        return (
+            probe_record(
+                content,
+                str(meta.get("finish_reason", "")),
+                bool(row["extra_info"]["human_is_b"]),
+            ),
+            row,
+        )
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        return list(await asyncio.gather(*(_one(row) for row in rows)))
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Zero-shot judge format probe")
+    parser.add_argument("--pairs_parquet", required=True, help="judge-format parquet (Task 2)")
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--out_json", required=True)
+    parser.add_argument("--dump_csv", default=None,
+                        help="Long-format per-row CSV for scripts/analyze_judge_training.py")
+    parser.add_argument("--model_label", default=None,
+                        help="Name to record in --dump_csv (defaults to --model)")
+    parser.add_argument("--limit", type=int, default=200)
+    parser.add_argument("--max_tokens", type=int, default=8192)
+    parser.add_argument("--regimes", nargs="+", default=list(REGIMES))
+    args = parser.parse_args()
+
+    for regime in args.regimes:
+        response_format_for_regime(regime)  # fail fast on a typo
+
+    rows = pd.read_parquet(args.pairs_parquet).head(args.limit).to_dict("records")
+    label = args.model_label or args.model
+    summaries: dict[str, Any] = {}
+    dump_rows: list[dict[str, Any]] = []
+    for regime in args.regimes:
+        results = asyncio.run(_run_regime(rows, regime, args.model, args.max_tokens))
+        records = [record for record, _row in results]
+        summaries[regime] = summarize_probe(records)
+        print(f"[{regime}] {json.dumps(summaries[regime], sort_keys=True)}", flush=True)
+        if args.dump_csv and regime == args.regimes[-1]:
+            dump_rows = [dump_row(label, row, record) for record, row in results]
+
+    os.makedirs(os.path.dirname(os.path.abspath(args.out_json)), exist_ok=True)
+    with open(args.out_json, "w", encoding="utf-8") as handle:
+        json.dump({"model": args.model, "n_rows": len(rows), "regimes": summaries}, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    print(f"Wrote {args.out_json}")
+
+    if args.dump_csv:
+        os.makedirs(os.path.dirname(os.path.abspath(args.dump_csv)), exist_ok=True)
+        pd.DataFrame(dump_rows).to_csv(args.dump_csv, index=False)
+        print(f"Wrote {len(dump_rows)} rows -> {args.dump_csv} (regime={args.regimes[-1]})")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+Signatures verified against the repo: `post_chat_async(session, payload, *, semaphore,
+max_retries=None, api_key=None) -> str` (`shared/api_client.py:187`) returns only the content
+string, with per-call telemetry in `get_judge_call_meta()` (`shared/api_client.py:33`).
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_probe_judge_format.py -q`
+Expected: PASS, 12 tests
+
+- [ ] **Step 5: Run the full suite**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/ -q`
+Expected: PASS. `reward.py` is shared with the generator path; `tests/test_judge_payload.py` and `tests/test_reward_env_payload.py` in particular exercise the response-format logic.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add training/grpo/reward.py scripts/probe_judge_format.py tests/test_probe_judge_format.py
+git commit -m "feat: three-regime zero-shot judge format probe"
+```
+
+---
+
+## Task 8: Slurm launchers
+
+Three wrappers, all submitted through the snapshot gateway. Their tests are static
+assertions in the style of `tests/test_rl_9b_launcher.py` — they lock the pinned env so a
+future edit cannot silently drop it, the way job 15143 lost its hyperparameters.
+
+**Files:**
+- Create: `scripts/slurm/judge_format_probe.sh`
+- Create: `scripts/slurm/judge_train_gen.sh`
+- Create: `scripts/slurm/judge_grpo_train.sh`
+- Test: `tests/test_judge_launchers.py`
+
+**Interfaces:**
+- Consumes: `scripts/probe_judge_format.py`, `scripts/build_judge_train_pairs.py`, `training/grpo/configs/qwen35_judge_grpo.yaml`, `eval/generate_trained.py`
+- Produces: three sbatch-able scripts driven by `JUDGE_MODEL_PATH`, `JUDGE_REWARD_ARM`, `JUDGE_RUN_TAG`
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_judge_launchers.py`:
+
+```python
+"""Static guards on the judge Slurm launchers."""
+
+import os
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+PROBE = os.path.join(ROOT, "scripts", "slurm", "judge_format_probe.sh")
+GEN = os.path.join(ROOT, "scripts", "slurm", "judge_train_gen.sh")
+TRAIN = os.path.join(ROOT, "scripts", "slurm", "judge_grpo_train.sh")
+ALL = (PROBE, GEN, TRAIN)
+
+
+def _text(path: str) -> str:
+    with open(path) as handle:
+        return handle.read()
+
+
+def test_every_launcher_clears_the_stale_v2_proxy_vars():
+    for path in ALL:
+        assert "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY" in _text(path)
+
+
+def test_every_launcher_runs_from_the_snapshot_roots():
+    for path in ALL:
+        text = _text(path)
+        assert "TURING_RL_WORK_ROOT" in text
+        assert "cluster_job_bootstrap.sh" in text
+
+
+def test_no_launcher_calls_sbatch_directly():
+    for path in ALL:
+        for line in _text(path).splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#"):
+                continue
+            assert not stripped.startswith("sbatch "), f"{path}: direct sbatch is forbidden"
+
+
+def test_generation_pins_the_documented_sampling():
+    text = _text(GEN)
+    assert "GEN_TEMPERATURE=${GEN_TEMPERATURE:-0.7}" in text
+    assert "GEN_TOP_P=${GEN_TOP_P:-0.8}" in text
+    assert "GEN_TOP_K=${GEN_TOP_K:-20}" in text
+    assert "GEN_MAX_TOKENS=${GEN_MAX_TOKENS:-1024}" in text
+
+
+def test_generation_defaults_to_the_sft_ep3_checkpoint():
+    assert "merged_ep3" in _text(GEN)
+
+
+def test_probe_uses_the_freeform_capable_script():
+    text = _text(PROBE)
+    assert "scripts/probe_judge_format.py" in text
+    assert "freeform" in text
+
+
+def test_training_names_the_judge_config_and_arm():
+    text = _text(TRAIN)
+    assert "qwen35_judge_grpo" in text
+    assert "JUDGE_REWARD_ARM" in text
+    assert "REWARD_METRIC" not in text, "judge training must not inherit the generator reward switch"
+
+
+def test_training_uses_the_qwen35_verl09_environment():
+    assert "turing-rl-rl-qwen35" in _text(TRAIN)
+
+
+def test_training_enables_judge_thinking():
+    assert "PERSONA_JUDGE_ENABLE_THINKING=1" in _text(TRAIN)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_launchers.py -q`
+Expected: FAIL with `FileNotFoundError` on `judge_format_probe.sh`
+
+- [ ] **Step 3a: Write the generation launcher**
+
+Create `scripts/slurm/judge_train_gen.sh`:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=judge_gen
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=16
+#SBATCH --gres=gpu:1
+#SBATCH --mem=128G
+#SBATCH --time=12:00:00
+#SBATCH --output=/home/lancewicki/projects/turing-rl/logs/judge_gen-%j.out
+#SBATCH --partition=a100
+#SBATCH --account=rfai
+#
+# Generate the fake turns for judge training, then build the both-orders pair parquet.
+# Sampling matches how the frozen 880 eval pairs were produced, so train and eval pairs
+# are distribution-matched.
+set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
+export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
+export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
+export TMPDIR=/home/lancewicki/tmp/build PIP_CACHE_DIR=/home/lancewicki/tmp/pip-cache
+mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
+
+REPO=${TURING_RL_WORK_ROOT:?}
+cd "$REPO" || exit 2
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
+
+MERGED_EP3=${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}
+SPLIT=${SPLIT:-train}
+SLICE_LO=${SLICE_LO:-0.0}
+SLICE_HI=${SLICE_HI:-0.1}
+LIMIT=${LIMIT:-416}
+GEN_NUM=${GEN_NUM:-4}
+OUT_DIR=${OUT_DIR:-$REPO/data/prism/judge/iter1}
+
+DATA_BASE=$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/grpo
+case "$SPLIT" in
+  train) SOURCE_PARQUET=${SOURCE_PARQUET:-$DATA_BASE/train.parquet} ;;
+  val)   SOURCE_PARQUET=${SOURCE_PARQUET:-$DATA_BASE/val.parquet}; SLICE_LO=0.0; SLICE_HI=1.0; LIMIT=0; GEN_NUM=1 ;;
+  *) echo "ERROR: SPLIT must be train or val, got $SPLIT" >&2; exit 2 ;;
+esac
+
+# Generation sampling: Qwen3.5 model card = job 13634 val_kwargs = how the 880 eval pairs were made.
+export GEN_TEMPERATURE=${GEN_TEMPERATURE:-0.7}
+export GEN_TOP_P=${GEN_TOP_P:-0.8}
+export GEN_TOP_K=${GEN_TOP_K:-20}
+export GEN_MAX_TOKENS=${GEN_MAX_TOKENS:-1024}
+
+PKL=$OUT_DIR/raw/${SPLIT}_generations.pkl
+mkdir -p "$OUT_DIR/raw"
+
+echo "=== judge gen: split=$SPLIT slice=[$SLICE_LO,$SLICE_HI) limit=$LIMIT k=$GEN_NUM ==="
+echo "=== model=$MERGED_EP3 sampling T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
+
+$PY -u -m eval.generate_trained --base_model --model_id "$MERGED_EP3" \
+  --test_parquet "$SOURCE_PARQUET" --output "$PKL" --gen_num "$GEN_NUM" \
+  --temperature "$GEN_TEMPERATURE" --top_p "$GEN_TOP_P" --top_k "$GEN_TOP_K" \
+  --max_tokens "$GEN_MAX_TOKENS" --backend vllm \
+  --vllm_max_model_len "${GEN_MAX_MODEL_LEN:-13524}" \
+  --vllm_truncate_prompt_tokens "${GEN_TRUNCATE_PROMPT_TOKENS:-12500}" || exit 3
+
+LIMIT_ARG=()
+[ "$LIMIT" -gt 0 ] && LIMIT_ARG=(--limit "$LIMIT")
+$PY -u scripts/build_judge_train_pairs.py \
+  --inference_pkl "$PKL" --source_parquet "$SOURCE_PARQUET" \
+  --out "$OUT_DIR/$SPLIT.parquet" \
+  --slice_lo "$SLICE_LO" --slice_hi "$SLICE_HI" --split "$SPLIT" "${LIMIT_ARG[@]}"
+```
+
+Flags verified against `eval/generate_trained.py`: `--base_model`, `--model_id`,
+`--test_parquet`, `--output`, `--gen_num`, `--temperature`, `--top_p`, `--top_k`,
+`--max_tokens`, `--backend`, `--vllm_max_model_len` and `--vllm_truncate_prompt_tokens` all
+exist. The shape matches `scripts/slurm/generator_infer.sh`.
+
+- [ ] **Step 3b: Write the probe launcher**
+
+Create `scripts/slurm/judge_format_probe.sh`:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=judge_probe
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=32
+#SBATCH --gres=gpu:8
+#SBATCH --mem=256G
+#SBATCH --time=06:00:00
+#SBATCH --output=/home/lancewicki/projects/turing-rl/logs/judge_probe-%j.out
+#SBATCH --partition=a100
+#SBATCH --account=rfai
+#
+# Phase 0 gate: serve one candidate judge and probe it in three decoding regimes.
+# The freeform arm is the one that matters -- it is the only regime that matches what
+# veRL rollouts will actually produce.
+set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
+export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
+export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
+
+REPO=${TURING_RL_WORK_ROOT:?}
+cd "$REPO" || exit 2
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
+
+JUDGE_MODEL=${JUDGE_MODEL:?set JUDGE_MODEL, e.g. Qwen/Qwen3.5-4B}
+PAIRS=${PAIRS:-$REPO/data/prism/judge/iter1/val.parquet}
+OUT_JSON=${OUT_JSON:-$REPO/results/judge-format-probe/$(basename "$JUDGE_MODEL").json}
+LIMIT=${LIMIT:-200}
+REGIMES=${REGIMES:-"json_schema json_object freeform"}
+
+export PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'
+export PERSONA_JUDGE_ENABLE_THINKING=1
+export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
+export PERSONA_OPENAI_TIMEOUT_SECONDS=1800
+
+# Serve the candidate judge, wait for readiness, then probe. Serving shape follows
+# configs/judge_sweep_cells.py: <=30GB footprint -> TP=1 with 8 replicas.
+bash "$REPO/scripts/slurm/judge_serve_9b_replicas.sh" &
+SERVE_PID=$!
+trap 'kill $SERVE_PID 2>/dev/null || true' EXIT
+sleep "${SERVE_WARMUP_SECONDS:-300}"
+
+# shellcheck disable=SC2086
+$PY -u scripts/probe_judge_format.py \
+  --pairs_parquet "$PAIRS" --model "$JUDGE_MODEL" \
+  --out_json "$OUT_JSON" --limit "$LIMIT" --regimes $REGIMES
+```
+
+- [ ] **Step 3c: Write the training launcher**
+
+Create `scripts/slurm/judge_grpo_train.sh`:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=judge_grpo
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --cpus-per-task=96
+#SBATCH --gres=gpu:8
+#SBATCH --mem=512G
+#SBATCH --time=3-00:00:00
+#SBATCH --output=/home/lancewicki/projects/turing-rl/logs/judge_grpo-%j.out
+#SBATCH --partition=a100
+#SBATCH --account=rfai
+#
+# Judge-only GRPO. No judge server: the reward is local and label-verifiable, so unlike
+# the generator runs there is nothing to serve and nothing to tear down.
+set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
+unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
+export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
+export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
+export TMPDIR=/home/lancewicki/tmp/build PIP_CACHE_DIR=/home/lancewicki/tmp/pip-cache
+mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
+
+REPO=${TURING_RL_WORK_ROOT:?}
+cd "$REPO" || exit 2
+export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
+# Qwen3.5 needs transformers 5.x + veRL 0.9; this is the env both 9B GRPO runs used.
+PY=/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/python
+$PY -c 'import transfer_queue' || {
+  echo "ERROR: veRL 0.9 env requires TransferQueue==0.1.8" >&2
+  exit 2
+}
+
+JUDGE_MODEL_PATH=${JUDGE_MODEL_PATH:?set JUDGE_MODEL_PATH, e.g. Qwen/Qwen3.5-4B}
+export JUDGE_REWARD_ARM=${JUDGE_REWARD_ARM:?set JUDGE_REWARD_ARM to directional or graded}
+case "$JUDGE_REWARD_ARM" in
+  directional|graded) ;;
+  *) echo "ERROR: JUDGE_REWARD_ARM must be directional or graded, got $JUDGE_REWARD_ARM" >&2; exit 2 ;;
+esac
+export JUDGE_TASK_WEIGHT=${JUDGE_TASK_WEIGHT:-0.9}
+export JUDGE_FORMAT_WEIGHT=${JUDGE_FORMAT_WEIGHT:-0.1}
+# The judge REASONS before answering; this mirrors what generator RL ran against.
+export PERSONA_JUDGE_ENABLE_THINKING=1
+
+DATA_DIR=${DATA_DIR:-$REPO/data/prism/judge/iter1}
+TRAIN_FILE=${TRAIN_FILE:-$DATA_DIR/train.parquet}
+VAL_FILE=${VAL_FILE:-$DATA_DIR/val.parquet}
+RUN_TAG=${JUDGE_RUN_TAG:-$(basename "$JUDGE_MODEL_PATH")_${JUDGE_REWARD_ARM}}
+CKPT_DIR=${CKPT_DIR:-$REPO/results/grpo/judge/$RUN_TAG/checkpoints}
+
+echo "=== judge GRPO: model=$JUDGE_MODEL_PATH arm=$JUDGE_REWARD_ARM tag=$RUN_TAG ==="
+echo "=== train=$TRAIN_FILE val=$VAL_FILE ckpt=$CKPT_DIR host=$(hostname) date=$(date) ==="
+nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
+
+OVR=(
+  actor_rollout_ref.model.path="$JUDGE_MODEL_PATH"
+  actor_rollout_ref.actor.fsdp_config.fsdp_size=${RL_NGPUS:-8}
+  actor_rollout_ref.actor.fsdp_config.param_offload=True
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
+  actor_rollout_ref.actor.fsdp_config.offload_policy=True
+  actor_rollout_ref.ref.fsdp_config.param_offload=True
+  actor_rollout_ref.ref.fsdp_config.offload_policy=True
+  data.train_files="$TRAIN_FILE"
+  data.val_files="$VAL_FILE"
+  trainer.default_local_dir="$CKPT_DIR"
+  trainer.experiment_name="qwen35-judge-grpo-$RUN_TAG"
+  trainer.project_name=grpo-judge
+)
+
+$PY -u -m training.grpo.run_verl_main_ppo \
+  --config-name qwen35_judge_grpo "${OVR[@]}" ${EXTRA_OVERRIDES:-}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_launchers.py -q`
+Expected: PASS, 9 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+chmod +x scripts/slurm/judge_format_probe.sh scripts/slurm/judge_train_gen.sh scripts/slurm/judge_grpo_train.sh
+git add scripts/slurm/judge_format_probe.sh scripts/slurm/judge_train_gen.sh scripts/slurm/judge_grpo_train.sh tests/test_judge_launchers.py
+git commit -m "feat: Slurm launchers for judge probe, pair generation and GRPO"
+```
+
+---
+
+## Task 9: Overfit gate
+
+R0 from the spec. A handful of pairs, trained to saturation, to prove the loop learns
+before anything expensive runs.
+
+**Files:**
+- Create: `scripts/build_judge_overfit.py`
+- Create: `scripts/judge_overfit_gate.py`
+- Test: `tests/test_judge_overfit.py`
+
+**Interfaces:**
+- Consumes: the Task 2 judge parquet
+- Produces: `build_judge_overfit(src: str, out: str, n_pairs: int = 8) -> pd.DataFrame`; `read_metric_series(jsonl_path: str, key: str) -> list[float]`; `gate_verdict(series: list[float], *, threshold: float, tail: int) -> dict`
+
+`n_pairs` counts *pairs*, and each contributes both orders, so the row count is `2 * n_pairs`
+and the human side stays exactly balanced — an overfit subset that lost that balance would
+let the model win by always answering one slot.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_judge_overfit.py`:
+
+```python
+"""Unit tests for the judge overfit subset builder and the gate check."""
+
+import json
+
+import pandas as pd
+import pytest
+
+from scripts.build_judge_overfit import build_judge_overfit
+from scripts.judge_overfit_gate import gate_verdict, read_metric_series
+
+
+def _judge_parquet(tmp_path, n_pairs: int = 10):
+    rows = []
+    for i in range(n_pairs):
+        for order, human_is_b in (("human_a", False), ("human_b", True)):
+            rows.append(
+                {
+                    "data_source": "prism_judge",
+                    "prompt": [{"role": "user", "content": f"prompt {i}"}],
+                    "reward_model": {"style": "rule", "ground_truth": "B" if human_is_b else "A"},
+                    "extra_info": {
+                        "row_id": f"p{i}::{order}",
+                        "pair_id": f"p{i}",
+                        "order": order,
+                        "human_is_b": human_is_b,
+                    },
+                }
+            )
+    path = tmp_path / "train.parquet"
+    pd.DataFrame(rows).to_parquet(path)
+    return str(path)
+
+
+def test_overfit_subset_keeps_both_orders_of_each_pair(tmp_path):
+    out = str(tmp_path / "overfit.parquet")
+    df = build_judge_overfit(_judge_parquet(tmp_path), out, n_pairs=3)
+    assert len(df) == 6
+    assert df["extra_info"].map(lambda e: e["pair_id"]).nunique() == 3
+
+
+def test_overfit_subset_stays_balanced(tmp_path):
+    out = str(tmp_path / "overfit.parquet")
+    df = build_judge_overfit(_judge_parquet(tmp_path), out, n_pairs=4)
+    sides = [e["human_is_b"] for e in df["extra_info"]]
+    assert sum(sides) * 2 == len(sides)
+
+
+def test_overfit_subset_is_written_to_disk(tmp_path):
+    out = str(tmp_path / "overfit.parquet")
+    build_judge_overfit(_judge_parquet(tmp_path), out, n_pairs=2)
+    assert len(pd.read_parquet(out)) == 4
+
+
+def test_requesting_more_pairs_than_exist_raises(tmp_path):
+    with pytest.raises(ValueError):
+        build_judge_overfit(_judge_parquet(tmp_path, n_pairs=2), str(tmp_path / "o.parquet"), n_pairs=99)
+
+
+def test_read_metric_series_pulls_one_key(tmp_path):
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(
+        "\n".join(json.dumps({"step": s, "judge_acc": s / 10}) for s in range(5)) + "\n"
+    )
+    assert read_metric_series(str(path), "judge_acc") == [0.0, 0.1, 0.2, 0.3, 0.4]
+
+
+def test_read_metric_series_skips_rows_missing_the_key(tmp_path):
+    path = tmp_path / "metrics.jsonl"
+    path.write_text(json.dumps({"step": 0}) + "\n" + json.dumps({"judge_acc": 1.0}) + "\n")
+    assert read_metric_series(str(path), "judge_acc") == [1.0]
+
+
+def test_gate_passes_when_the_tail_saturates():
+    verdict = gate_verdict([0.5, 0.6, 0.9, 0.98, 1.0], threshold=0.95, tail=2)
+    assert verdict["passed"] is True
+    assert verdict["tail_mean"] == pytest.approx(0.99)
+
+
+def test_gate_fails_when_the_tail_stays_low():
+    verdict = gate_verdict([0.5, 0.5, 0.52, 0.51], threshold=0.95, tail=2)
+    assert verdict["passed"] is False
+
+
+def test_gate_fails_on_an_empty_series():
+    assert gate_verdict([], threshold=0.95, tail=2)["passed"] is False
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_overfit.py -q`
+Expected: FAIL with `ModuleNotFoundError: No module named 'scripts.build_judge_overfit'`
+
+- [ ] **Step 3a: Write the subset builder**
+
+Create `scripts/build_judge_overfit.py`:
+
+```python
+"""Cut a tiny, side-balanced overfit subset from the judge training parquet.
+
+Selection is by *pair*, keeping both A/B orders together, so the human side stays exactly
+balanced. An unbalanced overfit set would let the model saturate by always answering one
+slot, which would pass the gate while proving nothing.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pandas as pd
+
+
+def build_judge_overfit(src: str, out: str, n_pairs: int = 8) -> pd.DataFrame:
+    df = pd.read_parquet(src)
+    required = ["data_source", "prompt", "reward_model", "extra_info"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(f"missing veRL columns: {missing}")
+
+    pair_ids = list(dict.fromkeys(e["pair_id"] for e in df["extra_info"]))
+    if n_pairs > len(pair_ids):
+        raise ValueError(f"requested {n_pairs} pairs but only {len(pair_ids)} exist in {src}")
+    keep = set(pair_ids[:n_pairs])
+
+    subset = df.loc[df["extra_info"].map(lambda e: e["pair_id"] in keep)].reset_index(drop=True)
+    sides = [e["human_is_b"] for e in subset["extra_info"]]
+    if sum(sides) * 2 != len(sides):
+        raise ValueError("overfit subset is not side-balanced; both orders must be present")
+
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    subset.to_parquet(out, index=False)
+    return subset
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Build the judge overfit subset")
+    parser.add_argument("--src", required=True)
+    parser.add_argument("--out", required=True)
+    parser.add_argument("--n_pairs", type=int, default=8)
+    args = parser.parse_args()
+    subset = build_judge_overfit(args.src, args.out, args.n_pairs)
+    print(f"wrote {len(subset)} rows ({args.n_pairs} pairs x 2 orders) -> {args.out}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 3b: Write the gate check**
+
+Create `scripts/judge_overfit_gate.py`:
+
+```python
+"""Decide whether the judge overfit run actually learned.
+
+Reads a veRL metrics JSONL and checks that the tail of the training-accuracy series has
+saturated. A flat series near 0.5 means the loop is wired but learning nothing; a flat
+series near the tie payoff means the model found the hedge instead of the signal.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+
+
+def read_metric_series(jsonl_path: str, key: str) -> list[float]:
+    """Pull one metric out of a veRL metrics JSONL, skipping rows that lack it."""
+    series: list[float] = []
+    with open(jsonl_path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(record, dict) and key in record:
+                series.append(float(record[key]))
+    return series
+
+
+def gate_verdict(series: list[float], *, threshold: float, tail: int) -> dict:
+    """Pass when the mean of the last ``tail`` points clears ``threshold``."""
+    if not series:
+        return {"passed": False, "reason": "no metric points found", "tail_mean": 0.0, "n": 0}
+    window = series[-tail:] if tail > 0 else series
+    tail_mean = sum(window) / len(window)
+    passed = tail_mean >= threshold
+    return {
+        "passed": passed,
+        "reason": "saturated" if passed else f"tail_mean {tail_mean:.4f} < {threshold}",
+        "tail_mean": tail_mean,
+        "n": len(series),
+        "first": series[0],
+        "last": series[-1],
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Judge overfit gate check")
+    parser.add_argument("--metrics_jsonl", required=True)
+    parser.add_argument("--key", default="judge_acc")
+    parser.add_argument("--threshold", type=float, default=0.95)
+    parser.add_argument("--tail", type=int, default=3)
+    args = parser.parse_args()
+
+    verdict = gate_verdict(
+        read_metric_series(args.metrics_jsonl, args.key),
+        threshold=args.threshold,
+        tail=args.tail,
+    )
+    print(json.dumps(verdict, indent=2, sort_keys=True))
+    return 0 if verdict["passed"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_overfit.py -q`
+Expected: PASS, 9 tests
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add scripts/build_judge_overfit.py scripts/judge_overfit_gate.py tests/test_judge_overfit.py
+git commit -m "feat: judge overfit subset builder and gate check"
+```
+
+---
+
+## Task 10: Eval analysis
+
+Produces the headline table: accuracy per model, plus the diagnostics that say whether an
+accuracy gain is real discrimination or an artifact.
+
+**Files:**
+- Create: `scripts/analyze_judge_training.py`
+- Test: `tests/test_analyze_judge_training.py`
+
+**Interfaces:**
+- Consumes: a long-format CSV with columns `model`, `pair_id`, `order`, `rating`, `human_is_b`
+- Produces: `summarize_judge_eval(df: pd.DataFrame) -> pd.DataFrame`; `order_consistency(df: pd.DataFrame) -> pd.DataFrame`
+
+**Why the input is our own CSV and not the old sweep dump.** The existing wide
+`judge_rating_pairs.csv` has one `r_<judge>` column per judge and *no side label*, because
+the older eval picks the side with `_stable_turing_generated_is_b`, which hashes the
+response text into the decision. The side therefore cannot be recovered after the fact.
+Scoring every model — trained and zero-shot baseline alike — through the Task 2
+both-orders parquet gives an explicit `human_is_b` per row and makes `order_consistency`
+computable at all. This is the same conclusion the spec reached in §4 when it required all
+baselines to be re-run.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_analyze_judge_training.py`:
+
+```python
+"""Unit tests for judge eval analysis."""
+
+import pandas as pd
+import pytest
+
+from scripts.analyze_judge_training import order_consistency, summarize_judge_eval
+
+
+def _rows(records):
+    return pd.DataFrame(
+        [
+            {"model": m, "pair_id": p, "order": o, "rating": r, "human_is_b": h}
+            for m, p, o, r, h in records
+        ]
+    )
+
+
+def test_a_perfect_judge_scores_one():
+    df = _rows([("m", "p1", "human_a", 1, False), ("m", "p1", "human_b", 7, True)])
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["m", "accuracy"] == 1.0
+    assert summary.loc["m", "tie_rate"] == 0.0
+    assert summary.loc["m", "n"] == 2
+
+
+def test_an_always_tie_judge_scores_half():
+    df = _rows([("m", "p1", "human_a", 4, False), ("m", "p1", "human_b", 4, True)])
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["m", "accuracy"] == 0.5
+    assert summary.loc["m", "tie_rate"] == 1.0
+
+
+def test_a_slot_b_biased_judge_is_caught_by_pred_b_rate():
+    df = _rows([("m", "p1", "human_a", 7, False), ("m", "p1", "human_b", 7, True)])
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["m", "accuracy"] == 0.5
+    assert summary.loc["m", "pred_b_rate"] == 1.0
+
+
+def test_brier_is_reported():
+    df = _rows([("m", "p1", "human_a", 1, False)])
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["m", "brier"] == pytest.approx(0.0)
+
+
+def test_models_are_summarised_separately():
+    df = _rows(
+        [
+            ("good", "p1", "human_a", 1, False),
+            ("good", "p1", "human_b", 7, True),
+            ("bad", "p1", "human_a", 7, False),
+            ("bad", "p1", "human_b", 1, True),
+        ]
+    )
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["good", "accuracy"] == 1.0
+    assert summary.loc["bad", "accuracy"] == 0.0
+
+
+def test_order_consistency_is_one_when_both_orders_agree():
+    # Both orders name the human: correct in each presentation.
+    df = _rows([("m", "p1", "human_a", 1, False), ("m", "p1", "human_b", 7, True)])
+    result = order_consistency(df).set_index("model")
+    assert result.loc["m", "order_consistency"] == 1.0
+    assert result.loc["m", "n_pairs"] == 1
+
+
+def test_order_consistency_is_zero_for_a_fixed_slot_answer():
+    # Always says B regardless of where the human is: inconsistent across orders.
+    df = _rows([("m", "p1", "human_a", 7, False), ("m", "p1", "human_b", 7, True)])
+    assert order_consistency(df).set_index("model").loc["m", "order_consistency"] == 0.0
+
+
+def test_order_consistency_ignores_pairs_missing_an_order():
+    df = _rows([("m", "p1", "human_a", 1, False)])
+    assert order_consistency(df).set_index("model").loc["m", "n_pairs"] == 0
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_analyze_judge_training.py -q`
+Expected: FAIL with `ModuleNotFoundError: No module named 'scripts.analyze_judge_training'`
+
+- [ ] **Step 3: Write minimal implementation**
+
+Create `scripts/analyze_judge_training.py`:
+
+```python
+"""Summarise judge eval runs: accuracy plus the diagnostics that qualify it.
+
+Accuracy alone cannot distinguish a judge that discriminates from one that always answers
+the same slot, or one that hedges every call. pred_b_rate catches the first, tie_rate the
+second, and order_consistency catches a judge whose verdict flips when the same pair is
+presented the other way round.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import pandas as pd
+
+TIE_RATING = 4
+REQUIRED_COLUMNS = ("model", "pair_id", "order", "rating", "human_is_b")
+
+
+def _check_columns(df: pd.DataFrame) -> None:
+    missing = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+    if missing:
+        raise ValueError(f"missing required columns: {missing}")
+
+
+def _row_accuracy(rating: int, human_is_b: bool) -> float:
+    if rating == TIE_RATING:
+        return 0.5
+    return 1.0 if (rating > TIE_RATING) == bool(human_is_b) else 0.0
+
+
+def summarize_judge_eval(df: pd.DataFrame) -> pd.DataFrame:
+    """One row per model: accuracy, ties, slot bias, confidence and Brier."""
+    _check_columns(df)
+    work = df.copy()
+    work["_acc"] = [
+        _row_accuracy(int(r), bool(h)) for r, h in zip(work["rating"], work["human_is_b"])
+    ]
+    work["_tie"] = (work["rating"] == TIE_RATING).astype(float)
+    work["_pred_b"] = (work["rating"] > TIE_RATING).astype(float)
+    p = (work["rating"] - 1) / 6.0
+    y = work["human_is_b"].astype(float)
+    work["_brier"] = (p - y) ** 2
+    work["_conf"] = 2.0 * (p - 0.5).abs()
+
+    grouped = work.groupby("model", sort=True)
+    summary = pd.DataFrame(
+        {
+            "n": grouped.size(),
+            "accuracy": grouped["_acc"].mean(),
+            "tie_rate": grouped["_tie"].mean(),
+            "pred_b_rate": grouped["_pred_b"].mean(),
+            "brier": grouped["_brier"].mean(),
+            "conf_mean": grouped["_conf"].mean(),
+            "rating_mean": grouped["rating"].mean(),
+        }
+    ).reset_index()
+    return summary
+
+
+def order_consistency(df: pd.DataFrame) -> pd.DataFrame:
+    """Fraction of pairs whose two presentations name the same side as human.
+
+    Only pairs with both orders present are counted; a pair seen once cannot be
+    self-inconsistent. Ties count as disagreement with everything, including another tie,
+    because a tie names no side.
+    """
+    _check_columns(df)
+    rows = []
+    for model, model_df in df.groupby("model", sort=True):
+        consistent = 0
+        total = 0
+        for _pair_id, pair_df in model_df.groupby("pair_id", sort=True):
+            orders = {str(o): (int(r), bool(h)) for o, r, h in
+                      zip(pair_df["order"], pair_df["rating"], pair_df["human_is_b"])}
+            if "human_a" not in orders or "human_b" not in orders:
+                continue
+            total += 1
+            calls = []
+            for order in ("human_a", "human_b"):
+                rating, human_is_b = orders[order]
+                if rating == TIE_RATING:
+                    calls.append(None)
+                else:
+                    # Did the judge name the slot that actually holds the human?
+                    calls.append((rating > TIE_RATING) == human_is_b)
+            if calls[0] is not None and calls[0] == calls[1]:
+                consistent += 1
+        rows.append(
+            {
+                "model": model,
+                "n_pairs": total,
+                "order_consistency": (consistent / total) if total else 0.0,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Summarise judge eval results")
+    parser.add_argument("--eval_csv", required=True, help="long-format CSV of judge verdicts")
+    parser.add_argument("--out_csv", required=True)
+    args = parser.parse_args()
+
+    df = pd.read_csv(args.eval_csv)
+    summary = summarize_judge_eval(df).merge(order_consistency(df), on="model", how="left")
+    os.makedirs(os.path.dirname(os.path.abspath(args.out_csv)), exist_ok=True)
+    summary.to_csv(args.out_csv, index=False)
+    print(summary.to_markdown(index=False))
+    print(f"\nWrote {args.out_csv}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_analyze_judge_training.py -q`
+Expected: PASS, 8 tests
+
+- [ ] **Step 5: Run the full suite one last time**
+
+Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/ -q`
+Expected: PASS, all tests
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/analyze_judge_training.py tests/test_analyze_judge_training.py
+git commit -m "feat: judge eval analysis with order-consistency and slot-bias diagnostics"
+```
+
+---
+
+## Execution order and gates
+
+Tasks 1–7 and 9–10 are Mac-local and CPU-only. Only these steps touch the cluster, and
+each is gated on the previous one:
+
+1. **After Task 8**, commit, then generate the training and val pairs
+   (`SPLIT=train` then `SPLIT=val` through `judge_train_gen.sh`). Check the emitted
+   `.meta.json`: `human_is_b_rate` must be exactly 0.5, `n_contexts` must be 416.
+2. **Run the Phase 0 probe** for 2B / 4B / 9B. **Gate:** freeform `fmt_all_fields_rate`
+   around 0.5 or better. If a model comes in near zero, stop. The remedy is the spec's
+   self-distilled format-SFT fallback (§7), which is *not* implemented by this plan — it is
+   contingency work and needs its own plan written against whatever the probe actually shows.
+3. **Run R0**, the overfit gate, on the 4B. **Gate:** `judge_overfit_gate.py` exits 0.
+4. **Run R1**: {2B, 4B, 9B} × {directional, graded}. Watch
+   `judge_group/all_equal_rate` from the first steps — if it is high, the groups are
+   degenerate and DAPO-style dynamic sampling is needed before the results mean anything.
+   Watch `judge_tie` for the hedging collapse.
+5. **Score every model** — trained and zero-shot baselines — through the Task 2
+   both-orders parquet built from the 880-pair heldout set, then run Task 10's analysis.
+
+Per repo policy: run the `preflight-job-check` skill before every submission, keep
+concurrency under ~10 jobs, and never `scancel` a job this session did not submit.
+
+---
+
+## Plan self-review
+
+Recorded so the implementer knows what was and was not verified when this was written.
+
+**Every Python block in this plan was extracted and executed before the plan was
+committed.** All 93 tests across tasks 1–7, 9 and 10 pass, and the per-task counts stated in
+each "Expected: PASS, N tests" line are the counts actually observed: slice 9, pairs 8,
+verdict 16, reward 16, metric patch 7, config 8, probe 12, overfit 9, analysis 8. The
+implementer is still expected to do the TDD cycle — the point of running it here was to make
+sure they are not debugging *my* typos. Task 8's launcher test is the exception: it asserts
+against shell scripts, so it can only pass once those files exist.
+
+Four defects were found and fixed this way:
+
+1. `shared.judge_utils._extract_json` calls `json.loads` bare, so it raises on non-JSON
+   rather than returning `None`, and it demands the whole string be one object. Replaced with
+   a local tolerant extractor in `judge_verdict.py`.
+2. `defaultdict` is not imported in `verl_metric_patch.py`; the plan now says to add it
+   rather than assuming it is there.
+3. `post_chat_async(session, payload, *, semaphore, ...)` returns only the content string and
+   needs a session and semaphore — the probe's original call site was invented and wrong.
+4. Literal triple-backticks inside ```python fences silently truncated two code blocks in the
+   markdown; those blocks now use four-backtick fences.
+
+**Spec coverage.** Every section of the spec maps to a task: §3.1→1, §3.2→8, §3.3→2,
+§3.4→8 and the execution order, §4→7 (`--dump_csv`) and the execution order, §5→3 and 4,
+§6→4 and 5, §7→7, §8→9 and the execution order, §10→deferred. Two documented gaps, both
+deliberate: `order_consistency` moves from training to eval analysis (see the header), and
+the format-SFT fallback is contingency work needing its own plan.
+
+**One coverage gap was found and closed:** nothing originally produced the long-format CSV
+that Task 10 consumes. Rather than add an eleventh task, `probe_judge_format.py` gained
+`--dump_csv`, so the same script serves as both the Phase 0 gate and the eval driver for
+trained models and baselines alike.
+
+**Not verified here, and worth checking on first use:** the `#SBATCH` resource shapes in
+Task 8 are estimates, not measurements — particularly the 8-GPU allocation and 3-day walltime
+for judge GRPO, and the 300-second serve warmup in the probe launcher.
+
