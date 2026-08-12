@@ -55,6 +55,14 @@ actor_rollout_ref:
     max_model_len: 16384
     max_num_batched_tokens: 16384
     response_length: 6144
+    # The parent is an 8B *generator* profile. These three must be overridden or the judge
+    # run inherits values that are wrong for it, the failure mode that cost jobs 15143 and
+    # 13634. TP=1 matches the working 9B recipe (a 2B/4B judge has no reason to shard);
+    # chunked prefill is REQUIRED because judge prompts (~6k tokens, budget 10240) exceed
+    # the 4096 batched-token cap; 0.55 is the memory fraction the 9B recipe actually ran.
+    tensor_model_parallel_size: 1
+    gpu_memory_utilization: 0.55
+    enable_chunked_prefill: true
     val_kwargs:
       temperature: 0.7
       top_p: 0.8
@@ -66,11 +74,25 @@ critic:
   optim:
     lr: 0.0001
 
+# Declared BOTH ways on purpose. veRL 0.9's V1 controller does not migrate the legacy
+# top-level `custom_reward_function` block (see scripts/slurm/rl_generator_train_9b.sh),
+# so a config carrying only the legacy block runs V1, never calls the reward, and scores
+# every rollout 0 with no error at all. `trainer.use_v1: false` plus the nested
+# `reward.custom_reward_function` block is what the working 9B run uses. This lives in the
+# config rather than a submit-time override string for the same reason the 9B recipe does:
+# values that can be dropped from EXTRA_OVERRIDES eventually are.
 custom_reward_function:
   path: training/grpo/judge_reward.py
   name: compute_score
 
+reward:
+  custom_reward_function:
+    path: training/grpo/judge_reward.py
+    name: compute_score
+
 trainer:
+  use_v1: false
+  project_name: grpo-judge
   default_local_dir: results/grpo/checkpoints_judge
   experiment_name: qwen35-judge-grpo
   total_epochs: 3

@@ -76,3 +76,30 @@ def test_fsdp2_is_selected_for_actor_and_ref():
     c = _load()
     assert c["actor_rollout_ref"]["actor"]["strategy"] == "fsdp2"
     assert c["actor_rollout_ref"]["ref"]["strategy"] == "fsdp2"
+
+
+def test_reward_is_declared_the_way_verl_09_actually_reads_it():
+    """veRL 0.9's V1 controller ignores the legacy top-level block.
+
+    A config carrying only `custom_reward_function` runs V1, never calls the reward, and
+    scores every rollout 0 without erroring. The working 9B launcher disables V1 and uses
+    the nested `reward.custom_reward_function` block; both must be present.
+    """
+    c = _load()
+    assert c["trainer"]["use_v1"] is False
+    assert c["reward"]["custom_reward_function"]["path"] == "training/grpo/judge_reward.py"
+    assert c["reward"]["custom_reward_function"]["name"] == "compute_score"
+    assert c["custom_reward_function"]["path"] == "training/grpo/judge_reward.py"
+
+
+def test_rollout_overrides_the_8b_generator_hardware_profile():
+    """The parent is an 8B generator config; these three are wrong for a judge run."""
+    rollout = _load()["actor_rollout_ref"]["rollout"]
+    assert rollout["tensor_model_parallel_size"] == 1
+    assert float(rollout["gpu_memory_utilization"]) == 0.55
+    # Judge prompts (~6k tokens) exceed the 4096 batched-token cap.
+    assert rollout["enable_chunked_prefill"] is True
+
+
+def test_judge_runs_log_to_their_own_wandb_project():
+    assert _load()["trainer"]["project_name"] == "grpo-judge"
