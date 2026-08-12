@@ -142,7 +142,11 @@ def test_pair_launcher_is_not_itself_a_job_script():
     text = _text(LAUNCH)
     directives = [l for l in text.splitlines() if l.startswith("#SBATCH")]
     assert not directives, f"launcher must not carry job directives: {directives}"
-    assert "cluster_job_bootstrap.sh" not in text
+    sourced = [
+        l for l in text.splitlines()
+        if "cluster_job_bootstrap.sh" in l and not l.strip().startswith("#")
+    ]
+    assert not sourced, f"launcher must not source the job bootstrap: {sourced}"
 
 
 def test_pair_launcher_rejects_an_unknown_split():

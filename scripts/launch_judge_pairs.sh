@@ -40,12 +40,15 @@ for split in $SPLITS; do
   EXPORTS="ALL,SPLIT=$split,OUT_DIR=$OUT_DIR"
 
   if [ "$DRY" = "1" ]; then
-    echo "[DRY] $SBATCH --parsable --export=$EXPORTS scripts/slurm/judge_train_gen.sh"
+    echo "[DRY] $SBATCH --parsable --export=$EXPORTS -- scripts/slurm/judge_train_gen.sh"
     continue
   fi
 
   [ -n "$SBATCH" ] || { echo "FATAL: run through scripts/cluster_launch.sh" >&2; exit 2; }
-  jid=$("$SBATCH" --parsable --export="$EXPORTS" scripts/slurm/judge_train_gen.sh)
+  # The `--` script boundary is a repo convention enforced by
+  # tests/test_cluster_workflow.py::test_direct_snapshot_gateway_calls_include_script_boundary:
+  # without it sbatch can parse the script path as an option.
+  jid=$("$SBATCH" --parsable --export="$EXPORTS" -- scripts/slurm/judge_train_gen.sh)
   case "$jid" in
     ''|*[!0-9]*) echo "FATAL: sbatch failed for split=$split (got '$jid')" >&2; exit 1 ;;
   esac
