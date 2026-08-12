@@ -6,7 +6,12 @@ import pandas as pd
 import pytest
 
 from scripts.build_judge_overfit import build_judge_overfit
-from scripts.judge_overfit_gate import gate_verdict, read_metric_series
+from scripts.judge_overfit_gate import (
+    DEFAULT_METRIC_KEY,
+    gate_verdict,
+    parse_console_line,
+    read_metric_series,
+)
 
 
 def _judge_parquet(tmp_path, n_pairs: int = 10):
@@ -68,6 +73,33 @@ def test_read_metric_series_skips_rows_missing_the_key(tmp_path):
     path = tmp_path / "metrics.jsonl"
     path.write_text(json.dumps({"step": 0}) + "\n" + json.dumps({"judge_acc": 1.0}) + "\n")
     assert read_metric_series(str(path), "judge_acc") == [1.0]
+
+
+def test_the_default_key_is_the_name_the_metric_patch_actually_logs():
+    """judge_reward emits `judge_acc`; verl_metric_patch logs it as reward/judge_acc/mean."""
+    assert DEFAULT_METRIC_KEY == "reward/judge_acc/mean"
+
+
+def test_console_lines_are_parsed_for_slash_separated_keys():
+    line = "step:12 - step:12 - reward/judge_acc/mean:0.970 - reward/judge_tie/rate:0.010"
+    assert parse_console_line(line, "reward/judge_acc/mean") == pytest.approx(0.97)
+    assert parse_console_line(line, "reward/judge_tie/rate") == pytest.approx(0.01)
+
+
+def test_console_lines_without_the_key_yield_nothing():
+    assert parse_console_line("step:3 - reward/score/mean:0.500", DEFAULT_METRIC_KEY) is None
+
+
+def test_read_metric_series_reads_a_verl_console_log(tmp_path):
+    """veRL writes no metrics file; the console backend prints into the Slurm .out."""
+    path = tmp_path / "judge_grpo-1234.out"
+    path.write_text(
+        "=== judge GRPO: model=X ===\n"
+        "step:1 - reward/judge_acc/mean:0.500 - reward/score/mean:0.100\n"
+        "some unrelated log line\n"
+        "step:2 - reward/judge_acc/mean:0.980 - reward/score/mean:0.900\n"
+    )
+    assert read_metric_series(str(path), DEFAULT_METRIC_KEY) == pytest.approx([0.5, 0.98])
 
 
 def test_gate_passes_when_the_tail_saturates():

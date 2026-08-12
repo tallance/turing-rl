@@ -43,6 +43,7 @@ Spec §6 lists `order_consistency` as a training metric. It cannot be computed t
 | `training/grpo/configs/qwen35_judge_grpo.yaml` | veRL config for judge GRPO |
 | `scripts/probe_judge_format.py` | three-regime zero-shot format probe |
 | `scripts/analyze_judge_training.py` | eval-side accuracy / order-consistency analysis |
+| `scripts/slice_judge_source.py` | write the hash slice to its own parquet, so generation runs only over it |
 | `scripts/slurm/judge_format_probe.sh` | Slurm wrapper for the probe |
 | `scripts/slurm/judge_train_gen.sh` | Slurm wrapper for pair generation |
 | `scripts/slurm/judge_grpo_train.sh` | Slurm wrapper for judge GRPO |
@@ -53,7 +54,9 @@ Spec §6 lists `order_consistency` as a training metric. It cannot be computed t
 | Path | Change |
 |---|---|
 | `training/grpo/verl_metric_patch.py` | discover `judge_`-prefixed reward keys; add group-health metrics |
-| `training/grpo/reward.py` | add a third `response_format` mode so the probe can send none |
+| `shared/judge_utils.py` | `sanitize_prompt_text` — one control-char strip shared by the reward path and the offline prompt renderer |
+| `training/grpo/reward.py` | `_sanitize_text` delegates to `shared.judge_utils.sanitize_prompt_text` (no behaviour change) |
+| `.gitignore` | un-ignore `data/judge/*.py` so modules there need no `git add -f` |
 
 Judge code is deliberately separate from `training/grpo/reward.py`. The generator reward carries a judge HTTP client, length penalties, source-copy bookkeeping and a 1105-line surface; the judge reward shares none of it. Two focused modules beat one branching one.
 
@@ -146,6 +149,16 @@ def test_bad_bounds_raise():
         in_slice("u", "p", 0, lo=0.5, hi=0.5)
     with pytest.raises(ValueError):
         in_slice("u", "p", 0, lo=-0.1, hi=0.5)
+
+
+def test_slicing_is_idempotent():
+    """scripts/slurm/judge_train_gen.sh slices before generation and the builder slices
+    again with the same bounds. If that were not a no-op the builder would drop rows it
+    already has generations for, or worse, keep a different set."""
+    df = _rows(300)
+    once = select_slice(df, lo=0.0, hi=0.1, limit=17)
+    twice = select_slice(once, lo=0.0, hi=0.1, limit=17)
+    assert list(twice["extra_info"]) == list(once["extra_info"])
 
 
 def test_non_dict_extra_info_raises():
@@ -241,7 +254,7 @@ def select_slice(
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_slice.py -q`
-Expected: PASS, 9 tests
+Expected: PASS, 10 tests
 
 - [ ] **Step 5: Commit**
 
@@ -261,8 +274,12 @@ Turns the k-generation inference pickle plus the source parquet into a veRL trai
 - Test: `tests/test_build_judge_train_pairs.py`
 
 **Interfaces:**
-- Consumes: `data.judge.slice.select_slice`; `shared.judge_prompts.TURING_PROMPT`; `shared.judge_utils.build_source_copy_warning`, `shared.judge_utils.format_source_copy_watchlist`; `shared.prompt_utils.parse_reasoning_and_response`
-- Produces: `flatten_all_generations(inference: Any) -> dict[tuple[str, str, str], list[str]]`; `render_turing_prompt(*, user_history: str, context: str, response_a: str, response_b: str) -> str`; `build_judge_rows(source_df: pd.DataFrame, generations: dict, *, lo: float, hi: float, limit: int | None, split: str) -> tuple[pd.DataFrame, dict]`
+- Consumes: `data.judge.slice.select_slice`; `shared.judge_prompts.TURING_PROMPT`; `shared.judge_utils.build_source_copy_warning`, `shared.judge_utils.format_source_copy_watchlist`, `shared.judge_utils.sanitize_prompt_text`; `shared.prompt_utils.parse_reasoning_and_response`
+- Produces: `flatten_all_generations(inference: Any) -> dict[tuple[str, str, str], list[str]]`; `render_turing_prompt(*, user_history: str, context: str, response_a: str, response_b: str) -> str`; `prompt_length_stats(prompts: list[str], *, budget_tokens: int) -> dict`; `build_judge_rows(source_df: pd.DataFrame, generations: dict, *, lo: float, hi: float, limit: int | None, split: str, prompt_budget_tokens: int = 10240) -> tuple[pd.DataFrame, dict]`
+
+The `.meta.json` this writes is the **only** measurement of how long the rendered judge
+prompts actually are, and `data.max_prompt_length` in the Task 6 config must be set from it
+before any training submit — see "Execution order and gates".
 
 - [ ] **Step 1: Write the failing test**
 
@@ -275,8 +292,10 @@ import pandas as pd
 import pytest
 
 from scripts.build_judge_train_pairs import (
+    CHARS_PER_TOKEN_ESTIMATE,
     build_judge_rows,
     flatten_all_generations,
+    prompt_length_stats,
     render_turing_prompt,
 )
 
@@ -387,6 +406,52 @@ def test_split_tag_is_propagated():
 def test_missing_generation_raises():
     with pytest.raises(AssertionError):
         build_judge_rows(_source_df(), {}, lo=0.0, hi=1.0, limit=None, split="train")
+
+
+def test_render_strips_the_control_characters_the_reward_path_strips():
+    """reward.py sanitizes the four content fields before formatting; so must this."""
+    prompt = render_turing_prompt(
+        user_history="hi\x0bstory", context="c\x00tx", response_a="A\x1fA", response_b="B\x08B"
+    )
+    assert "\x0b" not in prompt and "\x00" not in prompt
+    assert "\x1f" not in prompt and "\x08" not in prompt
+    assert "history" in prompt and "ctx" in prompt and "AA" in prompt and "BB" in prompt
+
+
+def test_prompt_length_stats_report_percentiles_and_the_over_budget_count():
+    stats = prompt_length_stats(["x" * 100, "x" * 200, "x" * 300, "x" * 400], budget_tokens=50)
+    assert stats["prompt_chars_p50"] == 200
+    assert stats["prompt_chars_p95"] == 400
+    assert stats["prompt_chars_max"] == 400
+    assert stats["prompt_tokens_est_max"] == pytest.approx(400 / CHARS_PER_TOKEN_ESTIMATE, abs=0.1)
+    # budget 50 tokens ~= 195 chars, so 200/300/400 are over.
+    assert stats["n_over_budget"] == 3
+    assert stats["over_budget_rate"] == pytest.approx(0.75)
+    assert stats["prompt_budget_tokens"] == 50
+
+
+def test_prompt_length_stats_on_no_rows_do_not_crash():
+    stats = prompt_length_stats([], budget_tokens=10240)
+    assert stats["prompt_chars_max"] == 0
+    assert stats["n_over_budget"] == 0
+    assert stats["over_budget_rate"] == 0.0
+
+
+def test_meta_carries_the_prompt_length_measurement():
+    """max_prompt_length cannot be chosen without this; filter_overlong_prompts drops the rest."""
+    _df, meta = build_judge_rows(
+        _source_df(), flatten_all_generations(_inference(n_gens=2)),
+        lo=0.0, hi=1.0, limit=None, split="train", prompt_budget_tokens=1,
+    )
+    for key in (
+        "prompt_chars_p50", "prompt_chars_p95", "prompt_chars_max",
+        "prompt_tokens_est_p50", "prompt_tokens_est_p95", "prompt_tokens_est_max",
+        "n_over_budget", "prompt_budget_tokens", "chars_per_token_estimate",
+    ):
+        assert key in meta, key
+    # The rendered rubric alone is thousands of characters, so a 1-token budget catches all 4.
+    assert meta["n_over_budget"] == 4
+    assert meta["prompt_chars_max"] >= meta["prompt_chars_p50"] > 0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -405,12 +470,19 @@ Differs from ``scripts/build_judge_pairs.py`` in three ways: it keeps *every*
 generation rather than only the first, it emits each pair in *both* A/B orders, and
 it writes veRL training rows (rendered prompt + ``"A"``/``"B"`` label) rather than a
 flat pair table for offline judging.
+
+The ``.meta.json`` written next to the parquet carries the rendered-prompt length
+distribution. That is the only measurement of how big these prompts actually are, and
+``data.max_prompt_length`` in ``training/grpo/configs/qwen35_judge_grpo.yaml`` must be set
+from it before any training submit: veRL's ``filter_overlong_prompts`` silently DROPS
+over-budget rows from train and val alike.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import pickle
 import re
@@ -423,10 +495,18 @@ import pandas as pd
 
 from data.judge.slice import select_slice
 from shared.judge_prompts import TURING_PROMPT
-from shared.judge_utils import build_source_copy_warning, format_source_copy_watchlist
+from shared.judge_utils import (
+    build_source_copy_warning,
+    format_source_copy_watchlist,
+    sanitize_prompt_text,
+)
 from shared.prompt_utils import parse_reasoning_and_response
 
 DATA_SOURCE = "prism_judge"
+# Rough chars-per-token for Qwen3.5 on English prose. Every derived field is named
+# ``*_tokens_est_*`` so nobody mistakes it for a tokenizer count.
+CHARS_PER_TOKEN_ESTIMATE = 3.9
+DEFAULT_PROMPT_BUDGET_TOKENS = 10240
 _TARGET_LIST_KEYS = ("test_targets", "test_results")
 _GENERATION_LIST_KEYS = ("generations", "outputs")
 _RAW_TEXT_KEYS = ("raw_completion", "text", "response")
@@ -497,10 +577,56 @@ def flatten_all_generations(inference: Any) -> dict[tuple[str, str, str], list[s
     return flat
 
 
+def _percentile(sorted_values: list[int], q: float) -> int:
+    """Nearest-rank percentile over an already-sorted list."""
+    if not sorted_values:
+        return 0
+    index = math.ceil(q * len(sorted_values)) - 1
+    return sorted_values[min(len(sorted_values) - 1, max(0, index))]
+
+
+def prompt_length_stats(prompts: list[str], *, budget_tokens: int) -> dict[str, Any]:
+    """Length distribution of the rendered prompts, plus how many blow the budget.
+
+    ``max_prompt_length`` cannot be chosen from the template alone: the empty rendered
+    template is already ~5.3k estimated tokens before any user history, context or candidate
+    responses are substituted in. These numbers are what that choice must be made from.
+    """
+    chars = sorted(len(p) for p in prompts)
+    budget_chars = budget_tokens * CHARS_PER_TOKEN_ESTIMATE
+
+    def est(value: int) -> float:
+        return round(value / CHARS_PER_TOKEN_ESTIMATE, 1)
+
+    stats: dict[str, Any] = {
+        "prompt_budget_tokens": int(budget_tokens),
+        "chars_per_token_estimate": CHARS_PER_TOKEN_ESTIMATE,
+        "n_over_budget": sum(1 for c in chars if c > budget_chars),
+    }
+    for label, value in (
+        ("p50", _percentile(chars, 0.50)),
+        ("p95", _percentile(chars, 0.95)),
+        ("max", chars[-1] if chars else 0),
+    ):
+        stats[f"prompt_chars_{label}"] = int(value)
+        stats[f"prompt_tokens_est_{label}"] = est(value)
+    stats["over_budget_rate"] = (stats["n_over_budget"] / len(chars)) if chars else 0.0
+    return stats
+
+
 def render_turing_prompt(
     *, user_history: str, context: str, response_a: str, response_b: str
 ) -> str:
-    """Render TURING_PROMPT exactly as the reward path does at eval time."""
+    """Render TURING_PROMPT exactly as the reward path does at eval time.
+
+    "Exactly" includes the control-character strip the reward path applies to the four
+    content fields before formatting (reward.py::_score_pairwise_likert_with_info); without
+    it a history holding a stray \\x0b would render a different prompt here than at eval.
+    """
+    user_history = sanitize_prompt_text(user_history)
+    context = sanitize_prompt_text(context)
+    response_a = sanitize_prompt_text(response_a)
+    response_b = sanitize_prompt_text(response_b)
     warning_a = build_source_copy_warning(
         response_a, user_history=user_history, thread_context=context
     )
@@ -529,11 +655,13 @@ def build_judge_rows(
     hi: float,
     limit: int | None,
     split: str,
+    prompt_budget_tokens: int = DEFAULT_PROMPT_BUDGET_TOKENS,
 ) -> tuple[pd.DataFrame, dict]:
     """Build veRL judge-training rows: two per (context, generation), one per order."""
     sliced = select_slice(source_df, lo=lo, hi=hi, limit=limit)
 
     rows: list[dict[str, Any]] = []
+    prompts: list[str] = []
     missing: list[tuple[str, str, str]] = []
     n_generations = 0
     for record in sliced.to_dict("records"):
@@ -556,20 +684,17 @@ def build_judge_rows(
             for order, human_is_b in (("human_a", False), ("human_b", True)):
                 response_a = generated if human_is_b else human
                 response_b = human if human_is_b else generated
+                rendered = render_turing_prompt(
+                    user_history=user_history,
+                    context=context,
+                    response_a=response_a,
+                    response_b=response_b,
+                )
+                prompts.append(rendered)
                 rows.append(
                     {
                         "data_source": DATA_SOURCE,
-                        "prompt": [
-                            {
-                                "role": "user",
-                                "content": render_turing_prompt(
-                                    user_history=user_history,
-                                    context=context,
-                                    response_a=response_a,
-                                    response_b=response_b,
-                                ),
-                            }
-                        ],
+                        "prompt": [{"role": "user", "content": rendered}],
                         "reward_model": {
                             "style": "rule",
                             "ground_truth": "B" if human_is_b else "A",
@@ -608,6 +733,7 @@ def build_judge_rows(
         "split": split,
         "human_is_b_rate": (sum(human_is_b) / len(human_is_b)) if human_is_b else 0.0,
     }
+    meta.update(prompt_length_stats(prompts, budget_tokens=prompt_budget_tokens))
     return df, meta
 
 
@@ -620,6 +746,14 @@ def main() -> None:
     parser.add_argument("--slice_hi", type=float, default=0.1)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--split", default="train")
+    parser.add_argument(
+        "--prompt_budget_tokens",
+        type=int,
+        default=DEFAULT_PROMPT_BUDGET_TOKENS,
+        help="Token budget the emitted prompts are measured against; only affects the "
+             "n_over_budget/over_budget_rate fields in the .meta.json. Set it to whatever "
+             "data.max_prompt_length the training config currently declares.",
+    )
     args = parser.parse_args()
 
     with open(args.inference_pkl, "rb") as handle:
@@ -633,6 +767,7 @@ def main() -> None:
         hi=args.slice_hi,
         limit=args.limit,
         split=args.split,
+        prompt_budget_tokens=args.prompt_budget_tokens,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
@@ -653,7 +788,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_build_judge_train_pairs.py -q`
-Expected: PASS, 8 tests
+Expected: PASS, 12 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1770,6 +1905,42 @@ def test_rollout_overrides_the_8b_generator_hardware_profile():
 
 def test_judge_runs_log_to_their_own_wandb_project():
     assert _load()["trainer"]["project_name"] == "grpo-judge"
+
+
+def test_lora_is_merged_before_the_rollout_weight_sync():
+    """The one proven Qwen3.5 recipe pins this; without it the rollouts may be the base model.
+
+    veRL's default weight-sync path for a hybrid GDN model is not the merged-dense one. If it
+    hands the rollout engine base weights, the run completes and logs plausible curves while
+    every sampled verdict came from the untrained model.
+    """
+    assert _load()["actor_rollout_ref"]["model"]["lora"]["merge"] is True
+
+
+def test_the_checkpoint_engine_bucket_matches_the_proven_recipe():
+    rollout = _load()["actor_rollout_ref"]["rollout"]
+    assert rollout["checkpoint_engine"]["update_weights_bucket_megabytes"] == 3072
+
+
+def test_all_three_micro_batch_knobs_are_pinned_to_one():
+    """The 8B generator base leaves ref/rollout log-prob at 8 for far shorter sequences."""
+    c = _load()["actor_rollout_ref"]
+    assert c["actor"]["ppo_micro_batch_size_per_gpu"] == 1
+    assert c["ref"]["log_prob_micro_batch_size_per_gpu"] == 1
+    assert c["rollout"]["log_prob_micro_batch_size_per_gpu"] == 1
+
+
+def test_a_console_logger_exists_so_the_overfit_gate_has_something_to_read():
+    """veRL writes no metrics file; with wandb alone judge_overfit_gate.py cannot run."""
+    assert "console" in _load()["trainer"]["logger"]
+
+
+def test_the_unvalidated_prompt_budget_is_flagged_in_the_file():
+    """max_prompt_length is a placeholder until the builder's meta.json is read."""
+    with open(CFG) as handle:
+        text = handle.read()
+    assert "UNVALIDATED" in text
+    assert "prompt_tokens_est_p95" in text
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1800,7 +1971,16 @@ data:
   train_files: data/prism/judge/iter1/train.parquet
   val_files: data/prism/judge/iter1/val.parquet
   train_batch_size: 64
-  # The rendered prompt is ~22k chars (~6k tokens); the headroom absorbs long user histories.
+  # !!! UNVALIDATED AGAINST REAL DATA -- MUST BE SET BEFORE THE FIRST REAL SUBMIT !!!
+  # 10240 is a placeholder, not a measurement. The EMPTY rendered TURING_PROMPT (rubric only,
+  # no user_history, no context, no candidate responses) is already 20,510 chars ~= 5,259
+  # tokens, and the generator side budgets 12,500 tokens for prompts carrying the same
+  # history+context. With `filter_overlong_prompts: true` below, anything over this budget is
+  # DROPPED from train AND val silently, biasing every result toward short-history users.
+  # Before submitting: read prompt_tokens_est_p95 / prompt_tokens_est_max / n_over_budget from
+  # the <split>.meta.json that scripts/build_judge_train_pairs.py writes, set this value from
+  # that measurement, and raise max_model_len with it -- 10240 + 6144 already equals the
+  # current 16384 exactly, so there is no slack.
   max_prompt_length: 10240
   # Thinking plus a 37-field verdict. Deliberately below the 8192 eval budget to bound
   # rollout cost; judge_truncation_rate from the Task 7 probe says whether this is too tight.
@@ -1820,6 +2000,13 @@ actor_rollout_ref:
     lora_alpha: 32
     lora_adapter_path: null
     enable_gradient_checkpointing: true
+    lora:
+      # MANDATORY for a Qwen3.5 hybrid. This is the merged-dense rollout weight sync the one
+      # proven 9B recipe pins (scripts/slurm/rl_generator_train_9b.sh, "merged dense sync").
+      # Left at veRL's default the rollout engine may be handed base weights instead of the
+      # LoRA-merged ones: the run completes, logs plausible curves, and every rollout came
+      # from the untrained model. The key exists in the composed parent (veRL ppo_trainer).
+      merge: true
   actor:
     ppo_mini_batch_size: 64
     ppo_micro_batch_size_per_gpu: 1
@@ -1831,8 +2018,13 @@ actor_rollout_ref:
       lr: 0.0001
   ref:
     strategy: fsdp2
+    # The 8B generator base leaves this at 8. Judge sequences are LONGER than the 9B
+    # generator's, and that recipe pins all three micro-batch knobs (actor, ref, rollout)
+    # to 1; pinning only the actor one leaves the two log-prob passes to OOM at 8.
+    log_prob_micro_batch_size_per_gpu: 1
   rollout:
     n: 4
+    log_prob_micro_batch_size_per_gpu: 1
     temperature: 1.0
     top_p: 1.0
     top_k: -1
@@ -1847,6 +2039,9 @@ actor_rollout_ref:
     tensor_model_parallel_size: 1
     gpu_memory_utilization: 0.55
     enable_chunked_prefill: true
+    checkpoint_engine:
+      # Same value the proven 9B recipe pins. Key exists in the composed parent.
+      update_weights_bucket_megabytes: 3072
     val_kwargs:
       temperature: 0.7
       top_p: 0.8
@@ -1876,6 +2071,13 @@ reward:
 
 trainer:
   use_v1: false
+  # `console` is not decoration. veRL writes no metrics file of any kind; with wandb alone the
+  # per-step series exists only in the wandb UI, and scripts/judge_overfit_gate.py -- which the
+  # R0 gate depends on -- would have nothing on disk to read. The console backend prints every
+  # logged metric to stdout, i.e. into the Slurm .out, which the gate parses directly.
+  logger:
+    - wandb
+    - console
   project_name: grpo-judge
   default_local_dir: results/grpo/checkpoints_judge
   experiment_name: qwen35-judge-grpo
@@ -1886,10 +2088,14 @@ trainer:
 working 9B launcher does not override either, and it runs 12.5k-token prompts, so the
 inherited values are proven in practice rather than merely plausible.
 
+`override_config.text_config.mtp_num_hidden_layers=0` is the one key from the 9B recipe that
+is **not** here — no parent defines it, so it needs Hydra's `+` prefix and lives in the Task 8
+launcher's `OVR` array in the exact form that recipe proved (`rl_generator_train_9b.sh:96`).
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_grpo_config.py -q`
-Expected: PASS, 11 tests
+Expected: PASS, 16 tests
 
 - [ ] **Step 5: Commit**
 
@@ -1906,13 +2112,16 @@ The Phase 0 gate. Measures what unconstrained rollouts actually look like, which
 only thing that predicts whether GRPO has format signal to learn from.
 
 **Files:**
-- Modify: `training/grpo/reward.py` (`_resolve_response_format`, ~line 345)
 - Create: `scripts/probe_judge_format.py`
 - Test: `tests/test_probe_judge_format.py`
 
 **Interfaces:**
 - Consumes: `training.grpo.judge_verdict.parse_judge_verdict`; `training.grpo.judge_reward.directional_task_reward`; `shared.api_client.post_chat_async`
-- Produces: `REGIMES: tuple[str, ...]`; `response_format_for_regime(regime: str) -> dict | None`; `probe_record(completion: str | None, finish_reason: str, human_is_b: bool) -> dict`; `dump_row(model: str, row: dict, record: dict) -> dict`; `summarize_probe(records: list[dict]) -> dict`
+- Produces: `REGIMES: tuple[str, ...]`; `response_format_for_regime(regime: str) -> dict | None`; `even_limit(limit: int) -> int`; `probe_record(completion: str | None, finish_reason: str, human_is_b: bool) -> dict`; `dump_row(model: str, row: dict, record: dict, *, regime: str) -> dict`; `summarize_probe(records: list[dict]) -> dict`
+
+`--dump_csv` records the regime named by `--dump_regime` (default `json_schema`), **not**
+whichever regime happens to be last in `--regimes`, and every dumped row carries a `regime`
+column so a freeform dump can never be mistaken downstream for a forced-schema one.
 
 This script does double duty. Besides the Phase 0 gate, its `--dump_csv` output is the
 long-format CSV that Task 10 analyses — so scoring a trained judge or a zero-shot baseline
@@ -1938,6 +2147,7 @@ from shared.judge_prompts import TURING_RESPONSE_PROPERTIES
 from scripts.probe_judge_format import (
     REGIMES,
     dump_row,
+    even_limit,
     probe_record,
     response_format_for_regime,
     summarize_probe,
@@ -2024,19 +2234,30 @@ def test_summary_of_no_records_is_empty_not_a_crash():
     assert summarize_probe([])["n"] == 0
 
 
-def test_dump_row_emits_the_five_canonical_analysis_columns():
+def test_dump_row_emits_the_canonical_analysis_columns():
     row = {
         "prompt": [{"role": "user", "content": "x"}],
         "extra_info": {"pair_id": "p1::g0", "order": "human_b", "human_is_b": True},
     }
     record = probe_record(_full_verdict(7), "stop", human_is_b=True)
-    assert dump_row("qwen35-4b", row, record) == {
+    assert dump_row("qwen35-4b", row, record, regime="json_schema") == {
         "model": "qwen35-4b",
+        "regime": "json_schema",
         "pair_id": "p1::g0",
         "order": "human_b",
         "rating": 7,
         "human_is_b": True,
     }
+
+
+def test_dump_row_records_which_regime_produced_the_verdict():
+    """A freeform verdict and a forced-schema verdict are not the same measurement."""
+    row = {
+        "prompt": [{"role": "user", "content": "x"}],
+        "extra_info": {"pair_id": "p1::g0", "order": "human_a", "human_is_b": False},
+    }
+    record = probe_record(_full_verdict(1), "stop", human_is_b=False)
+    assert dump_row("m", row, record, regime="freeform")["regime"] == "freeform"
 
 
 def test_dump_row_carries_a_null_rating_when_nothing_was_recovered():
@@ -2045,7 +2266,14 @@ def test_dump_row_carries_a_null_rating_when_nothing_was_recovered():
         "extra_info": {"pair_id": "p1::g0", "order": "human_a", "human_is_b": False},
     }
     record = probe_record("garbage", "stop", human_is_b=False)
-    assert dump_row("m", row, record)["rating"] is None
+    assert dump_row("m", row, record, regime="json_schema")["rating"] is None
+
+
+def test_an_odd_limit_is_rounded_down_to_keep_ab_orders_paired():
+    assert even_limit(201) == 200
+    assert even_limit(200) == 200
+    assert even_limit(1) == 0
+    assert even_limit(0) == 0
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2053,41 +2281,14 @@ def test_dump_row_carries_a_null_rating_when_nothing_was_recovered():
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_probe_judge_format.py -q`
 Expected: FAIL with `ModuleNotFoundError: No module named 'scripts.probe_judge_format'`
 
-- [ ] **Step 3a: Add the third response-format mode**
+- [ ] **Step 3a: Leave `_resolve_response_format` alone**
 
-In `training/grpo/reward.py`, replace `_resolve_response_format` (currently lines 345-355) with:
-
-```python
-def _resolve_response_format() -> dict | None:
-    """Select the decoding constraint for a judge call.
-
-    ``PERSONA_JUDGE_JSON_SCHEMA=1``     -> full 37-field ordered schema (the eval regime)
-    ``PERSONA_JUDGE_JSON_SCHEMA=none``  -> no constraint at all (the training-rollout regime)
-    unset or anything else              -> ``{"type": "json_object"}`` (valid JSON, free fields)
-
-    The "none" mode exists for scripts/probe_judge_format.py. veRL builds SamplingParams
-    directly and never sends response_format, so probing through a constrained path would
-    report near-total compliance and say nothing about real rollouts.
-    """
-    mode = os.environ.get("PERSONA_JUDGE_JSON_SCHEMA")
-    if mode == "1":
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "turing_verdict",
-                "schema": TURING_RESPONSE_SCHEMA,
-            },
-        }
-    # `mode is not None` is load-bearing: str(None).strip().lower() == "none", so the
-    # obvious `str(mode).strip().lower() == "none"` would make the UNSET env take this
-    # branch and silently drop response_format for every existing generator run.
-    if mode is not None and mode.strip().lower() == "none":
-        return None
-    return {"type": "json_object"}
-```
-
-This is additive: unset and `=1` behave exactly as before, so no existing run changes.
-`build_chat_payload` already omits the key when the value is falsy (`shared/api_client.py:102`).
+An earlier revision of this plan added a third `PERSONA_JUDGE_JSON_SCHEMA=none` mode here so
+the probe could request an unconstrained call through the shared reward path. It was removed
+in review: the probe builds its own `response_format` via `response_format_for_regime` and
+never calls `_resolve_response_format`, so the branch had no consumer and no test while
+sitting in the generator's live reward path. `training/grpo/reward.py` keeps its original
+two-branch behaviour (`=1` → full schema, anything else → `{"type": "json_object"}`).
 
 - [ ] **Step 3b: Write the probe**
 
@@ -2143,6 +2344,16 @@ def response_format_for_regime(regime: str) -> dict | None:
     raise ValueError(f"unknown regime {regime!r}; expected one of {REGIMES}")
 
 
+def even_limit(limit: int) -> int:
+    """Round a row limit down to an even number.
+
+    The pairs parquet stores each pair twice, in both A/B orders. An odd limit takes one
+    order without its partner, which biases the slot-bias and order-consistency numbers the
+    probe exists to produce.
+    """
+    return max(0, limit - (limit % 2))
+
+
 def probe_record(completion: str | None, finish_reason: str, human_is_b: bool) -> dict[str, Any]:
     """Score one probe completion into the fields the gate cares about."""
     verdict = parse_judge_verdict(completion)
@@ -2186,11 +2397,17 @@ def summarize_probe(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def dump_row(model: str, row: dict, record: dict[str, Any]) -> dict[str, Any]:
-    """One long-format row for scripts/analyze_judge_training.py."""
+def dump_row(model: str, row: dict, record: dict[str, Any], *, regime: str) -> dict[str, Any]:
+    """One long-format row for scripts/analyze_judge_training.py.
+
+    ``regime`` is recorded because a verdict from the freeform arm and a verdict from the
+    forced-schema arm are not the same measurement, and nothing downstream of this CSV can
+    tell them apart otherwise.
+    """
     extra = row["extra_info"]
     return {
         "model": model,
+        "regime": regime,
         "pair_id": extra["pair_id"],
         "order": extra["order"],
         "rating": record["rating"],
@@ -2259,12 +2476,26 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--max_tokens", type=int, default=8192)
     parser.add_argument("--regimes", nargs="+", default=list(REGIMES))
+    parser.add_argument("--dump_regime", default="json_schema",
+                        help="Which regime --dump_csv records. Defaults to the forced-schema "
+                             "arm, which is the published comparison; it is NOT whichever "
+                             "regime happens to be last in --regimes.")
     args = parser.parse_args()
 
     for regime in args.regimes:
         response_format_for_regime(regime)  # fail fast on a typo
+    if args.dump_csv and args.dump_regime not in args.regimes:
+        raise SystemExit(
+            f"--dump_regime {args.dump_regime!r} is not among --regimes {args.regimes}"
+        )
 
-    rows = pd.read_parquet(args.pairs_parquet).head(args.limit).to_dict("records")
+    # The parquet emits each pair twice, in both A/B orders, adjacently. An odd head() takes
+    # one unpaired row and silently skews pred_b_rate and order_consistency.
+    limit = even_limit(args.limit)
+    if limit != args.limit:
+        print(f"--limit {args.limit} is odd; using {limit} to keep A/B orders paired", flush=True)
+
+    rows = pd.read_parquet(args.pairs_parquet).head(limit).to_dict("records")
     label = args.model_label or args.model
     summaries: dict[str, Any] = {}
     dump_rows: list[dict[str, Any]] = []
@@ -2273,8 +2504,8 @@ def main() -> None:
         records = [record for record, _row in results]
         summaries[regime] = summarize_probe(records)
         print(f"[{regime}] {json.dumps(summaries[regime], sort_keys=True)}", flush=True)
-        if args.dump_csv and regime == args.regimes[-1]:
-            dump_rows = [dump_row(label, row, record) for record, row in results]
+        if args.dump_csv and regime == args.dump_regime:
+            dump_rows = [dump_row(label, row, record, regime=regime) for record, row in results]
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out_json)), exist_ok=True)
     with open(args.out_json, "w", encoding="utf-8") as handle:
@@ -2285,7 +2516,7 @@ def main() -> None:
     if args.dump_csv:
         os.makedirs(os.path.dirname(os.path.abspath(args.dump_csv)), exist_ok=True)
         pd.DataFrame(dump_rows).to_csv(args.dump_csv, index=False)
-        print(f"Wrote {len(dump_rows)} rows -> {args.dump_csv} (regime={args.regimes[-1]})")
+        print(f"Wrote {len(dump_rows)} rows -> {args.dump_csv} (regime={args.dump_regime})")
 
 
 if __name__ == "__main__":
@@ -2299,7 +2530,7 @@ string, with per-call telemetry in `get_judge_call_meta()` (`shared/api_client.p
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_probe_judge_format.py -q`
-Expected: PASS, 12 tests
+Expected: PASS, 14 tests
 
 - [ ] **Step 5: Run the full suite**
 
@@ -2325,10 +2556,11 @@ future edit cannot silently drop it, the way job 15143 lost its hyperparameters.
 - Create: `scripts/slurm/judge_format_probe.sh`
 - Create: `scripts/slurm/judge_train_gen.sh`
 - Create: `scripts/slurm/judge_grpo_train.sh`
+- Create: `scripts/slice_judge_source.py`
 - Test: `tests/test_judge_launchers.py`
 
 **Interfaces:**
-- Consumes: `scripts/probe_judge_format.py`, `scripts/build_judge_train_pairs.py`, `training/grpo/configs/qwen35_judge_grpo.yaml`, `eval/generate_trained.py`
+- Consumes: `scripts/probe_judge_format.py`, `scripts/build_judge_train_pairs.py`, `scripts/slice_judge_source.py`, `training/grpo/configs/qwen35_judge_grpo.yaml`, `eval/generate_trained.py`, `data.judge.slice.select_slice`
 - Produces: three sbatch-able scripts driven by `JUDGE_MODEL_PATH`, `JUDGE_REWARD_ARM`, `JUDGE_RUN_TAG`
 
 - [ ] **Step 1: Write the failing test**
@@ -2385,6 +2617,25 @@ def test_generation_defaults_to_the_sft_ep3_checkpoint():
     assert "merged_ep3" in _text(GEN)
 
 
+def test_generation_slices_the_source_before_generating():
+    """Generating over the full split and discarding 90% in the builder wastes ~15k
+    generations of a 12h single-GPU job whose pickle is only written at the end."""
+    text = _text(GEN)
+    assert "scripts/slice_judge_source.py" in text
+    generate_at = text.index("eval.generate_trained")
+    slice_at = text.index("scripts/slice_judge_source.py")
+    assert slice_at < generate_at, "the slice must be written before generation runs"
+    # Both the generator and the builder must read the SLICED file, not the full split.
+    assert '--test_parquet "$SLICED_PARQUET"' in text
+    assert '--source_parquet "$SLICED_PARQUET"' in text
+    assert '--test_parquet "$SOURCE_PARQUET"' not in text
+
+
+def test_generation_records_the_prompt_budget_measurement():
+    """The .meta.json prompt-length fields are what data.max_prompt_length must be set from."""
+    assert "--prompt_budget_tokens" in _text(GEN)
+
+
 def test_probe_uses_the_freeform_capable_script():
     text = _text(PROBE)
     assert "scripts/probe_judge_format.py" in text
@@ -2402,8 +2653,28 @@ def test_training_uses_the_qwen35_verl09_environment():
     assert "turing-rl-rl-qwen35" in _text(TRAIN)
 
 
-def test_training_enables_judge_thinking():
+def test_training_exports_the_judge_thinking_env_var():
+    """Only that the export is present. The var is inert on the training path -- what
+    actually turns thinking on there is data.apply_chat_template_kwargs.enable_thinking,
+    locked by tests/test_judge_grpo_config.py."""
     assert "PERSONA_JUDGE_ENABLE_THINKING=1" in _text(TRAIN)
+
+
+def test_training_passes_the_repo_config_dir_to_hydra():
+    """Without --config-dir, Hydra resolves --config-name against veRL's own packaged
+    configs and the job dies instantly with "Cannot find primary config"."""
+    text = _text(TRAIN)
+    assert "--config-dir training/grpo/configs" in text
+    assert 'hydra.run.dir="$TURING_RL_HYDRA_DIR"' in text
+    assert "hydra.job.chdir=false" in text
+
+
+def test_training_disables_mtp_layers_on_the_actor():
+    """New key, so it needs Hydra's `+`; copied verbatim from the proven 9B recipe."""
+    assert (
+        "+actor_rollout_ref.model.override_config.text_config.mtp_num_hidden_layers=0"
+        in _text(TRAIN)
+    )
 
 
 def test_training_never_re_enables_the_v1_controller():
@@ -2476,25 +2747,44 @@ export GEN_TOP_K=${GEN_TOP_K:-20}
 export GEN_MAX_TOKENS=${GEN_MAX_TOKENS:-1024}
 
 PKL=$OUT_DIR/raw/${SPLIT}_generations.pkl
+SLICED_PARQUET=$OUT_DIR/raw/${SPLIT}_source_slice.parquet
 mkdir -p "$OUT_DIR/raw"
 
 echo "=== judge gen: split=$SPLIT slice=[$SLICE_LO,$SLICE_HI) limit=$LIMIT k=$GEN_NUM ==="
 echo "=== model=$MERGED_EP3 sampling T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
 
+LIMIT_ARG=()
+[ "$LIMIT" -gt 0 ] && LIMIT_ARG=(--limit "$LIMIT")
+
+# Slice BEFORE generating. Handing the full split to generate_trained would sample k
+# generations for every context and then throw ~90% away in the builder -- ~16.7k
+# generations to keep ~1.7k, in a 12h single-GPU job whose pickle is written only at the
+# end. select_slice is a pure function of extra_info and idempotent, so the same bounds go
+# to both steps and the selected rows are identical to the post-hoc path.
+$PY -u scripts/slice_judge_source.py \
+  --source_parquet "$SOURCE_PARQUET" --out "$SLICED_PARQUET" \
+  --slice_lo "$SLICE_LO" --slice_hi "$SLICE_HI" "${LIMIT_ARG[@]}" || exit 3
+
 $PY -u -m eval.generate_trained --base_model --model_id "$MERGED_EP3" \
-  --test_parquet "$SOURCE_PARQUET" --output "$PKL" --gen_num "$GEN_NUM" \
+  --test_parquet "$SLICED_PARQUET" --output "$PKL" --gen_num "$GEN_NUM" \
   --temperature "$GEN_TEMPERATURE" --top_p "$GEN_TOP_P" --top_k "$GEN_TOP_K" \
   --max_tokens "$GEN_MAX_TOKENS" --backend vllm \
   --vllm_max_model_len "${GEN_MAX_MODEL_LEN:-13524}" \
   --vllm_truncate_prompt_tokens "${GEN_TRUNCATE_PROMPT_TOKENS:-12500}" || exit 3
 
-LIMIT_ARG=()
-[ "$LIMIT" -gt 0 ] && LIMIT_ARG=(--limit "$LIMIT")
+# Same file, same bounds: select_slice on an already-sliced frame is a no-op, so the
+# builder's `assert not missing` still checks that every kept context has generations.
+# PROMPT_BUDGET_TOKENS must track data.max_prompt_length in qwen35_judge_grpo.yaml -- the
+# emitted .meta.json is what that value has to be chosen from.
 $PY -u scripts/build_judge_train_pairs.py \
-  --inference_pkl "$PKL" --source_parquet "$SOURCE_PARQUET" \
+  --inference_pkl "$PKL" --source_parquet "$SLICED_PARQUET" \
   --out "$OUT_DIR/$SPLIT.parquet" \
+  --prompt_budget_tokens "${PROMPT_BUDGET_TOKENS:-10240}" \
   --slice_lo "$SLICE_LO" --slice_hi "$SLICE_HI" --split "$SPLIT" "${LIMIT_ARG[@]}"
 ```
+
+`--num_users` on the generator is **not** a substitute for the pre-slice: it truncates by
+user rather than by hash, so the builder would then trip its `assert not missing`.
 
 Flags verified against `eval/generate_trained.py`: `--base_model`, `--model_id`,
 `--test_parquet`, `--output`, `--gen_num`, `--temperature`, `--top_p`, `--top_k`,
@@ -2632,6 +2922,11 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
 OVR=(
   actor_rollout_ref.model.path="$JUDGE_MODEL_PATH"
+  # `+` because no parent defines this key. Everything else the 9B recipe pins for a Qwen3.5
+  # hybrid (lora.merge, checkpoint_engine bucket size) lives in the yaml, where it cannot be
+  # dropped; this one stays here because the `+`-prefixed command-line form is the only
+  # syntax proven to work for it (rl_generator_train_9b.sh:96).
+  +actor_rollout_ref.model.override_config.text_config.mtp_num_hidden_layers=0
   # TP is the one rollout knob that legitimately varies by model size; everything else
   # (chunked prefill, gpu_memory_utilization, use_v1, reward routing) is pinned in
   # qwen35_judge_grpo.yaml so it cannot be dropped from a submit-time string.
@@ -2649,14 +2944,25 @@ OVR=(
   trainer.project_name=grpo-judge
 )
 
+# --config-dir is NOT optional: without it Hydra resolves --config-name against veRL's own
+# packaged config directory and the job dies immediately with
+# "Cannot find primary config 'qwen35_judge_grpo'". Both working trainers pass it.
+echo "+ $PY -u -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen35_judge_grpo hydra.run.dir=$TURING_RL_HYDRA_DIR hydra.job.chdir=false ${OVR[*]} ${EXTRA_OVERRIDES:-}"
 $PY -u -m training.grpo.run_verl_main_ppo \
-  --config-name qwen35_judge_grpo "${OVR[@]}" ${EXTRA_OVERRIDES:-}
+  --config-dir training/grpo/configs \
+  --config-name qwen35_judge_grpo \
+  hydra.run.dir="$TURING_RL_HYDRA_DIR" \
+  hydra.job.chdir=false \
+  "${OVR[@]}" ${EXTRA_OVERRIDES:-}
+RC=$?
+echo "=== trainer exit: $RC ==="
+exit $RC
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_launchers.py -q`
-Expected: PASS, 10 tests
+Expected: PASS, 14 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2680,7 +2986,16 @@ before anything expensive runs.
 
 **Interfaces:**
 - Consumes: the Task 2 judge parquet
-- Produces: `build_judge_overfit(src: str, out: str, n_pairs: int = 8) -> pd.DataFrame`; `read_metric_series(jsonl_path: str, key: str) -> list[float]`; `gate_verdict(series: list[float], *, threshold: float, tail: int) -> dict`
+- Produces: `build_judge_overfit(src: str, out: str, n_pairs: int = 8) -> pd.DataFrame`; `DEFAULT_METRIC_KEY = "reward/judge_acc/mean"`; `parse_console_line(line: str, key: str) -> float | None`; `read_metric_series(path: str, key: str) -> list[float]`; `gate_verdict(series: list[float], *, threshold: float, tail: int) -> dict`
+
+**Where the series comes from.** veRL writes no metrics file: `trainer.logger` selects
+tracking *backends* (wandb, console, mlflow, tensorboard, …), none of which produce a
+per-step JSONL. The Task 6 config therefore enables the `console` backend alongside wandb,
+which prints every logged metric into the job's Slurm `.out`; `--metrics_file` points at that
+log. The gate accepts both a veRL console line (`step:N - key:value - …`) and a JSON-object-
+per-line file, so a hand-exported wandb JSONL also works. The default key is
+`reward/judge_acc/mean`, the name `verl_metric_patch.py` gives the reward function's
+per-sample `judge_acc` — not the bare `judge_acc`, which nothing logs.
 
 `n_pairs` counts *pairs*, and each contributes both orders, so the row count is `2 * n_pairs`
 and the human side stays exactly balanced — an overfit subset that lost that balance would
@@ -2699,7 +3014,12 @@ import pandas as pd
 import pytest
 
 from scripts.build_judge_overfit import build_judge_overfit
-from scripts.judge_overfit_gate import gate_verdict, read_metric_series
+from scripts.judge_overfit_gate import (
+    DEFAULT_METRIC_KEY,
+    gate_verdict,
+    parse_console_line,
+    read_metric_series,
+)
 
 
 def _judge_parquet(tmp_path, n_pairs: int = 10):
@@ -2761,6 +3081,33 @@ def test_read_metric_series_skips_rows_missing_the_key(tmp_path):
     path = tmp_path / "metrics.jsonl"
     path.write_text(json.dumps({"step": 0}) + "\n" + json.dumps({"judge_acc": 1.0}) + "\n")
     assert read_metric_series(str(path), "judge_acc") == [1.0]
+
+
+def test_the_default_key_is_the_name_the_metric_patch_actually_logs():
+    """judge_reward emits `judge_acc`; verl_metric_patch logs it as reward/judge_acc/mean."""
+    assert DEFAULT_METRIC_KEY == "reward/judge_acc/mean"
+
+
+def test_console_lines_are_parsed_for_slash_separated_keys():
+    line = "step:12 - step:12 - reward/judge_acc/mean:0.970 - reward/judge_tie/rate:0.010"
+    assert parse_console_line(line, "reward/judge_acc/mean") == pytest.approx(0.97)
+    assert parse_console_line(line, "reward/judge_tie/rate") == pytest.approx(0.01)
+
+
+def test_console_lines_without_the_key_yield_nothing():
+    assert parse_console_line("step:3 - reward/score/mean:0.500", DEFAULT_METRIC_KEY) is None
+
+
+def test_read_metric_series_reads_a_verl_console_log(tmp_path):
+    """veRL writes no metrics file; the console backend prints into the Slurm .out."""
+    path = tmp_path / "judge_grpo-1234.out"
+    path.write_text(
+        "=== judge GRPO: model=X ===\n"
+        "step:1 - reward/judge_acc/mean:0.500 - reward/score/mean:0.100\n"
+        "some unrelated log line\n"
+        "step:2 - reward/judge_acc/mean:0.980 - reward/score/mean:0.900\n"
+    )
+    assert read_metric_series(str(path), DEFAULT_METRIC_KEY) == pytest.approx([0.5, 0.98])
 
 
 def test_gate_passes_when_the_tail_saturates():
@@ -2849,9 +3196,31 @@ Create `scripts/judge_overfit_gate.py`:
 ```python
 """Decide whether the judge overfit run actually learned.
 
-Reads a veRL metrics JSONL and checks that the tail of the training-accuracy series has
-saturated. A flat series near 0.5 means the loop is wired but learning nothing; a flat
-series near the tie payoff means the model found the hedge instead of the signal.
+Checks that the tail of the training-accuracy series has saturated. A flat series near 0.5
+means the loop is wired but learning nothing; a flat series near the tie payoff means the
+model found the hedge instead of the signal.
+
+WHERE THE SERIES COMES FROM
+---------------------------
+veRL writes no metrics file. Its ``trainer.logger`` list selects tracking *backends*
+(wandb, console, mlflow, tensorboard, ...), none of which produce a per-step JSONL on disk.
+``training/grpo/configs/qwen35_judge_grpo.yaml`` therefore enables the ``console`` backend
+alongside wandb, which prints every logged metric to stdout — i.e. into the job's Slurm
+``.out`` file. Point ``--metrics_file`` at that log:
+
+    python scripts/judge_overfit_gate.py --metrics_file logs/judge_grpo-<jobid>.out
+
+Two line formats are accepted, so a hand-exported wandb JSONL works too:
+
+  * JSON object per line — ``{"reward/judge_acc/mean": 0.97, ...}``
+  * veRL console line   — ``step:12 - reward/judge_acc/mean:0.970 - ...``
+
+The console backend formats floats to three decimals, which is ample for a 0.95 gate but
+is why the reported means are not bit-exact against wandb.
+
+The default key is the name the metric actually carries once
+``training/grpo/verl_metric_patch.py`` has aggregated it: the reward function emits
+``judge_acc`` per sample and the patch logs it as ``reward/judge_acc/mean``.
 """
 
 from __future__ import annotations
@@ -2859,11 +3228,26 @@ from __future__ import annotations
 import argparse
 import json
 
+DEFAULT_METRIC_KEY = "reward/judge_acc/mean"
 
-def read_metric_series(jsonl_path: str, key: str) -> list[float]:
-    """Pull one metric out of a veRL metrics JSONL, skipping rows that lack it."""
+
+def parse_console_line(line: str, key: str) -> float | None:
+    """Pull ``key`` out of a veRL console line: ``step:N - a/b:0.1 - c/d:0.2``."""
+    for field in line.split(" - "):
+        name, sep, value = field.strip().rpartition(":")
+        if not sep or name != key:
+            continue
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def read_metric_series(path: str, key: str) -> list[float]:
+    """Pull one metric out of a veRL metrics log, skipping lines that lack it."""
     series: list[float] = []
-    with open(jsonl_path, encoding="utf-8") as handle:
+    with open(path, encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
             if not line:
@@ -2871,6 +3255,9 @@ def read_metric_series(jsonl_path: str, key: str) -> list[float]:
             try:
                 record = json.loads(line)
             except json.JSONDecodeError:
+                value = parse_console_line(line, key)
+                if value is not None:
+                    series.append(value)
                 continue
             if isinstance(record, dict) and key in record:
                 series.append(float(record[key]))
@@ -2896,14 +3283,17 @@ def gate_verdict(series: list[float], *, threshold: float, tail: int) -> dict:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Judge overfit gate check")
-    parser.add_argument("--metrics_jsonl", required=True)
-    parser.add_argument("--key", default="judge_acc")
+    parser.add_argument(
+        "--metrics_file", "--metrics_jsonl", dest="metrics_file", required=True,
+        help="veRL console log (the job's Slurm .out) or a JSONL of per-step metric dicts",
+    )
+    parser.add_argument("--key", default=DEFAULT_METRIC_KEY)
     parser.add_argument("--threshold", type=float, default=0.95)
     parser.add_argument("--tail", type=int, default=3)
     args = parser.parse_args()
 
     verdict = gate_verdict(
-        read_metric_series(args.metrics_jsonl, args.key),
+        read_metric_series(args.metrics_file, args.key),
         threshold=args.threshold,
         tail=args.tail,
     )
@@ -2918,7 +3308,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_overfit.py -q`
-Expected: PASS, 9 tests
+Expected: PASS, 13 tests
 
 - [ ] **Step 5: Commit**
 
@@ -3070,6 +3460,70 @@ def test_order_consistency_drops_unrecovered_rows():
     }
     # p1's second order is unrecoverable, so the pair is incomplete, not consistent.
     assert order_consistency(df).set_index("model").loc["m", "n_pairs"] == 0
+
+
+def _multi_model_df():
+    """Two models, one of which parsed nothing at all.
+
+    A single-model fixture cannot catch the bug this guards: with one model, a global
+    row count and a per-model row count are the same number.
+    """
+    df = _rows(
+        [
+            ("compliant", "p1", "human_a", 1, False),
+            ("compliant", "p1", "human_b", 7, True),
+            ("compliant", "p2", "human_a", 1, False),
+        ]
+    )
+    for pair, order, human_is_b in (
+        ("p1", "human_a", False), ("p1", "human_b", True), ("p2", "human_a", False)
+    ):
+        df.loc[len(df)] = {
+            "model": "silent", "pair_id": pair, "order": order,
+            "rating": float("nan"), "human_is_b": human_is_b,
+        }
+    return df
+
+
+def test_a_zero_compliance_model_still_gets_a_row():
+    """The loudest possible result must not be the one that vanishes from the table."""
+    summary = summarize_judge_eval(_multi_model_df()).set_index("model")
+    assert set(summary.index) == {"compliant", "silent"}
+    assert summary.loc["silent", "n"] == 0
+    assert summary.loc["silent", "n_total"] == 3
+    assert summary.loc["silent", "unrecovered_rate"] == pytest.approx(1.0)
+    assert pd.isna(summary.loc["silent", "accuracy"])
+
+
+def test_n_total_is_per_model_not_the_whole_frame():
+    summary = summarize_judge_eval(_multi_model_df()).set_index("model")
+    assert summary.loc["compliant", "n_total"] == 3
+    assert summary.loc["compliant", "n"] == 3
+    assert summary.loc["compliant", "unrecovered_rate"] == pytest.approx(0.0)
+
+
+def test_order_consistency_returns_named_columns_when_every_model_is_silent():
+    """Otherwise main()'s merge on "model" dies with a bare KeyError."""
+    df = _multi_model_df()
+    df = df[df["model"] == "silent"]
+    result = order_consistency(df)
+    assert list(result.columns) == ["model", "n_pairs", "order_consistency"]
+    assert len(result) == 0
+    # And the merge main() performs must survive it.
+    merged = summarize_judge_eval(df).merge(result, on="model", how="left")
+    assert list(merged["model"]) == ["silent"]
+
+
+def test_the_regime_column_is_surfaced_when_present():
+    df = _multi_model_df()
+    df["regime"] = "json_schema"
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["compliant", "regime"] == "json_schema"
+
+
+def test_a_dump_without_a_regime_column_is_still_accepted():
+    summary = summarize_judge_eval(_multi_model_df())
+    assert "regime" not in summary.columns
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -3102,6 +3556,11 @@ import pandas as pd
 
 TIE_RATING = 4
 REQUIRED_COLUMNS = ("model", "pair_id", "order", "rating", "human_is_b")
+# Not required: dumps written before probe_judge_format.py gained --dump_regime have no
+# regime column, and rejecting those would strand every existing artifact. When it IS
+# present it is surfaced per model, because a table silently mixing a forced-schema arm
+# with a freeform arm is not comparable and nothing else downstream would show it.
+OPTIONAL_COLUMNS = ("regime",)
 
 
 def _check_columns(df: pd.DataFrame) -> None:
@@ -3135,6 +3594,10 @@ def summarize_judge_eval(df: pd.DataFrame) -> pd.DataFrame:
     with poor format compliance therefore gets a flattering accuracy over a shrunken
     sample, which is exactly the artifact this table exists to expose. Read accuracy
     together with unrecovered_rate or not at all.
+
+    The row index is the *pre-drop* model list. A model whose verdicts all failed to parse
+    is the loudest result this table can carry, and it must not be the one result that
+    disappears from it: such a model appears with n=0, unrecovered_rate=1.0 and NaN accuracy.
     """
     _check_columns(df)
     n_total = df.groupby("model", sort=True).size()
@@ -3160,10 +3623,18 @@ def summarize_judge_eval(df: pd.DataFrame) -> pd.DataFrame:
             "conf_mean": grouped["_conf"].mean(),
             "rating_mean": grouped["rating"].mean(),
         }
-    )
+    ).reindex(n_total.index)
+    summary.index.name = "model"
+    summary["n"] = summary["n"].fillna(0).astype(int)
     # Coverage: how much of each model's eval set is actually behind its accuracy.
-    summary["n_total"] = n_total.reindex(summary.index).fillna(0).astype(int)
+    summary["n_total"] = n_total.astype(int)
     summary["unrecovered_rate"] = 1.0 - (summary["n"] / summary["n_total"])
+    if "regime" in df.columns:
+        summary["regime"] = (
+            df.groupby("model", sort=True)["regime"]
+            .agg(lambda s: "|".join(sorted({str(v) for v in s.dropna()})))
+            .reindex(n_total.index)
+        )
     return summary.reset_index()
 
 
@@ -3205,7 +3676,10 @@ def order_consistency(df: pd.DataFrame) -> pd.DataFrame:
                 "order_consistency": (consistent / total) if total else 0.0,
             }
         )
-    return pd.DataFrame(rows)
+    # Explicit columns: when every model is zero-compliance `rows` is empty, and a bare
+    # pd.DataFrame([]) has no columns at all, so main()'s merge on "model" dies with a
+    # bare KeyError instead of printing the (entirely valid) all-unrecovered table.
+    return pd.DataFrame(rows, columns=["model", "n_pairs", "order_consistency"])
 
 
 def main() -> None:
@@ -3229,7 +3703,7 @@ if __name__ == "__main__":
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_analyze_judge_training.py -q`
-Expected: PASS, 11 tests
+Expected: PASS, 16 tests
 
 - [ ] **Step 5: Run the full suite one last time**
 
@@ -3253,17 +3727,45 @@ each is gated on the previous one:
 1. **After Task 8**, commit, then generate the training and val pairs
    (`SPLIT=train` then `SPLIT=val` through `judge_train_gen.sh`). Check the emitted
    `.meta.json`: `human_is_b_rate` must be exactly 0.5, `n_contexts` must be 416.
+1b. **Set the prompt budget from that `.meta.json`, before any training submit.**
+   `data.max_prompt_length: 10240` in `qwen35_judge_grpo.yaml` is a placeholder that has
+   never been checked against real data — the *empty* rendered template is already 20,510
+   chars (~5,259 estimated tokens) before any history, context or candidate responses, and
+   the generator side budgets 12,500 tokens for prompts carrying the same history+context.
+   `filter_overlong_prompts: true` DROPS anything over the budget from train **and** val
+   silently, which biases every downstream result toward short-history users. Read
+   `prompt_tokens_est_p95`, `prompt_tokens_est_max` and `n_over_budget` from both the train
+   and val `.meta.json`, then:
+   - set `data.max_prompt_length` above the measured p95 (and decide explicitly whether the
+     tail above it is acceptable to drop, or raise it past `prompt_tokens_est_max`);
+   - raise `actor_rollout_ref.rollout.max_model_len` and `max_num_batched_tokens` with it —
+     `10240 + 6144` already equals the current `16384` exactly, so there is zero slack;
+   - re-run the builder with `PROMPT_BUDGET_TOKENS` set to the new value so `n_over_budget`
+     in the recorded `.meta.json` describes the budget actually used.
+   **Gate:** do not submit judge GRPO while `n_over_budget` is unknown or non-trivial.
 2. **Run the Phase 0 probe** for 2B / 4B / 9B. **Gate:** freeform `fmt_all_fields_rate`
    around 0.5 or better. If a model comes in near zero, stop. The remedy is the spec's
    self-distilled format-SFT fallback (§7), which is *not* implemented by this plan — it is
    contingency work and needs its own plan written against whatever the probe actually shows.
-3. **Run R0**, the overfit gate, on the 4B. **Gate:** `judge_overfit_gate.py` exits 0.
+3. **Run R0**, the overfit gate, on the 4B. **Gate:** `judge_overfit_gate.py
+   --metrics_file logs/judge_grpo-<jobid>.out` exits 0. That log is where the series lives:
+   veRL writes no metrics file, so the config enables the `console` tracking backend and the
+   gate parses the job's stdout. The key it reads is `reward/judge_acc/mean`.
 4. **Run R1**: {2B, 4B, 9B} × {directional, graded}. Watch
    `judge_group/all_equal_rate` from the first steps — if it is high, the groups are
    degenerate and DAPO-style dynamic sampling is needed before the results mean anything.
    Watch `judge_tie` for the hedging collapse.
+4b. **Convert every trained checkpoint to a servable model before scoring it.** A veRL
+   checkpoint directory is not a servable model. Run `scripts/merge_grpo_adapter.py` to merge
+   the LoRA adapter into the base weights, then `scripts/validate_grpo_merge.py` to confirm
+   the merge changed what it should have. Pointing the judge server at the raw veRL
+   checkpoint directory does not error — per `merge_grpo_adapter.py`'s own docstring it
+   "would silently evaluate the pre-RL checkpoint", producing a complete, clean, entirely
+   wrong results table in which RL appears to have done nothing.
 5. **Score every model** — trained and zero-shot baselines — through the Task 2
    both-orders parquet built from the 880-pair heldout set, then run Task 10's analysis.
+   Use `--dump_regime json_schema` (the default) so the dumped CSV is the forced-schema arm
+   and carries a `regime` column naming it.
 
 Per repo policy: run the `preflight-job-check` skill before every submission, keep
 concurrency under ~10 jobs, and never `scancel` a job this session did not submit.
@@ -3276,11 +3778,13 @@ Recorded so the implementer knows what was and was not verified when this was wr
 
 **Every Python block in this plan was extracted and executed before the plan was
 committed.** All 93 tests across tasks 1–7, 9 and 10 pass, and the per-task counts stated in
-each "Expected: PASS, N tests" line are the counts actually observed: slice 9, pairs 8,
-verdict 16, reward 16, metric patch 7, config 8, probe 12, overfit 9, analysis 8. The
-implementer is still expected to do the TDD cycle — the point of running it here was to make
-sure they are not debugging *my* typos. Task 8's launcher test is the exception: it asserts
-against shell scripts, so it can only pass once those files exist.
+each "Expected: PASS, N tests" line are the counts actually observed. Those counts were
+raised after a whole-branch review added coverage for defects found in the cluster-wiring
+layer; they now read: slice 10, pairs 12, verdict 16, reward 16, metric patch 7, config 16,
+probe 14, launchers 14, overfit 13, analysis 16. The implementer is still expected to do the
+TDD cycle — the point of running it here was to make sure they are not debugging *my* typos.
+Task 8's launcher test is the exception: it asserts against shell scripts, so it can only
+pass once those files exist.
 
 Four defects were found and fixed this way:
 

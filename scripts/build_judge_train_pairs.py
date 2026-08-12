@@ -4,12 +4,19 @@ Differs from ``scripts/build_judge_pairs.py`` in three ways: it keeps *every*
 generation rather than only the first, it emits each pair in *both* A/B orders, and
 it writes veRL training rows (rendered prompt + ``"A"``/``"B"`` label) rather than a
 flat pair table for offline judging.
+
+The ``.meta.json`` written next to the parquet carries the rendered-prompt length
+distribution. That is the only measurement of how big these prompts actually are, and
+``data.max_prompt_length`` in ``training/grpo/configs/qwen35_judge_grpo.yaml`` must be set
+from it before any training submit: veRL's ``filter_overlong_prompts`` silently DROPS
+over-budget rows from train and val alike.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import pickle
 import re
@@ -22,10 +29,18 @@ import pandas as pd
 
 from data.judge.slice import select_slice
 from shared.judge_prompts import TURING_PROMPT
-from shared.judge_utils import build_source_copy_warning, format_source_copy_watchlist
+from shared.judge_utils import (
+    build_source_copy_warning,
+    format_source_copy_watchlist,
+    sanitize_prompt_text,
+)
 from shared.prompt_utils import parse_reasoning_and_response
 
 DATA_SOURCE = "prism_judge"
+# Rough chars-per-token for Qwen3.5 on English prose. Every derived field is named
+# ``*_tokens_est_*`` so nobody mistakes it for a tokenizer count.
+CHARS_PER_TOKEN_ESTIMATE = 3.9
+DEFAULT_PROMPT_BUDGET_TOKENS = 10240
 _TARGET_LIST_KEYS = ("test_targets", "test_results")
 _GENERATION_LIST_KEYS = ("generations", "outputs")
 _RAW_TEXT_KEYS = ("raw_completion", "text", "response")
@@ -96,10 +111,56 @@ def flatten_all_generations(inference: Any) -> dict[tuple[str, str, str], list[s
     return flat
 
 
+def _percentile(sorted_values: list[int], q: float) -> int:
+    """Nearest-rank percentile over an already-sorted list."""
+    if not sorted_values:
+        return 0
+    index = math.ceil(q * len(sorted_values)) - 1
+    return sorted_values[min(len(sorted_values) - 1, max(0, index))]
+
+
+def prompt_length_stats(prompts: list[str], *, budget_tokens: int) -> dict[str, Any]:
+    """Length distribution of the rendered prompts, plus how many blow the budget.
+
+    ``max_prompt_length`` cannot be chosen from the template alone: the empty rendered
+    template is already ~5.3k estimated tokens before any user history, context or candidate
+    responses are substituted in. These numbers are what that choice must be made from.
+    """
+    chars = sorted(len(p) for p in prompts)
+    budget_chars = budget_tokens * CHARS_PER_TOKEN_ESTIMATE
+
+    def est(value: int) -> float:
+        return round(value / CHARS_PER_TOKEN_ESTIMATE, 1)
+
+    stats: dict[str, Any] = {
+        "prompt_budget_tokens": int(budget_tokens),
+        "chars_per_token_estimate": CHARS_PER_TOKEN_ESTIMATE,
+        "n_over_budget": sum(1 for c in chars if c > budget_chars),
+    }
+    for label, value in (
+        ("p50", _percentile(chars, 0.50)),
+        ("p95", _percentile(chars, 0.95)),
+        ("max", chars[-1] if chars else 0),
+    ):
+        stats[f"prompt_chars_{label}"] = int(value)
+        stats[f"prompt_tokens_est_{label}"] = est(value)
+    stats["over_budget_rate"] = (stats["n_over_budget"] / len(chars)) if chars else 0.0
+    return stats
+
+
 def render_turing_prompt(
     *, user_history: str, context: str, response_a: str, response_b: str
 ) -> str:
-    """Render TURING_PROMPT exactly as the reward path does at eval time."""
+    """Render TURING_PROMPT exactly as the reward path does at eval time.
+
+    "Exactly" includes the control-character strip the reward path applies to the four
+    content fields before formatting (reward.py::_score_pairwise_likert_with_info); without
+    it a history holding a stray \\x0b would render a different prompt here than at eval.
+    """
+    user_history = sanitize_prompt_text(user_history)
+    context = sanitize_prompt_text(context)
+    response_a = sanitize_prompt_text(response_a)
+    response_b = sanitize_prompt_text(response_b)
     warning_a = build_source_copy_warning(
         response_a, user_history=user_history, thread_context=context
     )
@@ -128,11 +189,13 @@ def build_judge_rows(
     hi: float,
     limit: int | None,
     split: str,
+    prompt_budget_tokens: int = DEFAULT_PROMPT_BUDGET_TOKENS,
 ) -> tuple[pd.DataFrame, dict]:
     """Build veRL judge-training rows: two per (context, generation), one per order."""
     sliced = select_slice(source_df, lo=lo, hi=hi, limit=limit)
 
     rows: list[dict[str, Any]] = []
+    prompts: list[str] = []
     missing: list[tuple[str, str, str]] = []
     n_generations = 0
     for record in sliced.to_dict("records"):
@@ -155,20 +218,17 @@ def build_judge_rows(
             for order, human_is_b in (("human_a", False), ("human_b", True)):
                 response_a = generated if human_is_b else human
                 response_b = human if human_is_b else generated
+                rendered = render_turing_prompt(
+                    user_history=user_history,
+                    context=context,
+                    response_a=response_a,
+                    response_b=response_b,
+                )
+                prompts.append(rendered)
                 rows.append(
                     {
                         "data_source": DATA_SOURCE,
-                        "prompt": [
-                            {
-                                "role": "user",
-                                "content": render_turing_prompt(
-                                    user_history=user_history,
-                                    context=context,
-                                    response_a=response_a,
-                                    response_b=response_b,
-                                ),
-                            }
-                        ],
+                        "prompt": [{"role": "user", "content": rendered}],
                         "reward_model": {
                             "style": "rule",
                             "ground_truth": "B" if human_is_b else "A",
@@ -207,6 +267,7 @@ def build_judge_rows(
         "split": split,
         "human_is_b_rate": (sum(human_is_b) / len(human_is_b)) if human_is_b else 0.0,
     }
+    meta.update(prompt_length_stats(prompts, budget_tokens=prompt_budget_tokens))
     return df, meta
 
 
@@ -219,6 +280,14 @@ def main() -> None:
     parser.add_argument("--slice_hi", type=float, default=0.1)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--split", default="train")
+    parser.add_argument(
+        "--prompt_budget_tokens",
+        type=int,
+        default=DEFAULT_PROMPT_BUDGET_TOKENS,
+        help="Token budget the emitted prompts are measured against; only affects the "
+             "n_over_budget/over_budget_rate fields in the .meta.json. Set it to whatever "
+             "data.max_prompt_length the training config currently declares.",
+    )
     args = parser.parse_args()
 
     with open(args.inference_pkl, "rb") as handle:
@@ -232,6 +301,7 @@ def main() -> None:
         hi=args.slice_hi,
         limit=args.limit,
         split=args.split,
+        prompt_budget_tokens=args.prompt_budget_tokens,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

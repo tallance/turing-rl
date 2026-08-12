@@ -53,6 +53,11 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
 OVR=(
   actor_rollout_ref.model.path="$JUDGE_MODEL_PATH"
+  # `+` because no parent defines this key. Everything else the 9B recipe pins for a Qwen3.5
+  # hybrid (lora.merge, checkpoint_engine bucket size) lives in the yaml, where it cannot be
+  # dropped; this one stays here because the `+`-prefixed command-line form is the only
+  # syntax proven to work for it (rl_generator_train_9b.sh:96).
+  +actor_rollout_ref.model.override_config.text_config.mtp_num_hidden_layers=0
   # TP is the one rollout knob that legitimately varies by model size; everything else
   # (chunked prefill, gpu_memory_utilization, use_v1, reward routing) is pinned in
   # qwen35_judge_grpo.yaml so it cannot be dropped from a submit-time string.
@@ -70,5 +75,16 @@ OVR=(
   trainer.project_name=grpo-judge
 )
 
+# --config-dir is NOT optional: without it Hydra resolves --config-name against veRL's own
+# packaged config directory and the job dies immediately with
+# "Cannot find primary config 'qwen35_judge_grpo'". Both working trainers pass it.
+echo "+ $PY -u -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen35_judge_grpo hydra.run.dir=$TURING_RL_HYDRA_DIR hydra.job.chdir=false ${OVR[*]} ${EXTRA_OVERRIDES:-}"
 $PY -u -m training.grpo.run_verl_main_ppo \
-  --config-name qwen35_judge_grpo "${OVR[@]}" ${EXTRA_OVERRIDES:-}
+  --config-dir training/grpo/configs \
+  --config-name qwen35_judge_grpo \
+  hydra.run.dir="$TURING_RL_HYDRA_DIR" \
+  hydra.job.chdir=false \
+  "${OVR[@]}" ${EXTRA_OVERRIDES:-}
+RC=$?
+echo "=== trainer exit: $RC ==="
+exit $RC

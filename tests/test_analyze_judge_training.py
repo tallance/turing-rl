@@ -112,3 +112,67 @@ def test_order_consistency_drops_unrecovered_rows():
     }
     # p1's second order is unrecoverable, so the pair is incomplete, not consistent.
     assert order_consistency(df).set_index("model").loc["m", "n_pairs"] == 0
+
+
+def _multi_model_df():
+    """Two models, one of which parsed nothing at all.
+
+    A single-model fixture cannot catch the bug this guards: with one model, a global
+    row count and a per-model row count are the same number.
+    """
+    df = _rows(
+        [
+            ("compliant", "p1", "human_a", 1, False),
+            ("compliant", "p1", "human_b", 7, True),
+            ("compliant", "p2", "human_a", 1, False),
+        ]
+    )
+    for pair, order, human_is_b in (
+        ("p1", "human_a", False), ("p1", "human_b", True), ("p2", "human_a", False)
+    ):
+        df.loc[len(df)] = {
+            "model": "silent", "pair_id": pair, "order": order,
+            "rating": float("nan"), "human_is_b": human_is_b,
+        }
+    return df
+
+
+def test_a_zero_compliance_model_still_gets_a_row():
+    """The loudest possible result must not be the one that vanishes from the table."""
+    summary = summarize_judge_eval(_multi_model_df()).set_index("model")
+    assert set(summary.index) == {"compliant", "silent"}
+    assert summary.loc["silent", "n"] == 0
+    assert summary.loc["silent", "n_total"] == 3
+    assert summary.loc["silent", "unrecovered_rate"] == pytest.approx(1.0)
+    assert pd.isna(summary.loc["silent", "accuracy"])
+
+
+def test_n_total_is_per_model_not_the_whole_frame():
+    summary = summarize_judge_eval(_multi_model_df()).set_index("model")
+    assert summary.loc["compliant", "n_total"] == 3
+    assert summary.loc["compliant", "n"] == 3
+    assert summary.loc["compliant", "unrecovered_rate"] == pytest.approx(0.0)
+
+
+def test_order_consistency_returns_named_columns_when_every_model_is_silent():
+    """Otherwise main()'s merge on "model" dies with a bare KeyError."""
+    df = _multi_model_df()
+    df = df[df["model"] == "silent"]
+    result = order_consistency(df)
+    assert list(result.columns) == ["model", "n_pairs", "order_consistency"]
+    assert len(result) == 0
+    # And the merge main() performs must survive it.
+    merged = summarize_judge_eval(df).merge(result, on="model", how="left")
+    assert list(merged["model"]) == ["silent"]
+
+
+def test_the_regime_column_is_surfaced_when_present():
+    df = _multi_model_df()
+    df["regime"] = "json_schema"
+    summary = summarize_judge_eval(df).set_index("model")
+    assert summary.loc["compliant", "regime"] == "json_schema"
+
+
+def test_a_dump_without_a_regime_column_is_still_accepted():
+    summary = summarize_judge_eval(_multi_model_df())
+    assert "regime" not in summary.columns

@@ -47,6 +47,25 @@ def test_generation_defaults_to_the_sft_ep3_checkpoint():
     assert "merged_ep3" in _text(GEN)
 
 
+def test_generation_slices_the_source_before_generating():
+    """Generating over the full split and discarding 90% in the builder wastes ~15k
+    generations of a 12h single-GPU job whose pickle is only written at the end."""
+    text = _text(GEN)
+    assert "scripts/slice_judge_source.py" in text
+    generate_at = text.index("eval.generate_trained")
+    slice_at = text.index("scripts/slice_judge_source.py")
+    assert slice_at < generate_at, "the slice must be written before generation runs"
+    # Both the generator and the builder must read the SLICED file, not the full split.
+    assert '--test_parquet "$SLICED_PARQUET"' in text
+    assert '--source_parquet "$SLICED_PARQUET"' in text
+    assert '--test_parquet "$SOURCE_PARQUET"' not in text
+
+
+def test_generation_records_the_prompt_budget_measurement():
+    """The .meta.json prompt-length fields are what data.max_prompt_length must be set from."""
+    assert "--prompt_budget_tokens" in _text(GEN)
+
+
 def test_probe_uses_the_freeform_capable_script():
     text = _text(PROBE)
     assert "scripts/probe_judge_format.py" in text
@@ -64,8 +83,28 @@ def test_training_uses_the_qwen35_verl09_environment():
     assert "turing-rl-rl-qwen35" in _text(TRAIN)
 
 
-def test_training_enables_judge_thinking():
+def test_training_exports_the_judge_thinking_env_var():
+    """Only that the export is present. The var is inert on the training path -- what
+    actually turns thinking on there is data.apply_chat_template_kwargs.enable_thinking,
+    locked by tests/test_judge_grpo_config.py."""
     assert "PERSONA_JUDGE_ENABLE_THINKING=1" in _text(TRAIN)
+
+
+def test_training_passes_the_repo_config_dir_to_hydra():
+    """Without --config-dir, Hydra resolves --config-name against veRL's own packaged
+    configs and the job dies instantly with "Cannot find primary config"."""
+    text = _text(TRAIN)
+    assert "--config-dir training/grpo/configs" in text
+    assert 'hydra.run.dir="$TURING_RL_HYDRA_DIR"' in text
+    assert "hydra.job.chdir=false" in text
+
+
+def test_training_disables_mtp_layers_on_the_actor():
+    """New key, so it needs Hydra's `+`; copied verbatim from the proven 9B recipe."""
+    assert (
+        "+actor_rollout_ref.model.override_config.text_config.mtp_num_hidden_layers=0"
+        in _text(TRAIN)
+    )
 
 
 def test_training_never_re_enables_the_v1_controller():

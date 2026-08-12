@@ -12,6 +12,7 @@ from shared.judge_prompts import TURING_RESPONSE_PROPERTIES
 from scripts.probe_judge_format import (
     REGIMES,
     dump_row,
+    even_limit,
     probe_record,
     response_format_for_regime,
     summarize_probe,
@@ -98,19 +99,30 @@ def test_summary_of_no_records_is_empty_not_a_crash():
     assert summarize_probe([])["n"] == 0
 
 
-def test_dump_row_emits_the_five_canonical_analysis_columns():
+def test_dump_row_emits_the_canonical_analysis_columns():
     row = {
         "prompt": [{"role": "user", "content": "x"}],
         "extra_info": {"pair_id": "p1::g0", "order": "human_b", "human_is_b": True},
     }
     record = probe_record(_full_verdict(7), "stop", human_is_b=True)
-    assert dump_row("qwen35-4b", row, record) == {
+    assert dump_row("qwen35-4b", row, record, regime="json_schema") == {
         "model": "qwen35-4b",
+        "regime": "json_schema",
         "pair_id": "p1::g0",
         "order": "human_b",
         "rating": 7,
         "human_is_b": True,
     }
+
+
+def test_dump_row_records_which_regime_produced_the_verdict():
+    """A freeform verdict and a forced-schema verdict are not the same measurement."""
+    row = {
+        "prompt": [{"role": "user", "content": "x"}],
+        "extra_info": {"pair_id": "p1::g0", "order": "human_a", "human_is_b": False},
+    }
+    record = probe_record(_full_verdict(1), "stop", human_is_b=False)
+    assert dump_row("m", row, record, regime="freeform")["regime"] == "freeform"
 
 
 def test_dump_row_carries_a_null_rating_when_nothing_was_recovered():
@@ -119,4 +131,11 @@ def test_dump_row_carries_a_null_rating_when_nothing_was_recovered():
         "extra_info": {"pair_id": "p1::g0", "order": "human_a", "human_is_b": False},
     }
     record = probe_record("garbage", "stop", human_is_b=False)
-    assert dump_row("m", row, record)["rating"] is None
+    assert dump_row("m", row, record, regime="json_schema")["rating"] is None
+
+
+def test_an_odd_limit_is_rounded_down_to_keep_ab_orders_paired():
+    assert even_limit(201) == 200
+    assert even_limit(200) == 200
+    assert even_limit(1) == 0
+    assert even_limit(0) == 0

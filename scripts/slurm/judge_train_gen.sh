@@ -48,21 +48,37 @@ export GEN_TOP_K=${GEN_TOP_K:-20}
 export GEN_MAX_TOKENS=${GEN_MAX_TOKENS:-1024}
 
 PKL=$OUT_DIR/raw/${SPLIT}_generations.pkl
+SLICED_PARQUET=$OUT_DIR/raw/${SPLIT}_source_slice.parquet
 mkdir -p "$OUT_DIR/raw"
 
 echo "=== judge gen: split=$SPLIT slice=[$SLICE_LO,$SLICE_HI) limit=$LIMIT k=$GEN_NUM ==="
 echo "=== model=$MERGED_EP3 sampling T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
 
+LIMIT_ARG=()
+[ "$LIMIT" -gt 0 ] && LIMIT_ARG=(--limit "$LIMIT")
+
+# Slice BEFORE generating. Handing the full split to generate_trained would sample k
+# generations for every context and then throw ~90% away in the builder -- ~16.7k
+# generations to keep ~1.7k, in a 12h single-GPU job whose pickle is written only at the
+# end. select_slice is a pure function of extra_info and idempotent, so the same bounds go
+# to both steps and the selected rows are identical to the post-hoc path.
+$PY -u scripts/slice_judge_source.py \
+  --source_parquet "$SOURCE_PARQUET" --out "$SLICED_PARQUET" \
+  --slice_lo "$SLICE_LO" --slice_hi "$SLICE_HI" "${LIMIT_ARG[@]}" || exit 3
+
 $PY -u -m eval.generate_trained --base_model --model_id "$MERGED_EP3" \
-  --test_parquet "$SOURCE_PARQUET" --output "$PKL" --gen_num "$GEN_NUM" \
+  --test_parquet "$SLICED_PARQUET" --output "$PKL" --gen_num "$GEN_NUM" \
   --temperature "$GEN_TEMPERATURE" --top_p "$GEN_TOP_P" --top_k "$GEN_TOP_K" \
   --max_tokens "$GEN_MAX_TOKENS" --backend vllm \
   --vllm_max_model_len "${GEN_MAX_MODEL_LEN:-13524}" \
   --vllm_truncate_prompt_tokens "${GEN_TRUNCATE_PROMPT_TOKENS:-12500}" || exit 3
 
-LIMIT_ARG=()
-[ "$LIMIT" -gt 0 ] && LIMIT_ARG=(--limit "$LIMIT")
+# Same file, same bounds: select_slice on an already-sliced frame is a no-op, so the
+# builder's `assert not missing` still checks that every kept context has generations.
+# PROMPT_BUDGET_TOKENS must track data.max_prompt_length in qwen35_judge_grpo.yaml -- the
+# emitted .meta.json is what that value has to be chosen from.
 $PY -u scripts/build_judge_train_pairs.py \
-  --inference_pkl "$PKL" --source_parquet "$SOURCE_PARQUET" \
+  --inference_pkl "$PKL" --source_parquet "$SLICED_PARQUET" \
   --out "$OUT_DIR/$SPLIT.parquet" \
+  --prompt_budget_tokens "${PROMPT_BUDGET_TOKENS:-10240}" \
   --slice_lo "$SLICE_LO" --slice_hi "$SLICE_HI" --split "$SPLIT" "${LIMIT_ARG[@]}"

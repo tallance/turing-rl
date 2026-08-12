@@ -103,3 +103,39 @@ def test_rollout_overrides_the_8b_generator_hardware_profile():
 
 def test_judge_runs_log_to_their_own_wandb_project():
     assert _load()["trainer"]["project_name"] == "grpo-judge"
+
+
+def test_lora_is_merged_before_the_rollout_weight_sync():
+    """The one proven Qwen3.5 recipe pins this; without it the rollouts may be the base model.
+
+    veRL's default weight-sync path for a hybrid GDN model is not the merged-dense one. If it
+    hands the rollout engine base weights, the run completes and logs plausible curves while
+    every sampled verdict came from the untrained model.
+    """
+    assert _load()["actor_rollout_ref"]["model"]["lora"]["merge"] is True
+
+
+def test_the_checkpoint_engine_bucket_matches_the_proven_recipe():
+    rollout = _load()["actor_rollout_ref"]["rollout"]
+    assert rollout["checkpoint_engine"]["update_weights_bucket_megabytes"] == 3072
+
+
+def test_all_three_micro_batch_knobs_are_pinned_to_one():
+    """The 8B generator base leaves ref/rollout log-prob at 8 for far shorter sequences."""
+    c = _load()["actor_rollout_ref"]
+    assert c["actor"]["ppo_micro_batch_size_per_gpu"] == 1
+    assert c["ref"]["log_prob_micro_batch_size_per_gpu"] == 1
+    assert c["rollout"]["log_prob_micro_batch_size_per_gpu"] == 1
+
+
+def test_a_console_logger_exists_so_the_overfit_gate_has_something_to_read():
+    """veRL writes no metrics file; with wandb alone judge_overfit_gate.py cannot run."""
+    assert "console" in _load()["trainer"]["logger"]
+
+
+def test_the_unvalidated_prompt_budget_is_flagged_in_the_file():
+    """max_prompt_length is a placeholder until the builder's meta.json is read."""
+    with open(CFG) as handle:
+        text = handle.read()
+    assert "UNVALIDATED" in text
+    assert "prompt_tokens_est_p95" in text

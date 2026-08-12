@@ -4,8 +4,10 @@ import pandas as pd
 import pytest
 
 from scripts.build_judge_train_pairs import (
+    CHARS_PER_TOKEN_ESTIMATE,
     build_judge_rows,
     flatten_all_generations,
+    prompt_length_stats,
     render_turing_prompt,
 )
 
@@ -116,3 +118,49 @@ def test_split_tag_is_propagated():
 def test_missing_generation_raises():
     with pytest.raises(AssertionError):
         build_judge_rows(_source_df(), {}, lo=0.0, hi=1.0, limit=None, split="train")
+
+
+def test_render_strips_the_control_characters_the_reward_path_strips():
+    """reward.py sanitizes the four content fields before formatting; so must this."""
+    prompt = render_turing_prompt(
+        user_history="hi\x0bstory", context="c\x00tx", response_a="A\x1fA", response_b="B\x08B"
+    )
+    assert "\x0b" not in prompt and "\x00" not in prompt
+    assert "\x1f" not in prompt and "\x08" not in prompt
+    assert "history" in prompt and "ctx" in prompt and "AA" in prompt and "BB" in prompt
+
+
+def test_prompt_length_stats_report_percentiles_and_the_over_budget_count():
+    stats = prompt_length_stats(["x" * 100, "x" * 200, "x" * 300, "x" * 400], budget_tokens=50)
+    assert stats["prompt_chars_p50"] == 200
+    assert stats["prompt_chars_p95"] == 400
+    assert stats["prompt_chars_max"] == 400
+    assert stats["prompt_tokens_est_max"] == pytest.approx(400 / CHARS_PER_TOKEN_ESTIMATE, abs=0.1)
+    # budget 50 tokens ~= 195 chars, so 200/300/400 are over.
+    assert stats["n_over_budget"] == 3
+    assert stats["over_budget_rate"] == pytest.approx(0.75)
+    assert stats["prompt_budget_tokens"] == 50
+
+
+def test_prompt_length_stats_on_no_rows_do_not_crash():
+    stats = prompt_length_stats([], budget_tokens=10240)
+    assert stats["prompt_chars_max"] == 0
+    assert stats["n_over_budget"] == 0
+    assert stats["over_budget_rate"] == 0.0
+
+
+def test_meta_carries_the_prompt_length_measurement():
+    """max_prompt_length cannot be chosen without this; filter_overlong_prompts drops the rest."""
+    _df, meta = build_judge_rows(
+        _source_df(), flatten_all_generations(_inference(n_gens=2)),
+        lo=0.0, hi=1.0, limit=None, split="train", prompt_budget_tokens=1,
+    )
+    for key in (
+        "prompt_chars_p50", "prompt_chars_p95", "prompt_chars_max",
+        "prompt_tokens_est_p50", "prompt_tokens_est_p95", "prompt_tokens_est_max",
+        "n_over_budget", "prompt_budget_tokens", "chars_per_token_estimate",
+    ):
+        assert key in meta, key
+    # The rendered rubric alone is thousands of characters, so a 1-token budget catches all 4.
+    assert meta["n_over_budget"] == 4
+    assert meta["prompt_chars_max"] >= meta["prompt_chars_p50"] > 0

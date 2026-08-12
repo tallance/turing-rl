@@ -18,6 +18,11 @@ import pandas as pd
 
 TIE_RATING = 4
 REQUIRED_COLUMNS = ("model", "pair_id", "order", "rating", "human_is_b")
+# Not required: dumps written before probe_judge_format.py gained --dump_regime have no
+# regime column, and rejecting those would strand every existing artifact. When it IS
+# present it is surfaced per model, because a table silently mixing a forced-schema arm
+# with a freeform arm is not comparable and nothing else downstream would show it.
+OPTIONAL_COLUMNS = ("regime",)
 
 
 def _check_columns(df: pd.DataFrame) -> None:
@@ -51,6 +56,10 @@ def summarize_judge_eval(df: pd.DataFrame) -> pd.DataFrame:
     with poor format compliance therefore gets a flattering accuracy over a shrunken
     sample, which is exactly the artifact this table exists to expose. Read accuracy
     together with unrecovered_rate or not at all.
+
+    The row index is the *pre-drop* model list. A model whose verdicts all failed to parse
+    is the loudest result this table can carry, and it must not be the one result that
+    disappears from it: such a model appears with n=0, unrecovered_rate=1.0 and NaN accuracy.
     """
     _check_columns(df)
     n_total = df.groupby("model", sort=True).size()
@@ -76,10 +85,18 @@ def summarize_judge_eval(df: pd.DataFrame) -> pd.DataFrame:
             "conf_mean": grouped["_conf"].mean(),
             "rating_mean": grouped["rating"].mean(),
         }
-    )
+    ).reindex(n_total.index)
+    summary.index.name = "model"
+    summary["n"] = summary["n"].fillna(0).astype(int)
     # Coverage: how much of each model's eval set is actually behind its accuracy.
-    summary["n_total"] = n_total.reindex(summary.index).fillna(0).astype(int)
+    summary["n_total"] = n_total.astype(int)
     summary["unrecovered_rate"] = 1.0 - (summary["n"] / summary["n_total"])
+    if "regime" in df.columns:
+        summary["regime"] = (
+            df.groupby("model", sort=True)["regime"]
+            .agg(lambda s: "|".join(sorted({str(v) for v in s.dropna()})))
+            .reindex(n_total.index)
+        )
     return summary.reset_index()
 
 
@@ -120,7 +137,10 @@ def order_consistency(df: pd.DataFrame) -> pd.DataFrame:
                 "order_consistency": (consistent / total) if total else 0.0,
             }
         )
-    return pd.DataFrame(rows)
+    # Explicit columns: when every model is zero-compliance `rows` is empty, and a bare
+    # pd.DataFrame([]) has no columns at all, so main()'s merge on "model" dies with a
+    # bare KeyError instead of printing the (entirely valid) all-unrecovered table.
+    return pd.DataFrame(rows, columns=["model", "n_pairs", "order_consistency"])
 
 
 def main() -> None:

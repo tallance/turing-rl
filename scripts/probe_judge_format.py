@@ -47,6 +47,16 @@ def response_format_for_regime(regime: str) -> dict | None:
     raise ValueError(f"unknown regime {regime!r}; expected one of {REGIMES}")
 
 
+def even_limit(limit: int) -> int:
+    """Round a row limit down to an even number.
+
+    The pairs parquet stores each pair twice, in both A/B orders. An odd limit takes one
+    order without its partner, which biases the slot-bias and order-consistency numbers the
+    probe exists to produce.
+    """
+    return max(0, limit - (limit % 2))
+
+
 def probe_record(completion: str | None, finish_reason: str, human_is_b: bool) -> dict[str, Any]:
     """Score one probe completion into the fields the gate cares about."""
     verdict = parse_judge_verdict(completion)
@@ -90,11 +100,17 @@ def summarize_probe(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def dump_row(model: str, row: dict, record: dict[str, Any]) -> dict[str, Any]:
-    """One long-format row for scripts/analyze_judge_training.py."""
+def dump_row(model: str, row: dict, record: dict[str, Any], *, regime: str) -> dict[str, Any]:
+    """One long-format row for scripts/analyze_judge_training.py.
+
+    ``regime`` is recorded because a verdict from the freeform arm and a verdict from the
+    forced-schema arm are not the same measurement, and nothing downstream of this CSV can
+    tell them apart otherwise.
+    """
     extra = row["extra_info"]
     return {
         "model": model,
+        "regime": regime,
         "pair_id": extra["pair_id"],
         "order": extra["order"],
         "rating": record["rating"],
@@ -163,12 +179,26 @@ def main() -> None:
     parser.add_argument("--limit", type=int, default=200)
     parser.add_argument("--max_tokens", type=int, default=8192)
     parser.add_argument("--regimes", nargs="+", default=list(REGIMES))
+    parser.add_argument("--dump_regime", default="json_schema",
+                        help="Which regime --dump_csv records. Defaults to the forced-schema "
+                             "arm, which is the published comparison; it is NOT whichever "
+                             "regime happens to be last in --regimes.")
     args = parser.parse_args()
 
     for regime in args.regimes:
         response_format_for_regime(regime)  # fail fast on a typo
+    if args.dump_csv and args.dump_regime not in args.regimes:
+        raise SystemExit(
+            f"--dump_regime {args.dump_regime!r} is not among --regimes {args.regimes}"
+        )
 
-    rows = pd.read_parquet(args.pairs_parquet).head(args.limit).to_dict("records")
+    # The parquet emits each pair twice, in both A/B orders, adjacently. An odd head() takes
+    # one unpaired row and silently skews pred_b_rate and order_consistency.
+    limit = even_limit(args.limit)
+    if limit != args.limit:
+        print(f"--limit {args.limit} is odd; using {limit} to keep A/B orders paired", flush=True)
+
+    rows = pd.read_parquet(args.pairs_parquet).head(limit).to_dict("records")
     label = args.model_label or args.model
     summaries: dict[str, Any] = {}
     dump_rows: list[dict[str, Any]] = []
@@ -177,8 +207,8 @@ def main() -> None:
         records = [record for record, _row in results]
         summaries[regime] = summarize_probe(records)
         print(f"[{regime}] {json.dumps(summaries[regime], sort_keys=True)}", flush=True)
-        if args.dump_csv and regime == args.regimes[-1]:
-            dump_rows = [dump_row(label, row, record) for record, row in results]
+        if args.dump_csv and regime == args.dump_regime:
+            dump_rows = [dump_row(label, row, record, regime=regime) for record, row in results]
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out_json)), exist_ok=True)
     with open(args.out_json, "w", encoding="utf-8") as handle:
@@ -189,7 +219,7 @@ def main() -> None:
     if args.dump_csv:
         os.makedirs(os.path.dirname(os.path.abspath(args.dump_csv)), exist_ok=True)
         pd.DataFrame(dump_rows).to_csv(args.dump_csv, index=False)
-        print(f"Wrote {len(dump_rows)} rows -> {args.dump_csv} (regime={args.regimes[-1]})")
+        print(f"Wrote {len(dump_rows)} rows -> {args.dump_csv} (regime={args.dump_regime})")
 
 
 if __name__ == "__main__":

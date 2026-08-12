@@ -16,7 +16,16 @@ data:
   train_files: data/prism/judge/iter1/train.parquet
   val_files: data/prism/judge/iter1/val.parquet
   train_batch_size: 64
-  # The rendered prompt is ~22k chars (~6k tokens); the headroom absorbs long user histories.
+  # !!! UNVALIDATED AGAINST REAL DATA -- MUST BE SET BEFORE THE FIRST REAL SUBMIT !!!
+  # 10240 is a placeholder, not a measurement. The EMPTY rendered TURING_PROMPT (rubric only,
+  # no user_history, no context, no candidate responses) is already 20,510 chars ~= 5,259
+  # tokens, and the generator side budgets 12,500 tokens for prompts carrying the same
+  # history+context. With `filter_overlong_prompts: true` below, anything over this budget is
+  # DROPPED from train AND val silently, biasing every result toward short-history users.
+  # Before submitting: read prompt_tokens_est_p95 / prompt_tokens_est_max / n_over_budget from
+  # the <split>.meta.json that scripts/build_judge_train_pairs.py writes, set this value from
+  # that measurement, and raise max_model_len with it -- 10240 + 6144 already equals the
+  # current 16384 exactly, so there is no slack.
   max_prompt_length: 10240
   # Thinking plus a 37-field verdict. Deliberately below the 8192 eval budget to bound
   # rollout cost; judge_truncation_rate from the Task 7 probe says whether this is too tight.
@@ -36,6 +45,13 @@ actor_rollout_ref:
     lora_alpha: 32
     lora_adapter_path: null
     enable_gradient_checkpointing: true
+    lora:
+      # MANDATORY for a Qwen3.5 hybrid. This is the merged-dense rollout weight sync the one
+      # proven 9B recipe pins (scripts/slurm/rl_generator_train_9b.sh, "merged dense sync").
+      # Left at veRL's default the rollout engine may be handed base weights instead of the
+      # LoRA-merged ones: the run completes, logs plausible curves, and every rollout came
+      # from the untrained model. The key exists in the composed parent (veRL ppo_trainer).
+      merge: true
   actor:
     ppo_mini_batch_size: 64
     ppo_micro_batch_size_per_gpu: 1
@@ -47,8 +63,13 @@ actor_rollout_ref:
       lr: 0.0001
   ref:
     strategy: fsdp2
+    # The 8B generator base leaves this at 8. Judge sequences are LONGER than the 9B
+    # generator's, and that recipe pins all three micro-batch knobs (actor, ref, rollout)
+    # to 1; pinning only the actor one leaves the two log-prob passes to OOM at 8.
+    log_prob_micro_batch_size_per_gpu: 1
   rollout:
     n: 4
+    log_prob_micro_batch_size_per_gpu: 1
     temperature: 1.0
     top_p: 1.0
     top_k: -1
@@ -63,6 +84,9 @@ actor_rollout_ref:
     tensor_model_parallel_size: 1
     gpu_memory_utilization: 0.55
     enable_chunked_prefill: true
+    checkpoint_engine:
+      # Same value the proven 9B recipe pins. Key exists in the composed parent.
+      update_weights_bucket_megabytes: 3072
     val_kwargs:
       temperature: 0.7
       top_p: 0.8
@@ -92,6 +116,13 @@ reward:
 
 trainer:
   use_v1: false
+  # `console` is not decoration. veRL writes no metrics file of any kind; with wandb alone the
+  # per-step series exists only in the wandb UI, and scripts/judge_overfit_gate.py -- which the
+  # R0 gate depends on -- would have nothing on disk to read. The console backend prints every
+  # logged metric to stdout, i.e. into the Slurm .out, which the gate parses directly.
+  logger:
+    - wandb
+    - console
   project_name: grpo-judge
   default_local_dir: results/grpo/checkpoints_judge
   experiment_name: qwen35-judge-grpo

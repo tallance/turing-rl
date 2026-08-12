@@ -71,6 +71,16 @@ def test_bad_bounds_raise():
         in_slice("u", "p", 0, lo=-0.1, hi=0.5)
 
 
+def test_slicing_is_idempotent():
+    """scripts/slurm/judge_train_gen.sh slices before generation and the builder slices
+    again with the same bounds. If that were not a no-op the builder would drop rows it
+    already has generations for, or worse, keep a different set."""
+    df = _rows(300)
+    once = select_slice(df, lo=0.0, hi=0.1, limit=17)
+    twice = select_slice(once, lo=0.0, hi=0.1, limit=17)
+    assert list(twice["extra_info"]) == list(once["extra_info"])
+
+
 def test_non_dict_extra_info_raises():
     df = pd.DataFrame([{"extra_info": "nope"}])
     with pytest.raises(TypeError):
