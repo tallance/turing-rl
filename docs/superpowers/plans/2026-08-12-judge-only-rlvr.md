@@ -1743,6 +1743,33 @@ def test_fsdp2_is_selected_for_actor_and_ref():
     c = _load()
     assert c["actor_rollout_ref"]["actor"]["strategy"] == "fsdp2"
     assert c["actor_rollout_ref"]["ref"]["strategy"] == "fsdp2"
+
+
+def test_reward_is_declared_the_way_verl_09_actually_reads_it():
+    """veRL 0.9's V1 controller ignores the legacy top-level block.
+
+    A config carrying only `custom_reward_function` runs V1, never calls the reward, and
+    scores every rollout 0 without erroring. The working 9B launcher disables V1 and uses
+    the nested `reward.custom_reward_function` block; both must be present.
+    """
+    c = _load()
+    assert c["trainer"]["use_v1"] is False
+    assert c["reward"]["custom_reward_function"]["path"] == "training/grpo/judge_reward.py"
+    assert c["reward"]["custom_reward_function"]["name"] == "compute_score"
+    assert c["custom_reward_function"]["path"] == "training/grpo/judge_reward.py"
+
+
+def test_rollout_overrides_the_8b_generator_hardware_profile():
+    """The parent is an 8B generator config; these three are wrong for a judge run."""
+    rollout = _load()["actor_rollout_ref"]["rollout"]
+    assert rollout["tensor_model_parallel_size"] == 1
+    assert float(rollout["gpu_memory_utilization"]) == 0.55
+    # Judge prompts (~6k tokens) exceed the 4096 batched-token cap.
+    assert rollout["enable_chunked_prefill"] is True
+
+
+def test_judge_runs_log_to_their_own_wandb_project():
+    assert _load()["trainer"]["project_name"] == "grpo-judge"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1812,6 +1839,14 @@ actor_rollout_ref:
     max_model_len: 16384
     max_num_batched_tokens: 16384
     response_length: 6144
+    # The parent is an 8B *generator* profile. These three must be overridden or the judge
+    # run inherits values that are wrong for it, the failure mode that cost jobs 15143 and
+    # 13634. TP=1 matches the working 9B recipe (a 2B/4B judge has no reason to shard);
+    # chunked prefill is REQUIRED because judge prompts (~6k tokens, budget 10240) exceed
+    # the 4096 batched-token cap; 0.55 is the memory fraction the 9B recipe actually ran.
+    tensor_model_parallel_size: 1
+    gpu_memory_utilization: 0.55
+    enable_chunked_prefill: true
     val_kwargs:
       temperature: 0.7
       top_p: 0.8
@@ -1823,20 +1858,38 @@ critic:
   optim:
     lr: 0.0001
 
+# Declared BOTH ways on purpose. veRL 0.9's V1 controller does not migrate the legacy
+# top-level `custom_reward_function` block (see scripts/slurm/rl_generator_train_9b.sh),
+# so a config carrying only the legacy block runs V1, never calls the reward, and scores
+# every rollout 0 with no error at all. `trainer.use_v1: false` plus the nested
+# `reward.custom_reward_function` block is what the working 9B run uses. This lives in the
+# config rather than a submit-time override string for the same reason the 9B recipe does:
+# values that can be dropped from EXTRA_OVERRIDES eventually are.
 custom_reward_function:
   path: training/grpo/judge_reward.py
   name: compute_score
 
+reward:
+  custom_reward_function:
+    path: training/grpo/judge_reward.py
+    name: compute_score
+
 trainer:
+  use_v1: false
+  project_name: grpo-judge
   default_local_dir: results/grpo/checkpoints_judge
   experiment_name: qwen35-judge-grpo
   total_epochs: 3
 ```
 
+`max_num_seqs` and `enforce_eager` are deliberately left inherited from the parent: the
+working 9B launcher does not override either, and it runs 12.5k-token prompts, so the
+inherited values are proven in practice rather than merely plausible.
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_grpo_config.py -q`
-Expected: PASS, 8 tests
+Expected: PASS, 12 tests
 
 - [ ] **Step 5: Commit**
 
@@ -2348,6 +2401,16 @@ def test_training_uses_the_qwen35_verl09_environment():
 
 def test_training_enables_judge_thinking():
     assert "PERSONA_JUDGE_ENABLE_THINKING=1" in _text(TRAIN)
+
+
+def test_training_never_re_enables_the_v1_controller():
+    """veRL 0.9 V1 ignores the reward config; the yaml pins use_v1=false.
+
+    A launcher override flipping it back on would silently disable the judge reward and
+    score every rollout 0 without erroring.
+    """
+    assert "trainer.use_v1=True" not in _text(TRAIN)
+    assert "trainer.use_v1=true" not in _text(TRAIN)
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2550,6 +2613,10 @@ nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 
 OVR=(
   actor_rollout_ref.model.path="$JUDGE_MODEL_PATH"
+  # TP is the one rollout knob that legitimately varies by model size; everything else
+  # (chunked prefill, gpu_memory_utilization, use_v1, reward routing) is pinned in
+  # qwen35_judge_grpo.yaml so it cannot be dropped from a submit-time string.
+  actor_rollout_ref.rollout.tensor_model_parallel_size=${RL_ROLLOUT_TP:-1}
   actor_rollout_ref.actor.fsdp_config.fsdp_size=${RL_NGPUS:-8}
   actor_rollout_ref.actor.fsdp_config.param_offload=True
   actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
@@ -2570,7 +2637,7 @@ $PY -u -m training.grpo.run_verl_main_ppo \
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `/Users/lancewicki/miniforge3/bin/python -m pytest tests/test_judge_launchers.py -q`
-Expected: PASS, 9 tests
+Expected: PASS, 10 tests
 
 - [ ] **Step 5: Commit**
 
