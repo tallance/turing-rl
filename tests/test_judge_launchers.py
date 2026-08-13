@@ -155,3 +155,37 @@ def test_pair_launcher_rejects_an_unknown_split():
 
 def test_pair_launcher_clears_the_stale_v2_proxy_vars():
     assert "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY" in _text(LAUNCH)
+
+
+PROBE_LAUNCH = os.path.join(ROOT, "scripts", "launch_judge_format_probe.sh")
+
+
+def test_probe_job_wires_the_eval_csv_dump():
+    """probe_judge_format.py --dump_csv is the ONLY producer of the CSV that
+    scripts/analyze_judge_training.py consumes. The job script must pass it through, and must
+    pin the dumped regime -- otherwise the dump silently takes whichever regime ran last
+    (freeform by default), while the published comparison is forced-schema."""
+    text = _text(PROBE)
+    assert "--dump_csv" in text
+    assert "--dump_regime" in text
+    assert 'DUMP_REGIME=${DUMP_REGIME:-json_schema}' in text
+
+
+def _code_lines(path: str) -> list[str]:
+    """Non-comment lines only. Header prose routinely names the thing it warns against."""
+    return [l for l in _text(path).splitlines() if not l.strip().startswith("#")]
+
+
+def test_probe_launcher_serializes_the_judges():
+    """Three 8-GPU probes at once would take the entire 24-GPU QOS allowance."""
+    text = _text(PROBE_LAUNCH)
+    code = "\n".join(_code_lines(PROBE_LAUNCH))
+    assert "afterany" in code, "chain the jobs so one node is held at a time"
+    assert "afterok" not in code, "one judge failing to serve must not cancel the rest"
+    assert "snapshot_sbatch.sh" in text
+    assert "scripts/slurm/judge_format_probe.sh" in text
+
+
+def test_probe_launcher_is_not_itself_a_job_script():
+    text = _text(PROBE_LAUNCH)
+    assert not [l for l in text.splitlines() if l.startswith("#SBATCH")]

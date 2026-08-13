@@ -29,6 +29,13 @@ PAIRS=${PAIRS:-$REPO/data/prism/judge/iter1/val.parquet}
 OUT_JSON=${OUT_JSON:-$REPO/results/judge-format-probe/$(basename "$JUDGE_MODEL").json}
 LIMIT=${LIMIT:-200}
 REGIMES=${REGIMES:-"json_schema json_object freeform"}
+# The probe is the ONLY producer of the long-format CSV that
+# scripts/analyze_judge_training.py consumes, so the Phase 0 run doubles as the zero-shot
+# baseline scoring pass. Left unset, the gate still runs but no eval rows are recorded.
+# --dump_regime pins the dumped regime to json_schema: the published comparison is under
+# forced-schema decoding, and without it the dump silently takes whichever regime ran LAST.
+DUMP_CSV=${DUMP_CSV:-}
+DUMP_REGIME=${DUMP_REGIME:-json_schema}
 
 export PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'
 export PERSONA_JUDGE_ENABLE_THINKING=1
@@ -58,7 +65,13 @@ done
 export OPENAI_API_BASE=$(cat "$ENDPOINT_FILE")
 echo "judge endpoint: $OPENAI_API_BASE"
 
+DUMP_ARGS=()
+if [ -n "$DUMP_CSV" ]; then
+  mkdir -p "$(dirname "$DUMP_CSV")"
+  DUMP_ARGS=(--dump_csv "$DUMP_CSV" --dump_regime "$DUMP_REGIME" --model_label "$JUDGE_MODEL")
+fi
+
 # shellcheck disable=SC2086
 $PY -u scripts/probe_judge_format.py \
   --pairs_parquet "$PAIRS" --model "$JUDGE_MODEL" \
-  --out_json "$OUT_JSON" --limit "$LIMIT" --regimes $REGIMES
+  --out_json "$OUT_JSON" --limit "$LIMIT" --regimes $REGIMES "${DUMP_ARGS[@]}"
