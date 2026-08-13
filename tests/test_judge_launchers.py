@@ -177,13 +177,36 @@ def _code_lines(path: str) -> list[str]:
 
 
 def test_probe_launcher_serializes_the_judges():
-    """Three 8-GPU probes at once would take the entire 24-GPU QOS allowance."""
+    """Three 8-GPU servers at once would take the entire 24-GPU QOS allowance."""
     text = _text(PROBE_LAUNCH)
     code = "\n".join(_code_lines(PROBE_LAUNCH))
-    assert "afterany" in code, "chain the jobs so one node is held at a time"
+    assert "afterany" in code, "chain the judges so one node is held at a time"
     assert "afterok" not in code, "one judge failing to serve must not cancel the rest"
     assert "snapshot_sbatch.sh" in text
     assert "scripts/slurm/judge_format_probe.sh" in text
+
+
+def test_probe_serves_the_judge_as_a_separate_job():
+    """A job that sources cluster_job_bootstrap.sh cannot invoke another script that also
+    sources it: both derive the work dir from job-$SLURM_JOB_ID and the second dies with
+    "runtime work directory already exists" (jobs 15951-15953). The server needs its own job
+    id, so the launcher submits it separately and the probe waits on the endpoint file."""
+    launch = _text(PROBE_LAUNCH)
+    probe = _text(PROBE)
+    assert "scripts/slurm/judge_serve_9b_replicas.sh" in launch
+    assert "--dependency=after:" in launch, "probe starts once the server has STARTED"
+    assert "RL_JUDGE_JOB_ID" in launch and "RL_JUDGE_JOB_ID" in probe
+    # The probe must NOT background the serve script itself.
+    assert "judge_serve_9b_replicas.sh" not in probe
+
+
+def test_probe_job_requests_no_gpu():
+    """It is an HTTP client; the server holds the node."""
+    assert not [l for l in _text(PROBE).splitlines() if l.startswith("#SBATCH") and "gres=gpu" in l]
+
+
+def test_probe_tears_down_the_server():
+    assert "scancel" in _text(PROBE)
 
 
 def test_probe_launcher_is_not_itself_a_job_script():

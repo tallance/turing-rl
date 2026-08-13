@@ -2,9 +2,8 @@
 #SBATCH --job-name=judge_probe
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=32
-#SBATCH --gres=gpu:8
-#SBATCH --mem=256G
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=32G
 #SBATCH --time=06:00:00
 #SBATCH --output=/home/lancewicki/projects/turing-rl/logs/judge_probe-%j.out
 #SBATCH --partition=a100
@@ -45,23 +44,25 @@ export PERSONA_JUDGE_ENABLE_THINKING=1
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 export PERSONA_OPENAI_TIMEOUT_SECONDS=1800
 
-# Serve the candidate judge, wait for its endpoint file (written only after model-verified
-# health -- see judge_serve_9b_replicas.sh), then point the OpenAI-compatible probe client
-# at it. Without this, resolve_judge_api_key()/get_openai_api_base() fall through to the
-# real OpenAI endpoint instead of our vLLM server. Serving shape follows
-# configs/judge_sweep_cells.py: <=30GB footprint -> TP=1 with 8 replicas.
-ENDPOINT_FILE=${JUDGE_ENDPOINT_FILE:-$REPO/logs/judge_probe_endpoint-${SLURM_JOB_ID}.txt}
-rm -f "$ENDPOINT_FILE"
-MODEL=$JUDGE_MODEL JUDGE_ENDPOINT_FILE=$ENDPOINT_FILE \
-  bash "$REPO/scripts/slurm/judge_serve_9b_replicas.sh" &
-SERVE_PID=$!
-trap 'kill $SERVE_PID 2>/dev/null || true' EXIT
+# The judge is served by a SEPARATE Slurm job, not backgrounded here.
+# cluster_job_bootstrap.sh derives its runtime work directory from job-$SLURM_JOB_ID, so a
+# nested bootstrap-sourcing script inside the same job collides on mkdir and dies with
+# "runtime work directory already exists" (jobs 15951-15953, all three, 12s in). The serve
+# job therefore has its own SLURM_JOB_ID and its own work dir; this job only waits for the
+# endpoint it publishes, and tears it down afterwards. That is also why this job needs NO
+# GPU: it is an HTTP client.
+ENDPOINT_FILE=${JUDGE_ENDPOINT_FILE:?set JUDGE_ENDPOINT_FILE (shared with the serve job)}
+JUDGE_SERVE_JOB_ID=${RL_JUDGE_JOB_ID:?set RL_JUDGE_JOB_ID so the server is torn down}
+cleanup() { scancel "$JUDGE_SERVE_JOB_ID" 2>/dev/null || true; }
+trap 'cleanup; exit 143' TERM INT
+trap cleanup EXIT
 
-echo "waiting for judge endpoint (up to 60 min warmup)..."
+echo "waiting for judge endpoint from job $JUDGE_SERVE_JOB_ID (up to 60 min warmup)..."
 ok=0
-for t in $(seq 1 1800); do
+for _ in $(seq 1 1800); do
   [ -s "$ENDPOINT_FILE" ] && { ok=1; break; }
-  kill -0 "$SERVE_PID" 2>/dev/null || { echo "ERROR: judge serve step died before publishing endpoint" >&2; exit 3; }
+  state=$(squeue -j "$JUDGE_SERVE_JOB_ID" -h -o '%t' 2>/dev/null | tr -d ' ')
+  [ -n "$state" ] || { echo "ERROR: judge serve job $JUDGE_SERVE_JOB_ID left the queue before publishing an endpoint" >&2; exit 3; }
   sleep 2
 done
 [ $ok -eq 1 ] || { echo "TIMEOUT waiting for judge endpoint" >&2; exit 4; }
