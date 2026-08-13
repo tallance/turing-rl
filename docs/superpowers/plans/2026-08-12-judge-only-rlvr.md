@@ -1981,10 +1981,10 @@ data:
   # the <split>.meta.json that scripts/build_judge_train_pairs.py writes, set this value from
   # that measurement, and raise max_model_len with it -- 10240 + 6144 already equals the
   # current 16384 exactly, so there is no slack.
-  max_prompt_length: 10240
+  max_prompt_length: 14336
   # Thinking plus a 37-field verdict. Deliberately below the 8192 eval budget to bound
   # rollout cost; judge_truncation_rate from the Task 7 probe says whether this is too tight.
-  max_response_length: 6144
+  max_response_length: 7680
   truncation: left
   filter_overlong_prompts: true
   apply_chat_template_kwargs:
@@ -2028,16 +2028,16 @@ actor_rollout_ref:
     temperature: 1.0
     top_p: 1.0
     top_k: -1
-    max_model_len: 16384
-    max_num_batched_tokens: 16384
-    response_length: 6144
+    max_model_len: 22016
+    max_num_batched_tokens: 4096
+    response_length: 7680
     # The parent is an 8B *generator* profile. These three must be overridden or the judge
     # run inherits values that are wrong for it, the failure mode that cost jobs 15143 and
     # 13634. TP=1 matches the working 9B recipe (a 2B/4B judge has no reason to shard);
     # chunked prefill is REQUIRED because judge prompts (~6k tokens, budget 10240) exceed
     # the 4096 batched-token cap; 0.55 is the memory fraction the 9B recipe actually ran.
     tensor_model_parallel_size: 1
-    gpu_memory_utilization: 0.55
+    gpu_memory_utilization: 0.70
     enable_chunked_prefill: true
     checkpoint_engine:
       # Same value the proven 9B recipe pins. Key exists in the composed parent.
@@ -3798,6 +3798,12 @@ each is gated on the previous one:
    - re-run the builder with `PROMPT_BUDGET_TOKENS` set to the new value so `n_over_budget`
      in the recorded `.meta.json` describes the budget actually used.
    **Gate:** do not submit judge GRPO while `n_over_budget` is unknown or non-trivial.
+1b. **Set the context budgets from the build's measurement.** DONE for iteration 1 (jobs
+   15863/15867 + capacity probe 15926): prompt 14,336 / response 7,680 / max_model_len 22,016,
+   `gpu_memory_utilization` 0.70, `max_num_seqs` 16. Any NEW slice must re-check
+   `n_over_budget` in its `<split>.meta.json` before submitting — the observed prompt max rose
+   10% when the sample grew from 416 to 1,121 contexts.
+
 2. **Run the Phase 0 probe** for 2B / 4B / 9B. **Gate:** freeform `fmt_all_fields_rate`
    around 0.5 or better. If a model comes in near zero, stop. The remedy is the spec's
    self-distilled format-SFT fallback (§7), which is *not* implemented by this plan — it is

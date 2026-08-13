@@ -93,12 +93,37 @@ def test_reward_is_declared_the_way_verl_09_actually_reads_it():
 
 
 def test_rollout_overrides_the_8b_generator_hardware_profile():
-    """The parent is an 8B generator config; these three are wrong for a judge run."""
+    """The parent is an 8B generator config; every value here is wrong for a judge run.
+
+    gpu_memory_utilization and max_num_seqs are MEASURED (capacity probe, job 15926, A100-40GB
+    at max_model_len 22,016): 0.55 yields only 2.76x concurrency, 0.70 yields 10.98x. The
+    inherited max_num_seqs of 64 would admit ~6x more sequences than physically fit.
+    """
     rollout = _load()["actor_rollout_ref"]["rollout"]
     assert rollout["tensor_model_parallel_size"] == 1
-    assert float(rollout["gpu_memory_utilization"]) == 0.55
-    # Judge prompts (~6k tokens) exceed the 4096 batched-token cap.
+    assert float(rollout["gpu_memory_utilization"]) == 0.70
+    # Judge prompts (p95 ~10k tokens) far exceed the 4096 batched-token cap.
     assert rollout["enable_chunked_prefill"] is True
+    assert rollout["max_num_seqs"] == 16
+    # Bounds the chunked-prefill workspace; must NOT track max_model_len.
+    assert rollout["max_num_batched_tokens"] == 4096
+
+
+def test_budgets_match_the_measured_prompt_and_completion_distributions():
+    """Both budgets come from measurement, not from round numbers.
+
+    Prompt: the largest rendered judge prompt over 1,121 built contexts was 12,743 estimated
+    tokens, so 10,240 dropped 3-4% of rows silently. Completion: the frozen judge's real
+    length distribution over 91,398 thinking-ON calls has p50 5,984 / p90 7,452, so 6,144
+    would have truncated ~44% -- landing on the median and making "be shorter" the dominant
+    gradient rather than "be accurate".
+    """
+    data = _load()["data"]
+    assert data["max_prompt_length"] >= 12743, "must clear the largest observed prompt"
+    assert 7452 <= data["max_response_length"] < 8192, (
+        "sit between p90 and the 8192 eval cap: enough truncation pressure to shape length, "
+        "not enough to swamp the accuracy signal"
+    )
 
 
 def test_judge_runs_log_to_their_own_wandb_project():
@@ -133,9 +158,16 @@ def test_a_console_logger_exists_so_the_overfit_gate_has_something_to_read():
     assert "console" in _load()["trainer"]["logger"]
 
 
-def test_the_unvalidated_prompt_budget_is_flagged_in_the_file():
-    """max_prompt_length is a placeholder until the builder's meta.json is read."""
+def test_the_budget_records_that_sample_maxima_grow_with_sample_size():
+    """The budget is measured, but a measured max is a SAMPLE max.
+
+    Growing the sample from 416 to 1,121 contexts raised the observed max ~10%. The file must
+    keep telling the next reader to re-check n_over_budget for any new slice rather than
+    trusting this number to hold.
+    """
     with open(CFG) as handle:
         text = handle.read()
-    assert "UNVALIDATED" in text
-    assert "prompt_tokens_est_p95" in text
+    # Comment prose wraps across lines with "#" markers; compare on normalized words.
+    flat = " ".join(text.lower().replace("#", " ").split())
+    assert "n_over_budget" in text
+    assert "sample maxima grow with sample size" in flat
