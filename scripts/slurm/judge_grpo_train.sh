@@ -41,7 +41,7 @@ export JUDGE_FORMAT_WEIGHT=${JUDGE_FORMAT_WEIGHT:-0.1}
 # The judge REASONS before answering; this mirrors what generator RL ran against.
 export PERSONA_JUDGE_ENABLE_THINKING=1
 
-DATA_DIR=${DATA_DIR:-$REPO/data/prism/judge/iter1}
+DATA_DIR=${DATA_DIR:-${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1}
 TRAIN_FILE=${TRAIN_FILE:-$DATA_DIR/train.parquet}
 VAL_FILE=${VAL_FILE:-$DATA_DIR/val.parquet}
 RUN_TAG=${JUDGE_RUN_TAG:-$(basename "$JUDGE_MODEL_PATH")_${JUDGE_REWARD_ARM}}

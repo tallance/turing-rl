@@ -26,7 +26,9 @@ cd "$REPO" || exit 2
 
 SPLITS=${SPLITS:-"train val"}
 DRY=${DRY:-0}
-OUT_DIR=${OUT_DIR:-$REPO/data/prism/judge/iter1}
+# $REPO/data is the immutable source snapshot inside a job; generated data belongs in the
+# state root, which is what TURING_RL_GENERATED_DATA_ROOT points at.
+OUT_DIR=${OUT_DIR:-${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1}
 
 echo "=== judge pair build: splits='$SPLITS' out_dir=$OUT_DIR ==="
 

@@ -25,7 +25,10 @@ export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 
 JUDGE_MODEL=${JUDGE_MODEL:?set JUDGE_MODEL, e.g. Qwen/Qwen3.5-4B}
-PAIRS=${PAIRS:-$REPO/data/prism/judge/iter1/val.parquet}
+# NOT $REPO/data: inside a job, $REPO/data symlinks to the IMMUTABLE SOURCE SNAPSHOT,
+# which carries only committed python modules -- generated parquets are invisible there.
+# TURING_RL_GENERATED_DATA_ROOT is the state-root path where the builder actually writes.
+PAIRS=${PAIRS:-${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1/val.parquet}
 OUT_JSON=${OUT_JSON:-$REPO/results/judge-format-probe/$(basename "$JUDGE_MODEL").json}
 LIMIT=${LIMIT:-200}
 REGIMES=${REGIMES:-"json_schema json_object freeform"}

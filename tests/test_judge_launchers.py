@@ -189,3 +189,31 @@ def test_probe_launcher_serializes_the_judges():
 def test_probe_launcher_is_not_itself_a_job_script():
     text = _text(PROBE_LAUNCH)
     assert not [l for l in text.splitlines() if l.startswith("#SBATCH")]
+
+
+DATA_CONSUMERS = (PROBE, GEN, TRAIN, LAUNCH, PROBE_LAUNCH)
+
+
+def test_generated_data_paths_never_resolve_through_the_source_snapshot():
+    """Inside a job, $REPO/data symlinks to the IMMUTABLE SOURCE SNAPSHOT.
+
+    The snapshot carries only committed python modules, so a generated parquet is invisible
+    there — $REPO/data/... silently points at a file that does not exist. Generated datasets
+    must be addressed via TURING_RL_GENERATED_DATA_ROOT (the state root). Caught when the
+    Phase 0 probe resolved its pair set to .../work/launcher-*/data/prism/... and would have
+    failed after holding an 8-GPU node.
+    """
+    for path in DATA_CONSUMERS:
+        for number, line in enumerate(_text(path).splitlines(), 1):
+            if line.strip().startswith("#"):
+                continue
+            assert "$REPO/data/" not in line, (
+                f"{os.path.basename(path)}:{number} addresses generated data through the "
+                f"source snapshot; use $TURING_RL_GENERATED_DATA_ROOT"
+            )
+
+
+def test_no_script_uses_the_deprecated_ambiguous_data_root():
+    """CLAUDE.md retires TURING_RL_DATA_ROOT in favour of the input/generated split."""
+    for path in DATA_CONSUMERS:
+        assert "TURING_RL_DATA_ROOT" not in _text(path)

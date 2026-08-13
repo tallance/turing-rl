@@ -24,7 +24,8 @@ SBATCH=${TURING_RL_CODE_ROOT:+$TURING_RL_CODE_ROOT/scripts/snapshot_sbatch.sh}
 cd "$REPO" || exit 2
 
 PROBE_MODELS=${PROBE_MODELS:-"Qwen/Qwen3.5-2B Qwen/Qwen3.5-4B Qwen/Qwen3.5-9B"}
-PAIRS=${PAIRS:-$REPO/data/prism/judge/iter1/val.parquet}
+# See judge_format_probe.sh: $REPO/data is the source snapshot, not the state root.
+PAIRS=${PAIRS:-${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1/val.parquet}
 OUT_ROOT=${OUT_ROOT:-$REPO/results/judge-format-probe}
 PROBE_LIMIT=${PROBE_LIMIT:-200}
 DRY=${DRY:-0}

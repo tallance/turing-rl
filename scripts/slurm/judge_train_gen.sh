@@ -32,7 +32,7 @@ SLICE_LO=${SLICE_LO:-0.0}
 SLICE_HI=${SLICE_HI:-0.1}
 LIMIT=${LIMIT:-416}
 GEN_NUM=${GEN_NUM:-4}
-OUT_DIR=${OUT_DIR:-$REPO/data/prism/judge/iter1}
+OUT_DIR=${OUT_DIR:-${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1}
 
 DATA_BASE=$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/grpo
 case "$SPLIT" in
