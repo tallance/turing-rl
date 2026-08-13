@@ -240,3 +240,34 @@ def test_no_script_uses_the_deprecated_ambiguous_data_root():
     """CLAUDE.md retires TURING_RL_DATA_ROOT in favour of the input/generated split."""
     for path in DATA_CONSUMERS:
         assert "TURING_RL_DATA_ROOT" not in _text(path)
+
+
+TRAIN_LAUNCH = os.path.join(ROOT, "scripts", "launch_judge_train.sh")
+
+
+def test_train_launcher_submits_through_the_gateway():
+    text = _text(TRAIN_LAUNCH)
+    assert "snapshot_sbatch.sh" in text
+    assert "scripts/slurm/judge_grpo_train.sh" in text
+    assert not [l for l in text.splitlines() if l.startswith("#SBATCH")]
+
+
+def test_train_launcher_validates_the_reward_arm():
+    assert "JUDGE_REWARD_ARM must be directional or graded" in _text(TRAIN_LAUNCH)
+
+
+def test_extra_overrides_never_enter_the_comma_delimited_export_list():
+    """EXTRA_OVERRIDES carries spaces; Slurm's --export list is comma-delimited and does not
+    survive them. It must ride the environment via the leading ALL instead."""
+    code = "\n".join(_code_lines(TRAIN_LAUNCH))
+    assert "export EXTRA_OVERRIDES=" in code
+    assert "EXTRA_OVERRIDES=$EXTRA" not in code.replace("export EXTRA_OVERRIDES=\"$EXTRA\"", "")
+
+
+def test_overfit_mode_keeps_the_subset_side_balanced_and_batch_sized():
+    """8 pairs x 2 orders = 16 rows; the batch must fit and stay divisible by the agent-loop
+    worker count (preflight 17/26)."""
+    text = _text(TRAIN_LAUNCH)
+    assert "scripts/build_judge_overfit.py" in text
+    assert "data.train_batch_size=$rows" in text
+    assert "rows=$((OVERFIT_PAIRS * 2))" in text
