@@ -43,6 +43,11 @@ export PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'
 export PERSONA_JUDGE_ENABLE_THINKING=1
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 export PERSONA_OPENAI_TIMEOUT_SECONDS=1800
+# The server is DP-8. At the client default of 8 there is one in-flight request per rank, so
+# vLLM never batches -- docs/default-params.md measured 6.4x throughput going 8 -> 64, with
+# latency flat, and pairs 64 with the 1800s timeout above (the 400s default is what caused
+# the job-13628 timeout cascade). 600 calls at 8 takes hours; at 64 it takes minutes.
+export JUDGE_PROBE_CONCURRENCY=${JUDGE_PROBE_CONCURRENCY:-64}
 
 # The judge is served by a SEPARATE Slurm job, not backgrounded here.
 # cluster_job_bootstrap.sh derives its runtime work directory from job-$SLURM_JOB_ID, so a
