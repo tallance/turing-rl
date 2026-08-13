@@ -12,6 +12,7 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import sys
 from collections import Counter
 from typing import Any
@@ -31,6 +32,30 @@ from training.grpo.judge_reward import directional_task_reward
 from training.grpo.judge_verdict import parse_judge_verdict
 
 REGIMES: tuple[str, ...] = ("json_schema", "json_object", "freeform")
+
+# Loopback plus the RFC1918 ranges the cluster's compute nodes sit on.
+_LOCAL_ENDPOINT_RE = re.compile(
+    r"^https?://(localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|10\.\d+\.\d+\.\d+"
+    r"|192\.168\.\d+\.\d+|172\.(?:1[6-9]|2\d|3[01])\.\d+\.\d+)(?::\d+)?(?:/|$)",
+    re.IGNORECASE,
+)
+
+
+def resolve_probe_api_key(api_base: str | None = None) -> str:
+    """Return an API key, tolerating an unauthenticated local vLLM server.
+
+    The repo's key loader requires a PHYSICAL .env next to the module, and an immutable
+    source snapshot has none — so scoring a local, unauthenticated server would die on a
+    missing secret it never needed. That is preflight check 33: it already killed the Gemma
+    smoke jobs 14096/14097, and it killed judge probes 16059/16061/16063 the same way, after
+    the server had come up healthy.
+
+    Remote endpoints keep the strict lookup: only a loopback/RFC1918 base skips it.
+    """
+    base = api_base if api_base is not None else os.environ.get("OPENAI_API_BASE", "")
+    if base and _LOCAL_ENDPOINT_RE.match(base.strip()):
+        return "EMPTY"  # vLLM ignores the value unless it was started with --api-key
+    return resolve_judge_api_key()
 
 
 def response_format_for_regime(regime: str) -> dict | None:
@@ -128,7 +153,7 @@ async def _run_regime(
     """
     import aiohttp
 
-    api_key = resolve_judge_api_key()
+    api_key = resolve_probe_api_key()
     response_format = response_format_for_regime(regime)
     sampling_raw = os.environ.get("PERSONA_JUDGE_SAMPLING")
     sampling = json.loads(sampling_raw) if sampling_raw else None

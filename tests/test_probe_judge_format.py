@@ -139,3 +139,40 @@ def test_an_odd_limit_is_rounded_down_to_keep_ab_orders_paired():
     assert even_limit(200) == 200
     assert even_limit(1) == 0
     assert even_limit(0) == 0
+
+
+def test_local_endpoints_do_not_require_a_secret(monkeypatch):
+    """Preflight check 33: an immutable snapshot has no .env, so a local unauthenticated
+    server must not be scored through the remote-secret loader. Killed jobs 14096/14097 and
+    then 16059/16061/16063, each time AFTER the server came up healthy."""
+    from scripts.probe_judge_format import resolve_probe_api_key
+    for base in (
+        "http://127.0.0.1:8000/v1",
+        "http://localhost:8332/v1",
+        "http://10.137.73.36:8358/v1",   # the actual endpoint that failed
+        "http://192.168.1.5:8000/v1",
+        "http://172.16.0.9:8000/v1",
+    ):
+        assert resolve_probe_api_key(base) == "EMPTY", base
+
+
+def test_remote_endpoints_keep_the_strict_key_lookup(monkeypatch):
+    """Only local bases skip the loader; a real endpoint must still demand a real key."""
+    import scripts.probe_judge_format as probe
+    called = {}
+
+    def _fake_loader() -> str:
+        called["hit"] = True
+        return "real"
+
+    monkeypatch.setattr(probe, "resolve_judge_api_key", _fake_loader)
+    assert probe.resolve_probe_api_key("https://openrouter.ai/api/v1") == "real"
+    assert called.get("hit") is True
+
+
+def test_a_public_ip_is_not_mistaken_for_local():
+    """10.x is private but 100.x / 11.x are not; the guard must not over-match."""
+    import scripts.probe_judge_format as probe
+    import pytest as _pytest
+    for base in ("http://100.64.0.1:8000/v1", "http://11.0.0.1:8000/v1", "http://172.32.0.1:8000/v1"):
+        assert probe._LOCAL_ENDPOINT_RE.match(base) is None, base
