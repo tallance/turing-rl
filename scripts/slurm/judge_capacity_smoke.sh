@@ -45,9 +45,12 @@ CAP_MAX_NUM_SEQS=${CAP_MAX_NUM_SEQS:-64}
 echo "=== judge capacity smoke: model=$CAP_MODEL util=$CAP_GPU_UTIL lens='$CAP_LENS' ==="
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 
-for len in $CAP_LENS; do
-  echo "########## max_model_len=$len ##########"
-  $PY - "$CAP_MODEL" "$CAP_GPU_UTIL" "$len" "$CAP_MAX_NUM_SEQS" <<'PYEOF'
+# The probe MUST live in a real file, not a stdin heredoc. vLLM forces the `spawn`
+# multiprocessing start method, and the spawned EngineCore re-imports __main__ — which for a
+# stdin script resolves to a literal "<stdin>" path and dies with FileNotFoundError before
+# any engine work happens (observed in job 15921, all three lengths).
+PROBE=$TMPDIR/judge_capacity_probe_${SLURM_JOB_ID}.py
+cat > "$PROBE" <<'PYEOF'
 import sys, gc
 model, util, length, max_seqs = sys.argv[1], float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 from vllm import LLM
@@ -61,6 +64,11 @@ except Exception as exc:  # a refusal here is the answer, not a crash
     print(f"RESULT len={length} ENGINE_FAILED {type(exc).__name__}: {str(exc)[:300]}", flush=True)
 gc.collect()
 PYEOF
+
+for len in $CAP_LENS; do
+  echo "########## max_model_len=$len ##########"
+  $PY "$PROBE" "$CAP_MODEL" "$CAP_GPU_UTIL" "$len" "$CAP_MAX_NUM_SEQS"
 done
+rm -f "$PROBE"
 
 echo "=== done; grep the log for 'GPU KV cache size', 'Maximum concurrency' and 'RESULT' ==="
