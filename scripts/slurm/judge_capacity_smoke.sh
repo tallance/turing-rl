@@ -52,22 +52,29 @@ nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
 PROBE=$TMPDIR/judge_capacity_probe_${SLURM_JOB_ID}.py
 cat > "$PROBE" <<'PYEOF'
 import sys, gc
-model, util, length, max_seqs = sys.argv[1], float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 from vllm import LLM
-try:
-    llm = LLM(model=model, dtype="bfloat16", gpu_memory_utilization=util,
-              max_model_len=length, max_num_seqs=max_seqs, enforce_eager=True,
-              trust_remote_code=True, disable_log_stats=True)
-    print(f"RESULT len={length} ENGINE_OK", flush=True)
-    del llm
-except Exception as exc:  # a refusal here is the answer, not a crash
-    print(f"RESULT len={length} ENGINE_FAILED {type(exc).__name__}: {str(exc)[:300]}", flush=True)
-gc.collect()
+
+# vLLM forces `spawn`, and the spawned EngineCore RE-IMPORTS this file as __main__. Without
+# this guard the child re-runs the probe, tries to build its own engine, and prints a
+# spurious ENGINE_FAILED alongside the parent's real ENGINE_OK (seen in job 15925).
+if __name__ == "__main__":
+  model, util, length, max_seqs = sys.argv[1], float(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
+  try:
+      llm = LLM(model=model, dtype="bfloat16", gpu_memory_utilization=util,
+                max_model_len=length, max_num_seqs=max_seqs, enforce_eager=True,
+                trust_remote_code=True, disable_log_stats=True)
+      print(f"RESULT len={length} ENGINE_OK", flush=True)
+      del llm
+  except Exception as exc:  # a refusal here is the answer, not a crash
+      print(f"RESULT len={length} ENGINE_FAILED {type(exc).__name__}: {str(exc)[:300]}", flush=True)
+  gc.collect()
 PYEOF
 
-for len in $CAP_LENS; do
-  echo "########## max_model_len=$len ##########"
-  $PY "$PROBE" "$CAP_MODEL" "$CAP_GPU_UTIL" "$len" "$CAP_MAX_NUM_SEQS"
+for util in $CAP_GPU_UTIL; do
+  for len in $CAP_LENS; do
+    echo "########## util=$util max_model_len=$len ##########"
+    $PY "$PROBE" "$CAP_MODEL" "$util" "$len" "$CAP_MAX_NUM_SEQS"
+  done
 done
 rm -f "$PROBE"
 
