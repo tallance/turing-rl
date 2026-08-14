@@ -161,6 +161,11 @@ def main() -> None:
     ap.add_argument("--hf_base", default=None, help="verl.model_merger base output (check D)")
     ap.add_argument("--distinct_from", default=None, help="Another hf_dense that must differ (check E)")
     ap.add_argument("--expect_targets", type=int, default=128)
+    ap.add_argument("--shared_atol", type=float, default=0.0,
+                    help="Check D: max absolute difference tolerated on a SHARED tensor. 0 "
+                         "(default) demands bit-exactness. Use 0.00390625 (one bf16 ULP near "
+                         "1.0) only for a checkpoint whose frozen tensors were re-rounded on "
+                         "save; it never excuses a missing or extra key.")
     ap.add_argument("--allow_missing_prefix", nargs="*", default=list(DEFAULT_ALLOWLIST),
                     help="Key prefixes allowed to differ between hf_base and base (default: mtp.)")
     ap.add_argument("--no_key_normalize", action="store_true",
@@ -266,16 +271,36 @@ def main() -> None:
         if n_allowlisted:
             notes.append(f"D: {n_allowlisted} allowlisted keys absent from hf_base (prefixes {allow})")
 
-        mismatched = []
+        # Bit-exact by default. --shared_atol exists because an FSDP2 save can re-round a
+        # FROZEN tensor by up to one bf16 ULP (2^-8 near magnitude 1): the Qwen3.5-4B judge
+        # checkpoints came back with all 24 `linear_attn.norm.weight` off by exactly that and
+        # nothing else. Those norms are provably untrained -- the directional and graded arms,
+        # 52 steps apart under different rewards, are BIT-IDENTICAL to each other on all 24.
+        # The tolerance is an absolute bound, is reported, and never covers a missing/extra key.
+        mismatched, within_tol, worst = [], [], 0.0
         for key in sorted(base.keys() & hf_base.keys()):
-            if not torch.equal(base.get(key), hf_base.get(key)):
+            lhs, rhs = base.get(key), hf_base.get(key)
+            if torch.equal(lhs, rhs):
+                continue
+            delta = (lhs.float() - rhs.float()).abs().max().item()
+            worst = max(worst, delta)
+            if a.shared_atol > 0 and delta <= a.shared_atol:
+                within_tol.append(key)
+            else:
                 mismatched.append(key)
         if mismatched:
             failures.append(
-                f"D: hf_base differs from base on {len(mismatched)} shared tensors, e.g. {mismatched[:3]} "
-                "-- the reconstructed frozen backbone does not match merged_ep3"
+                f"D: hf_base differs from base on {len(mismatched)} shared tensors "
+                f"(worst |diff|={worst:.6g} > atol={a.shared_atol:g}), e.g. {mismatched[:3]} "
+                "-- the reconstructed frozen backbone does not match the container"
+            )
+        if within_tol:
+            notes.append(
+                f"D: {len(within_tol)} shared tensors differ but within --shared_atol="
+                f"{a.shared_atol:g} (worst |diff|={worst:.6g}), e.g. {within_tol[:3]}"
             )
         print(f"[D] hf_base shared={len(base.keys() & hf_base.keys())} mismatched={len(mismatched)} "
+              f"within_atol={len(within_tol)} worst_shared_diff={worst:.6g} "
               f"allowlisted_missing={len(missing)} bad_missing={len(bad_missing)} bad_extra={len(bad_extra)}")
 
     # ---- E: distinctness --------------------------------------------------------

@@ -45,6 +45,12 @@ REPLICAS=${REPLICAS:-8}
 # Hold 8 GPUs at a time, not 16: the user's own eval chain is competing for the same QOS
 # allowance and already hit QOSMaxGRESPerUser.
 SERIALIZE=${SERIALIZE:-1}
+# One bf16 ULP near magnitude 1. An FSDP2 save re-rounds the 24 frozen
+# `linear_attn.norm.weight` tensors of the recurrent layers by exactly this much, which the
+# bit-exact form of check D reports as a corrupt backbone (merge jobs 17889/17891). They are
+# provably untrained: the directional and graded checkpoints are BIT-IDENTICAL to each other
+# on all 24 after 52 steps under different rewards. Anything larger still fails the gate.
+SHARED_ATOL=${SHARED_ATOL:-0.00390625}
 DRY=${DRY:-0}
 # Hoisted out of the sbatch call on purpose: an inline $((...)) puts a ')' inside the
 # invocation, which truncates the static "-- boundary present" guard in
@@ -69,7 +75,7 @@ for arm in $ARMS; do
   dense=$EVAL_ROOT/models/$tag/hf_dense
 
   merge_exports="ALL,STEP=$STEP,ACTOR_DIR=$actor,CONTAINER=$CONTAINER"
-  merge_exports="$merge_exports,EVAL_ROOT=$EVAL_ROOT,MODEL_TAG=$tag"
+  merge_exports="$merge_exports,EVAL_ROOT=$EVAL_ROOT,MODEL_TAG=$tag,SHARED_ATOL=$SHARED_ATOL"
   sweep_exports="ALL,MODEL=$dense,TP=$TP,REPLICAS=$REPLICAS,THINKING_MODE=on"
   sweep_exports="$sweep_exports,CELL_NAME=$tag,PAIRS=$PAIRS,SWEEP_ROOT=$EVAL_ROOT/raw/sweep"
 

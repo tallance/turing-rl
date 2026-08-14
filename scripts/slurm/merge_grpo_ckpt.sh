@@ -49,6 +49,8 @@ CONTAINER=${CONTAINER:-${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_
 # Both Qwen3.5-9B and -4B are 32 layers at full_attention_interval=4, so both have
 # 32*3 MLP + 8*4 attn = 128 LoRA targets. Overridable because that coincidence is not a law.
 EXPECT_TARGETS=${EXPECT_TARGETS:-128}
+# Check D bit-exactness tolerance on SHARED tensors. Stays 0 for the 9B generator path.
+SHARED_ATOL=${SHARED_ATOL:-0}
 DISTINCT_FROM=${DISTINCT_FROM:-}
 
 # verl.model_merger must run in the Arm-B env: the checkpoint config is transformers 5.4.
@@ -119,7 +121,7 @@ $PY_EVAL scripts/merge_grpo_adapter.py \
 
 echo "--- step 3: HARD GATE (scripts/validate_grpo_merge.py) ---"
 GATE=(--base "$CONTAINER" --dense "$HF_DENSE" --adapter "$HF_BASE/lora_adapter" --hf_base "$HF_BASE")
-GATE+=(--expect_targets "$EXPECT_TARGETS")
+GATE+=(--expect_targets "$EXPECT_TARGETS" --shared_atol "$SHARED_ATOL")
 [ -n "$DISTINCT_FROM" ] && GATE+=(--distinct_from "$DISTINCT_FROM")
 $PY_EVAL scripts/validate_grpo_merge.py "${GATE[@]}"
 RC=$?

@@ -86,3 +86,16 @@ def test_merge_no_longer_references_the_9b_container_variable_in_code():
 def test_merge_passes_the_target_count_to_both_the_fold_and_the_gate():
     code = _code(MERGE)
     assert code.count('--expect_targets "$EXPECT_TARGETS"') == 2
+
+
+def test_shared_atol_reaches_the_gate_and_defaults_to_bit_exact_for_the_9b():
+    merge = _code(MERGE)
+    assert "SHARED_ATOL=${SHARED_ATOL:-0}" in merge, "the generator path must stay bit-exact"
+    assert '--shared_atol "$SHARED_ATOL"' in merge
+
+
+def test_judge_eval_tolerates_exactly_one_bf16_ulp_and_says_so():
+    """0.00390625 = 2**-8. Anything looser would stop the gate catching a wrong container."""
+    code = _code(LAUNCH)
+    assert "SHARED_ATOL=${SHARED_ATOL:-0.00390625}" in code
+    assert "SHARED_ATOL=$SHARED_ATOL" in code, "the merge job must receive it"
