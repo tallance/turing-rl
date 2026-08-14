@@ -63,11 +63,20 @@ OVR=(
   # qwen35_judge_grpo.yaml so it cannot be dropped from a submit-time string.
   actor_rollout_ref.rollout.tensor_model_parallel_size=${RL_ROLLOUT_TP:-1}
   actor_rollout_ref.actor.fsdp_config.fsdp_size=${RL_NGPUS:-8}
-  actor_rollout_ref.actor.fsdp_config.param_offload=True
-  actor_rollout_ref.actor.fsdp_config.optimizer_offload=True
-  actor_rollout_ref.actor.fsdp_config.offload_policy=True
-  actor_rollout_ref.ref.fsdp_config.param_offload=True
-  actor_rollout_ref.ref.fsdp_config.offload_policy=True
+  # Offload is REQUIRED for a 9B at tight memory but costs a CPU round-trip of the base
+  # weights on every update, and we train LoRA -- the optimizer state is tiny, so
+  # optimizer_offload buys almost nothing. A 2B/4B shards to ~1GB/GPU and does not need it.
+  # Default stays True (safe for the largest model); set JUDGE_FSDP_OFFLOAD=false for small ones.
+  actor_rollout_ref.actor.fsdp_config.param_offload=${JUDGE_FSDP_OFFLOAD:-True}
+  actor_rollout_ref.actor.fsdp_config.optimizer_offload=${JUDGE_FSDP_OFFLOAD:-True}
+  actor_rollout_ref.actor.fsdp_config.offload_policy=${JUDGE_FSDP_OFFLOAD:-True}
+  actor_rollout_ref.ref.fsdp_config.param_offload=${JUDGE_FSDP_OFFLOAD:-True}
+  actor_rollout_ref.ref.fsdp_config.offload_policy=${JUDGE_FSDP_OFFLOAD:-True}
+  # max_num_seqs in the yaml (16) is sized for the 22k worst case. Real sequences are ~8k
+  # (6.6k prompt + 1.4k response), where a request costs 3+ceil(8000/528)=19 blocks against
+  # ~494 blocks of cache at util 0.70 -> ~26 fit. Raising it directly cuts generation time,
+  # which was ~45% of every R0 step.
+  actor_rollout_ref.rollout.max_num_seqs=${JUDGE_MAX_NUM_SEQS:-16}
   data.train_files="$TRAIN_FILE"
   data.val_files="$VAL_FILE"
   trainer.default_local_dir="$CKPT_DIR"
