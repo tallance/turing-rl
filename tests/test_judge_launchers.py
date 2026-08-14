@@ -1,6 +1,7 @@
 """Static guards on the judge Slurm launchers."""
 
 import os
+import re
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROBE = os.path.join(ROOT, "scripts", "slurm", "judge_format_probe.sh")
@@ -262,6 +263,39 @@ def test_extra_overrides_never_enter_the_comma_delimited_export_list():
     code = "\n".join(_code_lines(TRAIN_LAUNCH))
     assert "export EXTRA_OVERRIDES=" in code
     assert "EXTRA_OVERRIDES=$EXTRA" not in code.replace("export EXTRA_OVERRIDES=\"$EXTRA\"", "")
+
+
+JUDGE_LAUNCHERS = {
+    os.path.join(ROOT, "scripts", "launch_judge_train.sh"): TRAIN,
+    os.path.join(ROOT, "scripts", "launch_judge_pairs.sh"): GEN,
+    os.path.join(ROOT, "scripts", "launch_judge_format_probe.sh"): PROBE,
+}
+
+
+def test_every_documented_env_knob_is_actually_read_somewhere():
+    """A `--env NAME=` in a launcher's usage block is a promise to the caller.
+
+    RL_CKPT_DIR broke that promise: launch_judge_train.sh documented it, jobs 16244/16245
+    were submitted WITH it set, and judge_grpo_train.sh read only CKPT_DIR -- so the
+    checkpoints silently went somewhere else. An inert knob fails quietly, which is why it
+    needs a static guard rather than a runtime one.
+    """
+    documented = re.compile(r"--env ([A-Z][A-Z0-9_]*)=")
+    inert = []
+    for launcher, job in JUDGE_LAUNCHERS.items():
+        consumers = _text(launcher) + _text(job)
+        for name in documented.findall(_text(launcher)):
+            # A knob is live if something dereferences it, not merely if the name appears
+            # in the usage comment it was read out of.
+            if f"${{{name}" not in consumers and f"${name}" not in consumers:
+                inert.append(f"{os.path.basename(launcher)}: {name}")
+    assert not inert, f"documented but never read: {inert}"
+
+
+def test_training_reads_the_checkpoint_dir_under_the_generator_name():
+    """rl_generator_train_9b.sh:46 established RL_CKPT_DIR as the external name; the judge
+    job must not invent a second one."""
+    assert "RL_CKPT_DIR" in _text(TRAIN)
 
 
 def test_overfit_mode_keeps_the_subset_side_balanced_and_batch_sized():

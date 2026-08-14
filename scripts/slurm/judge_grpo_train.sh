@@ -45,7 +45,11 @@ DATA_DIR=${DATA_DIR:-${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1}
 TRAIN_FILE=${TRAIN_FILE:-$DATA_DIR/train.parquet}
 VAL_FILE=${VAL_FILE:-$DATA_DIR/val.parquet}
 RUN_TAG=${JUDGE_RUN_TAG:-$(basename "$JUDGE_MODEL_PATH")_${JUDGE_REWARD_ARM}}
-CKPT_DIR=${CKPT_DIR:-$REPO/results/grpo/judge/$RUN_TAG/checkpoints}
+# RL_CKPT_DIR, not CKPT_DIR: that is the name the proven generator job reads
+# (rl_generator_train_9b.sh:46) and the name launch_judge_train.sh documents. Reading only
+# CKPT_DIR made the documented knob inert -- jobs 16244/16245 were submitted WITH
+# RL_CKPT_DIR set and still wrote to the default below, which is silent, not loud.
+CKPT_DIR=${RL_CKPT_DIR:-${CKPT_DIR:-$REPO/results/grpo/judge/$RUN_TAG/checkpoints}}
 
 echo "=== judge GRPO: model=$JUDGE_MODEL_PATH arm=$JUDGE_REWARD_ARM tag=$RUN_TAG ==="
 echo "=== train=$TRAIN_FILE val=$VAL_FILE ckpt=$CKPT_DIR host=$(hostname) date=$(date) ==="
