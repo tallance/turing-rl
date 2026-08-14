@@ -63,8 +63,15 @@ echo "=== judge train: model=$JUDGE_MODEL_PATH arm=$JUDGE_REWARD_ARM mode=$MODE 
 echo "=== train=$TRAIN_FILE ==="
 echo "=== extra overrides: ${EXTRA:-<none>} ==="
 
+# Chain an arm behind another run, e.g. JUDGE_DEPENDENCY=afterok:12345 to start the 0/1 arm
+# only once the graded arm of the SAME model size has succeeded. afterok, not afterany: if
+# graded dies on an OOM the directional run would die the same way, and burning a second
+# 8-GPU allocation to rediscover that helps nobody. Same unquoted-empty-string idiom
+# launch_judge_format_probe.sh uses for its serve/probe chain.
+DEP=""; [ -n "${JUDGE_DEPENDENCY:-}" ] && DEP="--dependency=${JUDGE_DEPENDENCY}"
+
 if [ "$DRY" = "1" ]; then
-  echo "[DRY] $SBATCH --parsable --export=$EXPORTS -- scripts/slurm/judge_grpo_train.sh"
+  echo "[DRY] $SBATCH --parsable $DEP --export=$EXPORTS -- scripts/slurm/judge_grpo_train.sh"
   exit 0
 fi
 
@@ -74,7 +81,8 @@ fi
 # the leading `ALL` instead — the same rule launch_generator_sweep.sh documents for
 # PERSONA_JUDGE_SAMPLING's embedded commas.
 export EXTRA_OVERRIDES="$EXTRA"
-jid=$("$SBATCH" --parsable --export="$EXPORTS" -- scripts/slurm/judge_grpo_train.sh)
+# shellcheck disable=SC2086  # $DEP is empty or one --dependency=... token, by construction
+jid=$("$SBATCH" --parsable $DEP --export="$EXPORTS" -- scripts/slurm/judge_grpo_train.sh)
 case "$jid" in
   ''|*[!0-9]*) echo "FATAL: sbatch failed (got '$jid')" >&2; exit 1 ;;
 esac

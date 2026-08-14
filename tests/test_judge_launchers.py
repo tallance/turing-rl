@@ -298,6 +298,18 @@ def test_training_reads_the_checkpoint_dir_under_the_generator_name():
     assert "RL_CKPT_DIR" in _text(TRAIN)
 
 
+def test_train_launcher_can_chain_an_arm_behind_another_run():
+    """The 0/1 arm is chained behind the graded arm of the same size with afterok.
+
+    afterany would launch a second 8-GPU run to rediscover the same OOM. An unset
+    JUDGE_DEPENDENCY must expand to no argument at all, not an empty --dependency=.
+    """
+    code = "\n".join(_code_lines(TRAIN_LAUNCH))
+    assert 'DEP="--dependency=${JUDGE_DEPENDENCY}"' in code
+    assert 'DEP=""' in code
+    assert "$DEP --export=" in code
+
+
 def test_overfit_mode_keeps_the_subset_side_balanced_and_batch_sized():
     """8 pairs x 2 orders = 16 rows; the batch must fit and stay divisible by the agent-loop
     worker count (preflight 17/26)."""
