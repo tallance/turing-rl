@@ -8,6 +8,10 @@ import yaml
 S = pathlib.Path("scripts/slurm/rl_generator_train_9b.sh").read_text()
 SINGLE_NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b_1node.sh").read_text()
 RUN_2NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b.sh").read_text()
+SERVE = pathlib.Path("scripts/slurm/judge_serve_9b_replicas.sh").read_text()
+# The eval-side cell script is the origin of the Gemma serving constants; it is another
+# agent's file and is read here only to prove the two copies agree.
+SWEEP_CELL = pathlib.Path("scripts/slurm/judge_sweep_cell.sh").read_text()
 CFG_9B = pathlib.Path("training/grpo/configs/qwen3_9b_grpo_turing.yaml").read_text()
 # Guard the 9B recipe on the parsed tree, not on substrings of the text. Every value below
 # appears as a literal in this file (the `defaults:` include supplies none of them), so a
@@ -15,16 +19,24 @@ CFG_9B = pathlib.Path("training/grpo/configs/qwen3_9b_grpo_turing.yaml").read_te
 CFG_9B_TREE = yaml.safe_load(CFG_9B)
 
 
+_ARM_PAT = r"[\w.|-]+\)"
+
+
 def mode_arm(name: str) -> str:
-    """Text of one `case "$MODE"` arm in the trainer script.
+    """Text of the `case "$MODE"` arm that handles MODE=<name>, in the trainer script.
 
     Assertions about a mode must be scoped to its own arm: now that more than one mode
     exists, a plain substring check over the whole file cannot tell "full5 caps the
     dataset" from "some other mode does".
+
+    Arms may list several patterns (`frac10ep10|frac10ep20)`), so match the alternation
+    rather than an exact `  name)` literal -- and terminate on the same alternation form,
+    or an arm that shares a prefix would silently swallow the next one's body.
     """
-    start = S.index(f"  {name})")
-    rest = S[start + len(name) + 4:]
-    end = re.search(r"^(  \w+\)|esac)", rest, re.M)
+    m = re.search(rf"^  (?:[\w.-]+\|)*{re.escape(name)}(?:\|[\w.-]+)*\)", S, re.M)
+    assert m, f"no case arm handles MODE={name}"
+    rest = S[m.end():]
+    end = re.search(rf"^(  {_ARM_PAT}|esac)", rest, re.M)
     return rest[: end.start()] if end else rest
 
 
@@ -73,36 +85,52 @@ def test_full5_does_not_cap_the_dataset():
     assert "val_max_samples" not in full5
 
 
-def test_frac10ep10_pins_the_subsets_and_the_per_epoch_cadence():
+def test_frac10_modes_pin_the_subsets_and_the_per_epoch_cadence():
     # 384 = 6 x 64 exactly (9.2% of 4174). Chosen over the round 10% (417) because the train
     # loader drops the last partial batch, so 417 would rotate 33 different rows out per epoch;
-    # 384 means every sample is seen exactly once per epoch and exactly 10 times over the run. save_freq=test_freq=6 keeps ckpts and val on the same epoch grid.
+    # 384 means every sample is seen exactly once per epoch. Confirmed on the completed
+    # 10-epoch run: 384 keys judged exactly 40x (10 epochs x 4 rollouts), no rotation.
+    # save_freq=test_freq=6 keeps ckpts and val on the same epoch grid.
     # 352 = 50% of the 705-row val split, and at seed 42 is the same subset the half-data run
-    # used, so val is comparable across the two runs.
-    arm = mode_arm("frac10ep10")
-    for k in (
-        "data.train_max_samples=384",
-        "data.val_max_samples=352",
-        "trainer.total_epochs=10",
-        "trainer.save_freq=6",
-        "trainer.test_freq=6",
-        "trainer.val_before_train=True",
-        "trainer.max_actor_ckpt_to_keep=null",
-    ):
-        assert k in arm, f"frac10ep10 must pin {k}"
-    # save_freq already equals steps_per_epoch, so the epoch-end hook would double-save.
-    assert "export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0" in arm
-    # Batch size comes from the 9B config, not this arm; setting it here would add a second
-    # variable versus full5.
-    assert "data.train_batch_size=" not in arm
-    assert "overfit|full|epoch1|full5|frac10ep10" in RUN_2NODE
+    # used, so val is comparable across runs.
+    #
+    # Both frac10 modes share one arm, so the slice cannot drift between them; only the epoch
+    # count differs, and it is derived from the mode name rather than written twice.
+    for mode in ("frac10ep10", "frac10ep20"):
+        arm = mode_arm(mode)
+        for k in (
+            "data.train_max_samples=384",
+            "data.val_max_samples=352",
+            "trainer.total_epochs=$_EPOCHS",
+            "trainer.save_freq=6",
+            "trainer.test_freq=6",
+            "trainer.val_before_train=True",
+            "trainer.max_actor_ckpt_to_keep=null",
+        ):
+            assert k in arm, f"{mode} must pin {k}"
+        # save_freq already equals steps_per_epoch, so the epoch-end hook would double-save.
+        assert "export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0" in arm
+        # Batch size comes from the 9B config, not this arm; setting it here would add a
+        # second variable versus full5.
+        assert "data.train_batch_size=" not in arm
+        assert "_EPOCHS=${MODE#frac10ep}" in arm
+    assert "overfit|full|epoch1|full5|frac10ep10|frac10ep20" in RUN_2NODE
 
 
-def test_frac10ep10_rejects_extra_overrides_that_collide_with_pinned_keys():
+def test_frac10_epoch_count_comes_from_the_mode_name():
+    # The whole point of sharing one arm: `frac10ep20` must resolve to 20 epochs without a
+    # second hard-coded literal that could drift from the mode it is named after.
+    script = 'MODE="$1"\n_EPOCHS=${MODE#frac10ep}\necho "$_EPOCHS"\n'
+    for mode, expected in (("frac10ep10", "10"), ("frac10ep20", "20")):
+        proc = subprocess.run(["bash", "-c", script, "_", mode], capture_output=True, text=True)
+        assert proc.stdout.strip() == expected, f"{mode} -> {proc.stdout!r}"
+
+
+def test_frac10_rejects_extra_overrides_that_collide_with_pinned_keys():
     # Hydra gives the LAST occurrence of a key priority and EXTRA_OVERRIDES is appended after
     # "${OVR[@]}", so an ambient value silently beats everything the arm pins -- the same
     # --export=ALL inheritance that produced 13634. The arm must refuse to launch instead.
-    arm = mode_arm("frac10ep10")
+    arm = mode_arm("frac10ep20")
     assert "ERROR: EXTRA_OVERRIDES sets" in arm
     assert "exit 5" in arm
     for protected in (
@@ -117,12 +145,13 @@ def test_frac10ep10_rejects_extra_overrides_that_collide_with_pinned_keys():
         assert protected in arm, f"guard must protect {protected}"
 
 
-def test_frac10ep10_extra_overrides_guard_actually_fires():
+def test_frac10_extra_overrides_guard_actually_fires():
     # Functional counterpart to the static test above: extract the real guard text and run it,
     # so a broken `case` pattern cannot pass review by merely containing the right key names.
+    # MODE is supplied because the guard now names the offending mode in its error message.
     start = S.index("    for _protected in")
     guard = S[start : S.index("done ;;", start) + len("done")]
-    script = 'set -uo pipefail\nEXTRA_OVERRIDES="$1"\n' + guard
+    script = 'set -uo pipefail\nMODE=frac10ep20\nEXTRA_OVERRIDES="$1"\n' + guard
     for value, expected in (
         ("", 0),                                        # nothing set -> proceed
         ("trainer.total_epochs=3", 5),                  # collides with a pinned key
@@ -292,3 +321,92 @@ def test_9b_rollout_defaults_match_what_both_9b_runs_actually_ran():
     # Both runs passed these as env vars every launch; the defaults were 4 and 0.40.
     assert "${RL_ROLLOUT_TP:-1}" in S
     assert "${RL_ROLLOUT_GPU_MEMORY_UTILIZATION:-0.55}" in S
+
+
+GEMMA_12B_SNAPSHOT = "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7"
+
+
+def judge_arm(name: str) -> str:
+    """Text of the `case "$JUDGE"` arm that resolves JUDGE=<name>, in the 2-node driver."""
+    m = re.search(rf"^  {re.escape(name)}\)\s", RUN_2NODE, re.M)
+    assert m, f"no case arm resolves JUDGE={name}"
+    rest = RUN_2NODE[m.end():]
+    end = re.search(r"^(  [\w.|-]+\)|esac)", rest, re.M)
+    return rest[: end.start()] if end else rest
+
+
+def test_gemma_judge_resolves_the_shape_the_eval_registry_assigns():
+    # gemma-4-12B is ~24GB in bf16, under the 30GB per-GPU budget in
+    # configs/judge_sweep_cells.py:tp_for_size, so it gets TP=1 across 8 replicas rather
+    # than spanning the node. Getting this backwards would cost ~8x judge throughput on a
+    # judge-bound run without failing anything.
+    assert "JUDGE=${JUDGE:?set JUDGE=9b|397b|gemma4-12b}" in RUN_2NODE
+    assert 'case "$JUDGE" in 9b|397b|gemma4-12b) ;;' in RUN_2NODE
+    arm = judge_arm("gemma4-12b")
+    assert "JUDGE_MODEL=google/gemma-4-12B-it" in arm
+    assert "TP=1" in arm and "DP=8" in arm
+    assert "REASONING_PARSER=gemma4" in arm
+
+
+def test_reasoning_parser_is_pinned_per_family_and_forwarded_to_the_judge_step():
+    # The boundary detector is family-specific. A qwen3 parser on a gemma server does not
+    # error -- it mis-splits thinking text out of .content, and the reward path then fails to
+    # parse with nothing in the log naming the cause. So it must be resolved from JUDGE and
+    # passed explicitly into the judge srun, never inherited from the submitting shell.
+    assert "REASONING_PARSER=qwen3" in judge_arm("9b")
+    assert "REASONING_PARSER=qwen3" in judge_arm("397b")
+    assert "REASONING_PARSER=gemma4" in judge_arm("gemma4-12b")
+    # forwarded into the srun that launches the server
+    assert "REASONING_PARSER=$REASONING_PARSER" in RUN_2NODE
+    # and never read back from the ambient environment in the driver
+    assert "${REASONING_PARSER:-" not in RUN_2NODE
+    # resolved value is echoed, so the log records which parser actually served
+    assert "judge serving pinned:" in RUN_2NODE
+
+
+def test_judge_case_arms_resolve_correctly_when_executed():
+    # Functional counterpart: run the real `case` block rather than trusting substrings.
+    start = RUN_2NODE.index('case "$JUDGE" in\n  9b)')
+    block = RUN_2NODE[start : RUN_2NODE.index("esac", start) + len("esac")]
+    script = 'JUDGE="$1"\n' + block + '\necho "$JUDGE_MODEL|$TP|$DP|$REASONING_PARSER"'
+    for judge, expected in (
+        ("9b", "Qwen/Qwen3.5-9B|1|8|qwen3"),
+        ("397b", "Qwen/Qwen3.5-397B-A17B-GPTQ-Int4|8|1|qwen3"),
+        ("gemma4-12b", "google/gemma-4-12B-it|1|8|gemma4"),
+    ):
+        proc = subprocess.run(["bash", "-c", script, "_", judge], capture_output=True, text=True)
+        assert proc.stdout.strip() == expected, f"JUDGE={judge}: {proc.stdout!r} {proc.stderr}"
+
+
+def test_serve_script_takes_the_gemma_branch_only_for_gemma():
+    # Gemma needs the CUDA-13 nightly build; the qwen envs cannot serve it. Selecting the
+    # wrong interpreter fails loudly, but the remaining three differences do not:
+    # the snapshot pin, the multimodal slots, and the memory fraction.
+    assert "turing-rl-gemma4-vllm-nightly/bin/vllm" in SERVE
+    assert GEMMA_12B_SNAPSHOT in SERVE
+    assert '--served-model-name "$MODEL"' in SERVE
+    assert '--limit-mm-per-prompt' in SERVE
+    assert "GEMMA_GPU_MEMORY_UTILIZATION:-0.90" in SERVE
+    assert "FLASHINFER_WORKSPACE_BASE" in SERVE
+    # the qwen path must survive untouched alongside it
+    assert "-m vllm.entrypoints.openai.api_server" in SERVE
+    assert "judge-vllm/bin/python" in SERVE
+    assert "turing-rl-train/bin/python" in SERVE
+    # and the health gate still matches on the advertised model id, which --served-model-name
+    # keeps equal to $MODEL even though gemma is served from a snapshot path
+    assert 'grep -qF "\\"$MODEL\\""' in SERVE
+
+
+def test_serve_script_fails_fast_on_a_missing_gemma_runtime_or_snapshot():
+    # Serving OFFLINE from a path means a missing/partial snapshot would otherwise surface as
+    # an opaque vLLM stacktrace 20 minutes into warmup.
+    assert "ERROR: missing Gemma vLLM" in SERVE
+    assert "ERROR: incomplete Gemma snapshot" in SERVE
+
+
+def test_gemma_snapshot_pin_matches_the_eval_cell_script():
+    # Two scripts now serve gemma-4-12B: the eval sweep cell and this training judge. If they
+    # drift to different revisions, the training run's rewards stop being comparable to the
+    # eval numbers we validate them against, silently.
+    assert GEMMA_12B_SNAPSHOT in SWEEP_CELL, "eval cell no longer pins this revision"
+    assert "--reasoning-parser gemma4" in SWEEP_CELL
