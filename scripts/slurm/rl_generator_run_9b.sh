@@ -19,10 +19,16 @@
 #
 # Submit through scripts/cluster_launch.sh + scripts/submit_snapshot_job.sh with
 # B0_ROLLOUT_SYNC=1 JUDGE=9b MODE=overfit OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike.
-#   JUDGE = 9b | 397b     MODE = overfit | full | epoch1 | full5 | frac10ep10
+#   JUDGE = 9b | 397b | gemma4-12b
+#   MODE  = overfit | full | epoch1 | full5 | frac10ep10 | frac10ep20
 #   full5 = full-dataset 5-epoch production run (325 steps; ckpt + validate every 32).
-#   frac10ep10 = 10% of train (417 rows), 10 epochs (60 steps; ckpt + validate every 6),
-#                validating on 50% of the val split. Judge identical to full5.
+#   frac10ep10 / frac10ep20 = 10% of train (384 rows), 10 or 20 epochs (6 steps/epoch;
+#                ckpt + validate every 6), validating on 50% of the val split.
+#                Re-submitting frac10ep20 with a finished frac10ep10 RUN_TAG RESUMES it
+#                (trainer.resume_mode=auto keys off default_local_dir); a fresh RUN_TAG
+#                starts from the SFT init.
+#   gemma4-12b judge serves from the CUDA-13 nightly env at a pinned snapshot; see
+#                scripts/slurm/gemma4_judge_training_smoke.sh for the acceptance gates.
 #   B0_ROLLOUT_SYNC=1 turns on the Step-3b rollout-sync hook (writes rollout_sync.json).
 set -uo pipefail
 source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
