@@ -1,0 +1,1175 @@
+{
+  "base": "/home/lancewicki/data/hf_cache/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a",
+  "adapter": "/home/lancewicki/projects/turing-rl/results/2026-08-17-judge-9b-eval/models/judge-9b-graded-step52/hf_base/lora_adapter",
+  "out": "/home/lancewicki/projects/turing-rl/results/2026-08-17-judge-9b-eval/models/judge-9b-graded-step52/hf_dense",
+  "scaling": 0.5,
+  "n_targets": 128,
+  "targets": {
+    "model.language_model.layers.14.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00020484108245000243,
+      "delta_frobenius": 0.14313152432441711
+    },
+    "model.language_model.layers.14.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0007981110247783363,
+      "delta_frobenius": 0.2583485245704651
+    },
+    "model.language_model.layers.14.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0008457383955828846,
+      "delta_frobenius": 0.27528026700019836
+    },
+    "model.language_model.layers.15.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00017881966778077185,
+      "delta_frobenius": 0.13346342742443085
+    },
+    "model.language_model.layers.15.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0008221270400099456,
+      "delta_frobenius": 0.23816606402397156
+    },
+    "model.language_model.layers.15.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00096826785011217,
+      "delta_frobenius": 0.24636681377887726
+    },
+    "model.language_model.layers.25.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00012450618669390678,
+      "delta_frobenius": 0.11722735315561295
+    },
+    "model.language_model.layers.26.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00020184149616397917,
+      "delta_frobenius": 0.12428504228591919
+    },
+    "model.language_model.layers.26.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00028333693626336753,
+      "delta_frobenius": 0.1984565705060959
+    },
+    "model.language_model.layers.26.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00028926387312822044,
+      "delta_frobenius": 0.2008369266986847
+    },
+    "model.language_model.layers.27.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.0001329778169747442,
+      "delta_frobenius": 0.11826759576797485
+    },
+    "model.language_model.layers.27.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00001-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0004369377566035837,
+      "delta_frobenius": 0.19931015372276306
+    },
+    "model.language_model.layers.0.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.0001352211693301797,
+      "delta_frobenius": 0.12319523841142654
+    },
+    "model.language_model.layers.0.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00028695366927422583,
+      "delta_frobenius": 0.20699238777160645
+    },
+    "model.language_model.layers.0.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00024481682339683175,
+      "delta_frobenius": 0.20785464346408844
+    },
+    "model.language_model.layers.1.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00010828158701770008,
+      "delta_frobenius": 0.12054859101772308
+    },
+    "model.language_model.layers.1.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00035443867091089487,
+      "delta_frobenius": 0.20293721556663513
+    },
+    "model.language_model.layers.1.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00021493285021279007,
+      "delta_frobenius": 0.20098210871219635
+    },
+    "model.language_model.layers.10.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00017018290236592293,
+      "delta_frobenius": 0.1450795829296112
+    },
+    "model.language_model.layers.10.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.000791152473539114,
+      "delta_frobenius": 0.276631623506546
+    },
+    "model.language_model.layers.10.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0010151381138712168,
+      "delta_frobenius": 0.29330703616142273
+    },
+    "model.language_model.layers.11.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00019699890981428325,
+      "delta_frobenius": 0.16125266253948212
+    },
+    "model.language_model.layers.11.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0009776763617992401,
+      "delta_frobenius": 0.29871073365211487
+    },
+    "model.language_model.layers.11.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0010403727646917105,
+      "delta_frobenius": 0.3074122369289398
+    },
+    "model.language_model.layers.16.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00011706702935043722,
+      "delta_frobenius": 0.1220797523856163
+    },
+    "model.language_model.layers.16.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0005221200408414006,
+      "delta_frobenius": 0.21206869184970856
+    },
+    "model.language_model.layers.16.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0005019395612180233,
+      "delta_frobenius": 0.21820011734962463
+    },
+    "model.language_model.layers.17.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.000122098223073408,
+      "delta_frobenius": 0.12248729169368744
+    },
+    "model.language_model.layers.17.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0006478068535216153,
+      "delta_frobenius": 0.2164253443479538
+    },
+    "model.language_model.layers.17.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00046042539179325104,
+      "delta_frobenius": 0.20924167335033417
+    },
+    "model.language_model.layers.18.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.0001389304525218904,
+      "delta_frobenius": 0.12263348698616028
+    },
+    "model.language_model.layers.18.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00043276327778585255,
+      "delta_frobenius": 0.20851358771324158
+    },
+    "model.language_model.layers.18.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0005945047596469522,
+      "delta_frobenius": 0.2201005220413208
+    },
+    "model.language_model.layers.19.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.0001437337778043002,
+      "delta_frobenius": 0.12283794581890106
+    },
+    "model.language_model.layers.21.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00011661272583296522,
+      "delta_frobenius": 0.11954734474420547
+    },
+    "model.language_model.layers.21.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00038538765511475503,
+      "delta_frobenius": 0.20018181204795837
+    },
+    "model.language_model.layers.21.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0004269923665560782,
+      "delta_frobenius": 0.20327316224575043
+    },
+    "model.language_model.layers.22.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00013704653247259557,
+      "delta_frobenius": 0.12172188609838486
+    },
+    "model.language_model.layers.22.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00032675766851752996,
+      "delta_frobenius": 0.19880414009094238
+    },
+    "model.language_model.layers.22.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0005183989997021854,
+      "delta_frobenius": 0.2062799036502838
+    },
+    "model.language_model.layers.23.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00012602578499354422,
+      "delta_frobenius": 0.11851638555526733
+    },
+    "model.language_model.layers.23.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0003013374807778746,
+      "delta_frobenius": 0.19822141528129578
+    },
+    "model.language_model.layers.23.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.000259815133176744,
+      "delta_frobenius": 0.19848060607910156
+    },
+    "model.language_model.layers.27.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0003649869468063116,
+      "delta_frobenius": 0.20088323950767517
+    },
+    "model.language_model.layers.3.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00014458614168688655,
+      "delta_frobenius": 0.12283190339803696
+    },
+    "model.language_model.layers.3.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0002228959638159722,
+      "delta_frobenius": 0.20734381675720215
+    },
+    "model.language_model.layers.3.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00025470100808888674,
+      "delta_frobenius": 0.2053316831588745
+    },
+    "model.language_model.layers.30.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00012715734192170203,
+      "delta_frobenius": 0.11903506517410278
+    },
+    "model.language_model.layers.30.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00036281158099882305,
+      "delta_frobenius": 0.1948574036359787
+    },
+    "model.language_model.layers.30.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0003648801939561963,
+      "delta_frobenius": 0.19593596458435059
+    },
+    "model.language_model.layers.31.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00027153021073900163,
+      "delta_frobenius": 0.16066139936447144
+    },
+    "model.language_model.layers.31.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00046041939640417695,
+      "delta_frobenius": 0.19646041095256805
+    },
+    "model.language_model.layers.31.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00031368574127554893,
+      "delta_frobenius": 0.20652860403060913
+    },
+    "model.language_model.layers.4.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00014268956147134304,
+      "delta_frobenius": 0.12207744270563126
+    },
+    "model.language_model.layers.4.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.000524665811099112,
+      "delta_frobenius": 0.213509202003479
+    },
+    "model.language_model.layers.4.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0005079273832961917,
+      "delta_frobenius": 0.20710299909114838
+    },
+    "model.language_model.layers.8.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.0002173045213567093,
+      "delta_frobenius": 0.14572717249393463
+    },
+    "model.language_model.layers.8.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0008367151604034007,
+      "delta_frobenius": 0.25619545578956604
+    },
+    "model.language_model.layers.8.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0007793866680003703,
+      "delta_frobenius": 0.2517922520637512
+    },
+    "model.language_model.layers.9.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00020899795345030725,
+      "delta_frobenius": 0.14489158987998962
+    },
+    "model.language_model.layers.9.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0008812331943772733,
+      "delta_frobenius": 0.2731735408306122
+    },
+    "model.language_model.layers.9.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00002-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0007607997977174819,
+      "delta_frobenius": 0.26123401522636414
+    },
+    "model.language_model.layers.11.self_attn.q_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        8192,
+        4096
+      ],
+      "delta_absmax": 0.0006944931810721755,
+      "delta_frobenius": 0.2056627720594406
+    },
+    "model.language_model.layers.12.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00018790827016346157,
+      "delta_frobenius": 0.15205128490924835
+    },
+    "model.language_model.layers.12.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0008462674450129271,
+      "delta_frobenius": 0.28633472323417664
+    },
+    "model.language_model.layers.12.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.000721686810720712,
+      "delta_frobenius": 0.2682950794696808
+    },
+    "model.language_model.layers.13.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00021125675993971527,
+      "delta_frobenius": 0.14823469519615173
+    },
+    "model.language_model.layers.13.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0007121446542441845,
+      "delta_frobenius": 0.25249341130256653
+    },
+    "model.language_model.layers.13.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.000820011249743402,
+      "delta_frobenius": 0.25989964604377747
+    },
+    "model.language_model.layers.15.self_attn.q_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        8192,
+        4096
+      ],
+      "delta_absmax": 0.0007442174246534705,
+      "delta_frobenius": 0.18641848862171173
+    },
+    "model.language_model.layers.19.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00048344756942242384,
+      "delta_frobenius": 0.20612835884094238
+    },
+    "model.language_model.layers.19.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0005106035387143493,
+      "delta_frobenius": 0.20460133254528046
+    },
+    "model.language_model.layers.19.self_attn.q_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        8192,
+        4096
+      ],
+      "delta_absmax": 0.00043455412378534675,
+      "delta_frobenius": 0.16901278495788574
+    },
+    "model.language_model.layers.2.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00027580090682022274,
+      "delta_frobenius": 0.11868704110383987
+    },
+    "model.language_model.layers.2.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00023577481624670327,
+      "delta_frobenius": 0.20340783894062042
+    },
+    "model.language_model.layers.2.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00024104962358251214,
+      "delta_frobenius": 0.20162682235240936
+    },
+    "model.language_model.layers.20.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.0001234457886312157,
+      "delta_frobenius": 0.12030094861984253
+    },
+    "model.language_model.layers.20.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00036404916318133473,
+      "delta_frobenius": 0.20202592015266418
+    },
+    "model.language_model.layers.20.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0003868119965773076,
+      "delta_frobenius": 0.20525304973125458
+    },
+    "model.language_model.layers.23.self_attn.q_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        8192,
+        4096
+      ],
+      "delta_absmax": 0.0002738866023719311,
+      "delta_frobenius": 0.16449348628520966
+    },
+    "model.language_model.layers.24.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00013342137390282005,
+      "delta_frobenius": 0.1201745942234993
+    },
+    "model.language_model.layers.24.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00025644691777415574,
+      "delta_frobenius": 0.1970265954732895
+    },
+    "model.language_model.layers.24.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00023418017372023314,
+      "delta_frobenius": 0.1994231641292572
+    },
+    "model.language_model.layers.25.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00042670374386943877,
+      "delta_frobenius": 0.20132087171077728
+    },
+    "model.language_model.layers.25.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.000265368988038972,
+      "delta_frobenius": 0.19658392667770386
+    },
+    "model.language_model.layers.27.self_attn.q_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        8192,
+        4096
+      ],
+      "delta_absmax": 0.00045124025200493634,
+      "delta_frobenius": 0.1662258505821228
+    },
+    "model.language_model.layers.28.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00013916968600824475,
+      "delta_frobenius": 0.1177566796541214
+    },
+    "model.language_model.layers.28.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0003664190589915961,
+      "delta_frobenius": 0.19373658299446106
+    },
+    "model.language_model.layers.28.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0003353834617882967,
+      "delta_frobenius": 0.19842523336410522
+    },
+    "model.language_model.layers.29.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00021268002456054091,
+      "delta_frobenius": 0.11920716613531113
+    },
+    "model.language_model.layers.29.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00032897404162213206,
+      "delta_frobenius": 0.19095224142074585
+    },
+    "model.language_model.layers.29.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.00045440351823344827,
+      "delta_frobenius": 0.19608792662620544
+    },
+    "model.language_model.layers.3.self_attn.q_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        8192,
+        4096
+      ],
+      "delta_absmax": 0.0005421304376795888,
+      "delta_frobenius": 0.1757277548313141
+    },
+    "model.language_model.layers.31.self_attn.q_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        8192,
+        4096
+      ],
+      "delta_absmax": 0.0004128091095481068,
+      "delta_frobenius": 0.17737889289855957
+    },
+    "model.language_model.layers.5.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00013885542284697294,
+      "delta_frobenius": 0.1297297328710556
+    },
+    "model.language_model.layers.5.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0006648655980825424,
+      "delta_frobenius": 0.22911307215690613
+    },
+    "model.language_model.layers.5.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0007113587344065309,
+      "delta_frobenius": 0.24189385771751404
+    },
+    "model.language_model.layers.6.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00021324196131899953,
+      "delta_frobenius": 0.1377817839384079
+    },
+    "model.language_model.layers.6.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0009337480878457427,
+      "delta_frobenius": 0.25692522525787354
+    },
+    "model.language_model.layers.6.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0007787884678691626,
+      "delta_frobenius": 0.24390757083892822
+    },
+    "model.language_model.layers.7.mlp.down_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        4096,
+        12288
+      ],
+      "delta_absmax": 0.00016644505376461893,
+      "delta_frobenius": 0.13942119479179382
+    },
+    "model.language_model.layers.7.mlp.gate_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0006913191173225641,
+      "delta_frobenius": 0.23242558538913727
+    },
+    "model.language_model.layers.7.mlp.up_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        12288,
+        4096
+      ],
+      "delta_absmax": 0.0008071585325524211,
+      "delta_frobenius": 0.2543116807937622
+    },
+    "model.language_model.layers.7.self_attn.q_proj.weight": {
+      "shard": "model.safetensors-00003-of-00004.safetensors",
+      "shape": [
+        8192,
+        4096
+      ],
+      "delta_absmax": 0.0006972731789574027,
+      "delta_frobenius": 0.1956155002117157
+    },
+    "model.language_model.layers.11.self_attn.k_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0006232275045476854,
+      "delta_frobenius": 0.06372185051441193
+    },
+    "model.language_model.layers.11.self_attn.o_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        4096,
+        4096
+      ],
+      "delta_absmax": 0.0003952039987780154,
+      "delta_frobenius": 0.16174226999282837
+    },
+    "model.language_model.layers.11.self_attn.v_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0006387780886143446,
+      "delta_frobenius": 0.07334860414266586
+    },
+    "model.language_model.layers.15.self_attn.k_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.00038743115146644413,
+      "delta_frobenius": 0.058029647916555405
+    },
+    "model.language_model.layers.15.self_attn.o_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        4096,
+        4096
+      ],
+      "delta_absmax": 0.000412105699069798,
+      "delta_frobenius": 0.14464342594146729
+    },
+    "model.language_model.layers.15.self_attn.v_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0006557980086654425,
+      "delta_frobenius": 0.08079765737056732
+    },
+    "model.language_model.layers.19.self_attn.k_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.00026660511502996087,
+      "delta_frobenius": 0.05837869271636009
+    },
+    "model.language_model.layers.19.self_attn.o_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        4096,
+        4096
+      ],
+      "delta_absmax": 0.00023464403057005256,
+      "delta_frobenius": 0.12533456087112427
+    },
+    "model.language_model.layers.19.self_attn.v_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0004649844777304679,
+      "delta_frobenius": 0.06470426172018051
+    },
+    "model.language_model.layers.23.self_attn.k_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.00022190406161826104,
+      "delta_frobenius": 0.05853242427110672
+    },
+    "model.language_model.layers.23.self_attn.o_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        4096,
+        4096
+      ],
+      "delta_absmax": 0.0002943808794952929,
+      "delta_frobenius": 0.12478688359260559
+    },
+    "model.language_model.layers.23.self_attn.v_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0005663186311721802,
+      "delta_frobenius": 0.06298139691352844
+    },
+    "model.language_model.layers.27.self_attn.k_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0002500363043509424,
+      "delta_frobenius": 0.05758330971002579
+    },
+    "model.language_model.layers.27.self_attn.o_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        4096,
+        4096
+      ],
+      "delta_absmax": 0.0002818737702909857,
+      "delta_frobenius": 0.12312063574790955
+    },
+    "model.language_model.layers.27.self_attn.v_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0004440181946847588,
+      "delta_frobenius": 0.06116316840052605
+    },
+    "model.language_model.layers.3.self_attn.k_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0003977124288212508,
+      "delta_frobenius": 0.054946500808000565
+    },
+    "model.language_model.layers.3.self_attn.o_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        4096,
+        4096
+      ],
+      "delta_absmax": 0.00031389761716127396,
+      "delta_frobenius": 0.12064065039157867
+    },
+    "model.language_model.layers.3.self_attn.v_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0005728672258555889,
+      "delta_frobenius": 0.06612244248390198
+    },
+    "model.language_model.layers.31.self_attn.k_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0001929796562762931,
+      "delta_frobenius": 0.059588152915239334
+    },
+    "model.language_model.layers.31.self_attn.o_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        4096,
+        4096
+      ],
+      "delta_absmax": 0.0002566705225035548,
+      "delta_frobenius": 0.11962373554706573
+    },
+    "model.language_model.layers.31.self_attn.v_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.00037175172474235296,
+      "delta_frobenius": 0.06213102862238884
+    },
+    "model.language_model.layers.7.self_attn.k_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.0005747837712988257,
+      "delta_frobenius": 0.05991313233971596
+    },
+    "model.language_model.layers.7.self_attn.o_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        4096,
+        4096
+      ],
+      "delta_absmax": 0.0003370801277924329,
+      "delta_frobenius": 0.14442169666290283
+    },
+    "model.language_model.layers.7.self_attn.v_proj.weight": {
+      "shard": "model.safetensors-00004-of-00004.safetensors",
+      "shape": [
+        1024,
+        4096
+      ],
+      "delta_absmax": 0.000699835189152509,
+      "delta_frobenius": 0.07084263861179352
+    }
+  },
+  "copied_files": [
+    ".gitattributes",
+    "LICENSE",
+    "README.md",
+    "chat_template.jinja",
+    "config.json",
+    "merges.txt",
+    "model.safetensors.index.json",
+    "preprocessor_config.json",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "video_preprocessor_config.json",
+    "vocab.json"
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "destination_cell_root": "/home/lancewicki/projects/turing-rl/results/2026-08-17-test-eval-9b-full5ep-brier-judge/raw/9b-full5ep-step0/sweep/judge-9b-brier/on",
+  "format_version": 1,
+  "pair_sha256": "95f48a9c52d85a6f6c49fd3387e60efe0e1ee5e436bd961f1884750ecfcf7783",
+  "pair_source": "/home/lancewicki/projects/turing-rl/results/2026-08-10-test-eval-9b-full5ep-full-schema/raw/pairs/gen_9b-full5ep-step0_880.parquet",
+  "source_cell_root": "/home/lancewicki/projects/turing-rl/results/2026-08-17-judge-9b-eval/raw/sweep/judge-9b-graded-step52/on",
+  "source_slurm_job_id": "18447",
+  "source_tree_sha256": "08760bf9c4c8f3a1e5d917bdb3f6956f2e76f04916cd2c9dcbbfdcefa15c4255"
+}
