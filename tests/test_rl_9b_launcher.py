@@ -410,3 +410,42 @@ def test_gemma_snapshot_pin_matches_the_eval_cell_script():
     # eval numbers we validate them against, silently.
     assert GEMMA_12B_SNAPSHOT in SWEEP_CELL, "eval cell no longer pins this revision"
     assert "--reasoning-parser gemma4" in SWEEP_CELL
+
+
+def test_serve_script_reuses_the_parents_runtime_view_instead_of_recreating_it():
+    # turing_rl_prepare_runtime keys its work directory off SLURM_JOB_ID alone and hard-fails
+    # if it already exists. rl_generator_run_9b.sh prepares the runtime and then sruns this
+    # script inside the SAME job, so an unconditional bootstrap collides with the parent and
+    # kills the judge step ~12 s in -- jobs 18499 and 18500 both died exactly there, with
+    # "FATAL: runtime work directory already exists". The parent exports TURING_RL_WORK_ROOT,
+    # so guard on it: present means reuse, absent means this script is the top-level job.
+    assert 'if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then' in SERVE
+    guard_at = SERVE.index('if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then')
+    bootstrap_at = SERVE.index("cluster_job_bootstrap.sh")
+    assert guard_at < bootstrap_at, "the bootstrap must be inside the guard, not before it"
+    # The driver still prepares one, so the pair as a whole always has a runtime view.
+    assert "cluster_job_bootstrap.sh" in RUN_2NODE
+
+
+def test_serve_script_bootstrap_guard_actually_fires():
+    # Functional counterpart: run the real guard both ways. A `-n` test would pass even if
+    # the condition were inverted.
+    start = SERVE.index('if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then')
+    guard = SERVE[start : SERVE.index("fi", start) + 2]
+    # Stub the bootstrap so we observe only whether it WOULD have been sourced.
+    script = (
+        'set -uo pipefail\n'
+        'TURING_RL_CODE_ROOT=/nonexistent\n'
+        'source() { echo SOURCED; }\n'
+        + guard.replace("source ", "source ")
+        + '\necho DONE'
+    )
+    parent_prepared = subprocess.run(
+        ["bash", "-c", "TURING_RL_WORK_ROOT=/some/work/root\n" + script],
+        capture_output=True, text=True,
+    )
+    assert "SOURCED" not in parent_prepared.stdout, "must NOT re-prepare when the parent did"
+    assert "DONE" in parent_prepared.stdout
+
+    standalone = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert "SOURCED" in standalone.stdout, "must prepare its own view when run standalone"

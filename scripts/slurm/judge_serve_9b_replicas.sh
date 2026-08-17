@@ -25,7 +25,21 @@
 #   GEMMA_GPU_MEMORY_UTILIZATION (default 0.90, gemma only),
 #   JUDGE_ENDPOINT_FILE (default logs/judge_endpoint-<jobid>.txt).
 set -uo pipefail
-source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
+# Prepare a runtime view only when we are the top-level job script.
+#
+# turing_rl_prepare_runtime derives its runtime id from SLURM_JOB_ID alone and hard-fails
+# if the work directory already exists ("FATAL: runtime work directory already exists").
+# This script is normally NOT the top-level script: rl_generator_run_9b.sh prepares the
+# runtime and then sruns this file, so sourcing the bootstrap again inside the same job
+# collides with the parent's own work root and kills the judge step ~12 s in (jobs 18499,
+# 18500). The parent exports TURING_RL_WORK_ROOT, so its presence is the signal that a
+# runtime view already exists and should be reused rather than recreated.
+#
+# Running this script standalone as its own sbatch job still works: nothing has exported
+# TURING_RL_WORK_ROOT, so it prepares its own view exactly as before.
+if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then
+  source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
+fi
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
