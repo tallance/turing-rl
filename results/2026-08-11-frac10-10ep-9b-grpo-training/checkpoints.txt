@@ -1,0 +1,13 @@
+# checkpoint inventory, run 9b_frac10_10ep_kl1e4_lr1e4_temp1 (job 15371)
+global_step_12     19G  files=32
+global_step_18     19G  files=32
+global_step_24     19G  files=32
+global_step_30     19G  files=32
+global_step_36     19G  files=32
+global_step_42     19G  files=32
+global_step_48     19G  files=32
+global_step_54     19G  files=32
+global_step_6      19G  files=32
+global_step_60     19G  files=32
+
+total: 183G

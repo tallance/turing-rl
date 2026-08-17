@@ -1,0 +1,6 @@
+[36m(TaskRunner pid=1551740)[0m Size of train dataloader: 6, Size of val dataloader: 1
+[36m(TaskRunner pid=1551740)[0m selected 352 random samples out of 705
+[36m(TaskRunner pid=1551740)[0m selected 384 random samples out of 4174
+=== judge concurrency pinned: 64 (timeout 1800s) ===
+=== trainer exit: 0 ===
+=== trainer step exit: 0 ; tearing down judge step ===

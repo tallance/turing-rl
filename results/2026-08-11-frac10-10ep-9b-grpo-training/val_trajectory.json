@@ -1,0 +1,75 @@
+{
+  "run_id": "u5qaz45l",
+  "run_name": "qwen35-9b-grpo-turing-9b_frac10_10ep_kl1e4_lr1e4_temp1",
+  "state": "crashed",
+  "created_at": "2026-08-11T15:43:47Z",
+  "val_trajectory": [
+    {
+      "_step": 0,
+      "val_reward_mean": 0.44647938507908047,
+      "source": "wandb u5qaz45l",
+      "epoch": 0
+    },
+    {
+      "_step": 6,
+      "val_reward_mean": 0.4529921155560508,
+      "source": "wandb u5qaz45l",
+      "epoch": 1
+    },
+    {
+      "_step": 12,
+      "val_reward_mean": 0.49656334084284026,
+      "source": "wandb u5qaz45l",
+      "epoch": 2
+    },
+    {
+      "_step": 18,
+      "val_reward_mean": 0.5194544911553914,
+      "source": "wandb u5qaz45l",
+      "epoch": 3
+    },
+    {
+      "_step": 24,
+      "val_reward_mean": 0.5567897286488336,
+      "source": "wandb u5qaz45l",
+      "epoch": 4
+    },
+    {
+      "_step": 30,
+      "val_reward_mean": 0.5862046215281059,
+      "source": "wandb u5qaz45l",
+      "epoch": 5
+    },
+    {
+      "_step": 36,
+      "val_reward_mean": 0.5997618533755568,
+      "source": "wandb u5qaz45l",
+      "epoch": 6
+    },
+    {
+      "_step": 42,
+      "val_reward_mean": 0.5957764495820315,
+      "source": "wandb u5qaz45l",
+      "epoch": 7
+    },
+    {
+      "_step": 48,
+      "val_reward_mean": 0.6082594981522892,
+      "source": "wandb u5qaz45l",
+      "epoch": 8
+    },
+    {
+      "_step": 54,
+      "val_reward_mean": 0.607027904712595,
+      "source": "wandb u5qaz45l",
+      "epoch": 9
+    },
+    {
+      "_step": 60,
+      "val_reward_mean": 0.5994352643928406,
+      "source": "training log (Final validation metrics)",
+      "epoch": 10
+    }
+  ],
+  "note_wandb_state": "wandb marked the run crashed; step-60 point never reached the server. sacct: COMPLETED 0:0."
+}
