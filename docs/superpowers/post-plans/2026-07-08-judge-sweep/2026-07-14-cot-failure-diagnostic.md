@@ -1,9 +1,9 @@
 # Post-plan: thinking-ON CoT parse-failure diagnostic + 397B speed follow-up
 
 Plan: `~/.claude/plans/smooth-strolling-lake.md`. Context: judge-sweep parse errors are
-concentrated in thinking-ON on the slow big models; mechanism is a client **timeout**
-(finish=None), not token-budget truncation. This post-plan records what we ran to
-characterize the failure mode and to explore speeding up the 397B judge.
+concentrated in thinking-ON on the slow big models; the baseline symptom is a client **timeout**
+(`finish=None`). Longer-timeout replays below expose token-budget exhaustion and repetition in
+many of those cases. This post-plan records the diagnostic and the 397B speed follow-up.
 
 ## What we found before running anything
 - Raw `<think>` CoT is already dumped for **successful** calls at
@@ -13,10 +13,10 @@ characterize the failure mode and to explore speeding up the 397B judge.
   (a) **empty answer** when thinking approaches the ~30k-char (8192-token) budget
   (thinking starves the answer); (b) **runaway repetition in the answer** (63 calls
   >10k chars, all finish=length, worst 3.5-4B at 874k chars).
-- `generator_len_vs_judge.png`: a **verbose generator response does NOT cause parse
-  failures** — corr(gen_len, judge_completion_tokens)=−0.65 (397B): long candidates are
-  obvious fakes → judge decides fast. Failures skew to **short, human-like, hard** inputs
-  where the judge deliberates longest → most likely to exceed the client timeout.
+- `generator_len_vs_judge.png`: generator length was **not positively associated** with parse
+  failure in this run — corr(gen_len, judge_completion_tokens)=−0.65 (397B). Failures skewed
+  toward short inputs on which the judge generated longer deliberations; the analysis did not
+  independently establish that those inputs were more human-like.
 
 ## Runs launched (all 397B, thinking ON, full 880, CONCURRENCY=8, timeout 1800s)
 Injection: `PERSONA_JUDGE_SAMPLING` (JSON) is read by `reward.py:_openai_chat` and merged
@@ -37,7 +37,7 @@ env var works with **no code change**.
 Baseline = existing `qwen35-397b/on` dumps. All 397B cells: full 880, thinking ON,
 CONCURRENCY=8, timeout 1800s.
 
-## Results — root cause + fix (CONFIRMED)
+## Results — observed failure mechanism and paired mitigation
 **Failure mode = runaway repetition, not slow network.** With the 1800s timeout the failing
 pairs completed as `finish=length` (hit the 8192 cap) instead of timing out. Failed CoTs are
 far more repetitive than ok ones (zlib compression ratio **397B 4.54 vs 3.08**; 9B 3.34 vs
@@ -47,12 +47,13 @@ no JSON → parse fail. Diag `cap_runaway` share: 397B ~51% / 9B ~31% of calls (
 inflated). Artifacts: `derived/cot_failure/` (`cot_repetition_vs_length.png`,
 `cot_failure_modes.png`, `cot_worst_examples.txt`, `summary.md`).
 
-**Generator length is NOT the driver.** `gen_len_vs_think_diag.png`: failures span all gen
-lengths; 9B failures are almost all *short* inputs; long candidates mostly parse OK (with
-*less* thinking). Only a 397B minority tail fails on long/looping candidates. So the predictor
-is repetition in the CoT itself, largely independent of candidate length.
+**Generator length was not the primary observed predictor.** `gen_len_vs_think_diag.png`:
+failures span all generator lengths; 9B failures are almost all *short* inputs; long candidates
+mostly parse OK (with *less* thinking). A 397B minority tail fails on long/looping candidates.
+The strongest observed association is repetition in the CoT itself, after accounting only for
+the diagnostics reported here rather than a causal intervention on candidate length.
 
-**Fix — `repetition_penalty=1.1` works (per-pair, 397B on):** parse-error **0.111 → 0.032**
+**Paired result — `repetition_penalty=1.1` (397B on):** parse-error **0.111 → 0.032**
 (−70%), penalized accuracy **0.686 → 0.720**; small cost to parse-ok accuracy (0.772 → 0.744).
 **`temperature=0.7` makes it worse** (parse-error 0.15, penalized acc 0.662). `frequency_penalty`
 (job 9910) is being tested as an alternative lever. Variant bars folded into
@@ -91,8 +92,9 @@ both: it echoes the rubric structure and, on failures, loops).
   specdec dumps vs the baseline `qwen35-397b/on` dumps on the **same pairs** (matched by
   user_id/post_id/target_idx) — concurrency-independent.
 - **Performance drop:** compare parse-error rate, accuracy, and rating distribution vs
-  baseline. Note vLLM speculative decoding is **distribution-preserving** (rejection
-  sampling), so the expected quality delta is ≈ sampling noise; the win is pure latency.
+  baseline. vLLM speculative decoding is intended to preserve the target distribution through
+  rejection sampling, but distribution parity and quality still need verification in this setup;
+  do not assume the observed effect is pure latency before that comparison.
 - Follow-ups if ngram underwhelms: `method:"suffix"` (suffix-decoding, better for
   self-repetition) or an EAGLE/draft-model config.
 

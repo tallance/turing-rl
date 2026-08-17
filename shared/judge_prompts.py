@@ -1,4 +1,66 @@
-"""Judge prompt constants shared by training rewards and offline eval judges."""
+"""Judge prompt and response-schema constants shared by training and eval."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def _schema_string() -> dict[str, Any]:
+    return {"type": "string"}
+
+
+def _schema_number(minimum: float, maximum: float) -> dict[str, Any]:
+    return {"type": "number", "minimum": minimum, "maximum": maximum}
+
+
+# Keep this insertion order synchronized with TURING_PROMPT's Output Format.
+# Constrained decoders follow property order, so ``rating`` must remain last.
+TURING_RESPONSE_PROPERTIES: dict[str, dict[str, Any]] = {
+    "immediate_target_a": _schema_string(),
+    "immediate_target_score_a": _schema_number(0.0, 1.0),
+    "immediate_target_b": _schema_string(),
+    "immediate_target_score_b": _schema_number(0.0, 1.0),
+    "human_goal_a": _schema_string(),
+    "human_goal_score_a": _schema_number(0.0, 1.0),
+    "human_goal_b": _schema_string(),
+    "human_goal_score_b": _schema_number(0.0, 1.0),
+    "communication_style_a": _schema_string(),
+    "communication_style_score_a": _schema_number(0.0, 1.0),
+    "communication_style_b": _schema_string(),
+    "communication_style_score_b": _schema_number(0.0, 1.0),
+    "base_score_a": _schema_number(0.0, 3.0),
+    "base_score_b": _schema_number(0.0, 3.0),
+    "response_a_score": _schema_number(0.0, 3.0),
+    "response_b_score": _schema_number(0.0, 3.0),
+    "score_gap": _schema_number(-3.0, 3.0),
+    "response_a_source_copy": _schema_string(),
+    "source_copy_penalty_a": _schema_number(0.0, 1.0),
+    "response_b_source_copy": _schema_string(),
+    "source_copy_penalty_b": _schema_number(0.0, 1.0),
+    "response_a_wrong_target_or_role": _schema_string(),
+    "wrong_target_or_role_penalty_a": _schema_number(0.0, 1.0),
+    "response_b_wrong_target_or_role": _schema_string(),
+    "wrong_target_or_role_penalty_b": _schema_number(0.0, 1.0),
+    "response_a_unsupported_adversarial_reframing": _schema_string(),
+    "unsupported_adversarial_reframing_penalty_a": _schema_number(0.0, 1.0),
+    "response_b_unsupported_adversarial_reframing": _schema_string(),
+    "unsupported_adversarial_reframing_penalty_b": _schema_number(0.0, 1.0),
+    "response_a_assistant_like": _schema_string(),
+    "assistant_like_penalty_a": _schema_number(0.0, 1.0),
+    "response_b_assistant_like": _schema_string(),
+    "assistant_like_penalty_b": _schema_number(0.0, 1.0),
+    "penalty_a": _schema_number(0.0, 3.0),
+    "penalty_b": _schema_number(0.0, 3.0),
+    "reasoning": _schema_string(),
+    "rating": {"type": "integer", "minimum": 1, "maximum": 7},
+}
+
+TURING_RESPONSE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": TURING_RESPONSE_PROPERTIES,
+    "required": list(TURING_RESPONSE_PROPERTIES),
+    "additionalProperties": False,
+}
 
 
 SPECIFICITY_PROMPT = """## Task

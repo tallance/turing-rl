@@ -5,8 +5,9 @@ Reward-dump schema reality (see post-plans): the reward path scores ONE randomiz
 ordering per pair (position randomized ACROSS pairs, not both orderings per pair). So
 each jsonl row = one pair = one judge call, with exactly one of rating_gt_first /
 rating_gen_first set and `human_side` marking which side (A/B) is the real human.
-Because each cell randomizes independently, raw "picks A/B" is NOT comparable across
-cells; the order-invariant decision is "picked_human" (judge chose the true human).
+The side assignment is deterministic and identical across cells for a shared pair. The
+order-invariant decision used here is "picked_human" (the production reward path's effective
+rating chose the true human), which avoids conflating classifier direction with A/B position.
 Accuracy and kappa are both built on picked_human.
 """
 from __future__ import annotations
@@ -28,8 +29,8 @@ PLOT_LABELS = {"qwen35-4b": "3.5-4B", "qwen35-9b": "3.5-9B", "qwen35-27b": "3.5-
                "qwen35-397b-t07": "397B t0.7", "qwen3-8b": "qwen3-8B"}
 # (metric key, y-label, optional (ymin,ymax), optional reference line)
 PLOT_METRICS = [
-    ("accuracy", "accuracy | parse ok (picks true human)", (0.0, 0.85), 0.5),
-    ("accuracy_penalized", "accuracy (parse-fail counted wrong)", (0.0, 0.85), 0.5),
+    ("accuracy", "effective-rating accuracy | parse ok (picks true human)", (0.0, 0.85), 0.5),
+    ("accuracy_penalized", "effective-rating accuracy (parse-fail counted wrong)", (0.0, 0.85), 0.5),
     ("kappa_vs_anchor", "Cohen's kappa vs 397B anchor", (0.0, 0.7), None),
     ("tie_rate", "tie rate (rating==4)", None, None),
     ("budget_hit_rate", "budget-hit rate (finish=length)", None, None),
@@ -108,7 +109,7 @@ def per_call_features(row: dict) -> dict:
 
 
 def accuracy(calls: list[dict]) -> float | None:
-    """Fraction of non-tie, parsed calls where the judge picked the true human side."""
+    """Fraction of non-tie, parsed calls where the effective rating picked the human."""
     vals = [c["picked_human"] for c in calls if c["picked_human"] is not None]
     return float(np.mean(vals)) if vals else None
 
@@ -213,12 +214,16 @@ def write_summary(rows, kappas, out_md, out_pq):
     df.to_parquet(out_pq, index=False)
     with out_md.open("w") as f:
         f.write("# Judge sweep summary\n\n")
-        f.write("_acc_parse_ok = judge picks the true human among valid non-tie calls (ties & parse "
-                "failures excluded); acc_penalized = same but parse failures (rating=0/none) counted "
-                "WRONG. kappa_vs_anchor = Cohen's kappa on picked_human vs the 397B anchor, same "
-                "thinking-mode, shared pairs._\n\n")
-        f.write("_Caveat: accuracies are vs ONE stochastic generator draw (1 sample/row, T=0.6). "
-                "Judge-vs-judge gaps <5pp are within generator sampling noise._\n\n")
+        f.write("_acc_parse_ok = the production reward path's effective rating picks the true human "
+                "among valid non-tie calls (ties and parse failures excluded); acc_penalized keeps "
+                "ties excluded but counts parse failures (rating=0/none) as wrong. The effective "
+                "rating is normally recomputed from rubric fields rather than copied from the "
+                "model's explicit rating. kappa_vs_anchor = Cohen's kappa on picked_human vs the "
+                "397B anchor, same thinking-mode, shared pairs._\n\n")
+        f.write("_Interpretation: chance is 0.5. Values below 0.5 are anti-correlated, not evidence "
+                "of greater indistinguishability; post-hoc direction-adjusted detectability is "
+                "max(acc, 1-acc). Each generator contributes one stochastic sample per target "
+                "(T=0.6); generator-resampling and judge-sampling uncertainty were not estimated._\n\n")
         f.write(df.to_markdown(index=False)); f.write("\n")
 
 

@@ -17,6 +17,7 @@
 # chat_template_kwargs={"enable_thinking": False}, so .content is the clean reply.
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -27,15 +28,15 @@ export PYTHONUNBUFFERED=1
 export VLLM_LOGGING_LEVEL=INFO
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 MODEL=Qwen/Qwen3-8B
 N_REPLICAS=8
 BASE_PORT=8000
 HOSTNAME_FQDN=$(hostname)
 ENDPOINTS_FILE="$REPO/logs/cot_serve_endpoints-${SLURM_JOB_ID:-local}.txt"
-OUT_PARQUET="$REPO/data/sft/prism_full_s42_sft_cot.parquet"
+OUT_PARQUET="$TURING_RL_GENERATED_DATA_ROOT/sft/prism_full_s42_sft_cot.parquet"
 
-mkdir -p "$REPO/logs" "$REPO/data/sft"
+mkdir -p "$REPO/logs" "$TURING_RL_GENERATED_DATA_ROOT/sft"
 
 echo "============================================"
 echo "CoT serve (thinking-off): $N_REPLICAS x $MODEL (TP=1)"

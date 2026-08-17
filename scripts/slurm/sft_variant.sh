@@ -13,14 +13,15 @@
 # Parameterized multi-GPU (torchrun, 8-GPU) SFT launcher. Select the recipe via
 # VARIANT env: qlora_r64 | bf16_fsdp | bf16_fa2. Each variant differs only by CLI
 # flags — the committed qwen3_8b_lora.yaml stays read-only (no concurrent-sed race).
-#   VARIANT=bf16_fsdp sbatch scripts/slurm/sft_variant.sh
+#   Pass VARIANT=bf16_fsdp through scripts/cluster_launch.sh and submit_snapshot_job.sh.
 # SMOKE=1 does a fast config check (--exit_after_trainer_build --max_train_examples 64).
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 
 # Source any .env (WANDB creds, HF_TOKEN, etc.)
 if [ -f "$REPO/.env" ]; then
@@ -40,7 +41,7 @@ export WANDB_RUN_GROUP=sft-variants
 export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-DATA=$REPO/data/sft/prism_full_s42_sft_cot.jsonl
+DATA=$TURING_RL_GENERATED_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl
 
 VARIANT=${VARIANT:?set VARIANT=qlora_r64|bf16_fsdp|bf16_fa2}
 SMOKE=${SMOKE:-0}

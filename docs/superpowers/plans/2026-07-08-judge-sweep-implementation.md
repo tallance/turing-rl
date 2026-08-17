@@ -1,5 +1,9 @@
 # Judge-Model Comparison Experiment — Implementation Plan (FINAL, merged)
 
+> **Correction (2026-08-10):** The rating-only JSON Schema in this historical plan is
+> superseded by the ordered 37-field prompt-matched schema in
+> `docs/judge-response-schema.md`. The remaining text is preserved as provenance.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 >
 > **This is the single canonical plan.** It merges an earlier unaudited draft (complete runnable script bodies) with an independent TDD-structured draft, and adds the three patches the spec audit introduced, OpenRouter-probe sampling, a config SSOT, a round-robin race fix, and the Mac→cluster agent-comms workflow. It is fully self-contained — every referenced script and test is inlined below. ("the earlier draft" in rationale notes below refers to those two now-removed drafts; no external file is needed.)

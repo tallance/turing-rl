@@ -19,6 +19,7 @@
 # Optional env: PORT_BASE (default 8130), MAX_PAIRS (cap pairs for calibration/smoke)
 # Submit with --gres=gpu:$((TP*REPLICAS)) (the launcher does this).
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
 for v in MODEL TP REPLICAS THINKING_MODE CELL_NAME; do
@@ -36,6 +37,28 @@ MAX_PAIRS=${MAX_PAIRS:-}
 CONCURRENCY=${CONCURRENCY:-32}
 [ $((REPLICAS*TP)) -gt 8 ] && { echo "ERROR: REPLICAS*TP>8 (asked $((REPLICAS*TP)))" >&2; exit 2; }
 
+# vLLM allocates additional TCPStore/ZMQ ports internally. Its default
+# close-before-bind probe can race when several replicas start together and
+# select the same ephemeral port. Give each replica a deterministic port band;
+# VLLM_PORT is the start of the internal scan, not the OpenAI API port below.
+VLLM_INTERNAL_PORT_BASE=${VLLM_INTERNAL_PORT_BASE:-20000}
+VLLM_INTERNAL_PORT_STRIDE=${VLLM_INTERNAL_PORT_STRIDE:-100}
+case "$VLLM_INTERNAL_PORT_BASE:$VLLM_INTERNAL_PORT_STRIDE" in
+  *[!0-9:]*|:*|*:)
+    echo "ERROR: VLLM internal port base/stride must be positive integers" >&2
+    exit 2
+    ;;
+esac
+[ "$VLLM_INTERNAL_PORT_BASE" -ge 1024 ] && [ "$VLLM_INTERNAL_PORT_STRIDE" -ge 32 ] || {
+  echo "ERROR: VLLM internal port base must be >=1024 and stride must be >=32" >&2
+  exit 2
+}
+VLLM_INTERNAL_PORT_LAST=$((VLLM_INTERNAL_PORT_BASE + REPLICAS * VLLM_INTERNAL_PORT_STRIDE - 1))
+[ "$VLLM_INTERNAL_PORT_LAST" -le 65535 ] || {
+  echo "ERROR: VLLM internal port bands exceed TCP port 65535" >&2
+  exit 2
+}
+
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1 VLLM_LOGGING_LEVEL=INFO
 # All cell models are pre-cached, so serve OFFLINE. Without this, every replica
@@ -45,14 +68,34 @@ export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1 VLLM_LOGGING_LEVEL=INFO
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
 # Reduce CUDA allocator fragmentation (helps the memory-tight dense cells fit).
 export PYTORCH_ALLOC_CONF=expandable_segments:True
-REPO=/home/lancewicki/projects/turing-rl
+# Allow an isolated checkout while PAIRS/SWEEP_ROOT point at canonical results.
+REPO=${REPO:-/home/lancewicki/projects/turing-rl}
 
-# 397B GPTQ anchor serves from the pinned judge-vllm env; smaller/newer judges
-# (incl. new Qwen3.5 dense archs) serve from turing-rl-train (newer vLLM/transformers).
+# 397B uses its pinned environment; Gemma 4 Unified uses the tested CUDA-13
+# nightly environment and exact offline snapshots; Qwen keeps the prior path.
+IS_GEMMA4=0
 case "$MODEL" in
   *397B*) PY_SERVER=/home/lancewicki/miniconda3/envs/judge-vllm/bin/python ;;
+  google/gemma-4-12B-it)
+    IS_GEMMA4=1
+    GEMMA_SNAPSHOT=707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7
+    ;;
+  google/gemma-4-31B-it)
+    IS_GEMMA4=1
+    GEMMA_SNAPSHOT=842da3794eaa0b77d5f08bae87a17459d91ff475
+    ;;
   *)      PY_SERVER=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python ;;
 esac
+if [ "$IS_GEMMA4" = "1" ]; then
+  GEMMA_VLLM=/home/lancewicki/miniconda3/envs/turing-rl-gemma4-vllm-nightly/bin/vllm
+  GEMMA_CACHE=/home/lancewicki/data/hf_cache/hub/models--google--${MODEL#google/}
+  GEMMA_MODEL_PATH=$GEMMA_CACHE/snapshots/$GEMMA_SNAPSHOT
+  [ -x "$GEMMA_VLLM" ] || { echo "ERROR: missing Gemma vLLM: $GEMMA_VLLM" >&2; exit 2; }
+  [ -f "$GEMMA_MODEL_PATH/config.json" ] || {
+    echo "ERROR: incomplete Gemma snapshot: $GEMMA_MODEL_PATH" >&2
+    exit 2
+  }
+fi
 PY_CLIENT=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 
 # Default full 880 pair-set; override with PAIRS=<parquet> (e.g. a missing-pairs
@@ -68,12 +111,19 @@ mkdir -p "$MODE_DIR/vllm_server" "$MODE_DIR/reward" "$MODE_DIR/http"
 echo "============================================"
 echo "sweep cell: MODEL=$MODEL CELL_NAME=$CELL_NAME MODE=$THINKING_MODE TP=$TP REPLICAS=$REPLICAS"
 echo "date=$(date) host=$(hostname)"
+[ "$IS_GEMMA4" = "1" ] && echo "gemma_snapshot=$GEMMA_SNAPSHOT"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
 echo "out=$MODE_DIR"
 echo "============================================"
 
 RP=()
-[ "$THINKING_MODE" = "on" ] && RP=(--reasoning-parser qwen3)
+if [ "$THINKING_MODE" = "on" ]; then
+  if [ "$IS_GEMMA4" = "1" ]; then
+    RP=(--reasoning-parser gemma4)
+  else
+    RP=(--reasoning-parser qwen3)
+  fi
+fi
 
 # On these A100s (capability 8.0) vLLM's custom all-reduce kernel fails at TP>1
 # for some models (observed: Qwen3.5-27B dense -> "custom_all_reduce.cuh:455
@@ -104,15 +154,36 @@ SD=()
 MS=()
 [ -n "${MAX_NUM_SEQS:-}" ] && MS=(--max-num-seqs "$MAX_NUM_SEQS")
 
+GPU_MEMORY_UTILIZATION=0.85
+GEMMA_ARGS=()
+if [ "$IS_GEMMA4" = "1" ]; then
+  GPU_MEMORY_UTILIZATION=${GEMMA_GPU_MEMORY_UTILIZATION:-0.90}
+  GEMMA_ARGS=(--limit-mm-per-prompt '{"image":0,"video":0,"audio":0}')
+  export TMPDIR=${TMPDIR:-/home/lancewicki/tmp/build}
+  export FLASHINFER_WORKSPACE_BASE=${FLASHINFER_WORKSPACE_BASE:-/home/lancewicki/tmp/flashinfer}
+  mkdir -p "$TMPDIR" "$FLASHINFER_WORKSPACE_BASE"
+fi
+
 PIDS=(); URLS=()
 for i in $(seq 0 $((REPLICAS-1))); do
   gpus=$(seq -s, $((i*TP)) $((i*TP+TP-1)))
   port=$((PORT_BASE+i))
-  CUDA_VISIBLE_DEVICES=$gpus $PY_SERVER -m vllm.entrypoints.openai.api_server \
-    --model "$MODEL" --download-dir "$HF_HOME" --tensor-parallel-size "$TP" \
-    --max-model-len 32768 --gpu-memory-utilization 0.85 --dtype bfloat16 \
-    "${RP[@]}" "${AR[@]}" "${QZ[@]}" "${SD[@]}" "${MS[@]}" --host 0.0.0.0 --port $port \
-    > "$MODE_DIR/vllm_server/replica_$i.log" 2>&1 &
+  internal_port=$((VLLM_INTERNAL_PORT_BASE + i * VLLM_INTERNAL_PORT_STRIDE))
+  echo "replica $i ports: api=$port internal_start=$internal_port"
+  if [ "$IS_GEMMA4" = "1" ]; then
+    VLLM_PORT=$internal_port CUDA_VISIBLE_DEVICES=$gpus "$GEMMA_VLLM" serve "$GEMMA_MODEL_PATH" \
+      --served-model-name "$MODEL" \
+      --download-dir "$HF_HOME" --tensor-parallel-size "$TP" \
+      --max-model-len 32768 --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" --dtype bfloat16 \
+      "${RP[@]}" "${AR[@]}" "${QZ[@]}" "${SD[@]}" "${MS[@]}" "${GEMMA_ARGS[@]}" \
+      --host 0.0.0.0 --port "$port" > "$MODE_DIR/vllm_server/replica_$i.log" 2>&1 &
+  else
+    VLLM_PORT=$internal_port CUDA_VISIBLE_DEVICES=$gpus $PY_SERVER -m vllm.entrypoints.openai.api_server \
+      --model "$MODEL" --download-dir "$HF_HOME" --tensor-parallel-size "$TP" \
+      --max-model-len 32768 --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" --dtype bfloat16 \
+      "${RP[@]}" "${AR[@]}" "${QZ[@]}" "${SD[@]}" "${MS[@]}" --host 0.0.0.0 --port "$port" \
+      > "$MODE_DIR/vllm_server/replica_$i.log" 2>&1 &
+  fi
   PIDS+=($!)
   URLS+=("http://localhost:$port/v1")
 done

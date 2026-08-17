@@ -30,36 +30,35 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.eval_rl_generator import directional_accuracy  # noqa: E402
 
 KEY_FIELDS = ("user_id", "post_id", "target_idx")
-# Display order; anything else found is appended in step order (see _step_order).
+# Display order; anything else found is appended in numeric step order.
 PREFERRED = ["9b-grpo-step0", "9b-grpo-step8", "9b-grpo-step16", "9b-grpo-step24", "9b-grpo-step32"]
-
 _TRAILING_INT = re.compile(r"(\d+)$")
 
 
 def _step_order(gen_key: str) -> tuple[str, int, str]:
-    """Sort unknown gen keys by trailing step number, not lexically.
-
-    Plain sorted() renders step8 after step32, which silently mis-orders any arm whose keys are
-    not in PREFERRED (e.g. 9b-grpo-train-step*).
-    """
-    m = _TRAILING_INT.search(gen_key)
-    return (gen_key[: m.start()] if m else gen_key, int(m.group(1)) if m else -1, gen_key)
+    """Sort generator keys by trailing step number rather than lexically."""
+    match = _TRAILING_INT.search(gen_key)
+    return (
+        gen_key[: match.start()] if match else gen_key,
+        int(match.group(1)) if match else -1,
+        gen_key,
+    )
 
 
 def declared_split(eval_root: Path) -> str:
-    """Read the split-guard verdict so a train-set table cannot be read as held-out."""
+    """Read the recorded split-guard verdict for the output table."""
     guard = eval_root / "split_guard.json"
     if not guard.is_file():
-        return ("UNVERIFIED (no split_guard.json; this root predates scripts/check_eval_split.py "
-                "or was built outside launch_test_eval.sh)")
+        return "UNVERIFIED (no split_guard.json)"
     try:
-        rec = json.loads(guard.read_text())
+        record = json.loads(guard.read_text())
     except (json.JSONDecodeError, OSError) as exc:
         return f"UNREADABLE split_guard.json ({exc})"
-    return (f"{rec.get('verdict', '?')} expect={rec.get('expect', '?')} "
-            f"rows={rec.get('eval_rows', '?')} users={rec.get('eval_users', '?')} "
-            f"parquet={rec.get('eval_parquet', '?')}")
-
+    return (
+        f"{record.get('verdict', '?')} expect={record.get('expect', '?')} "
+        f"rows={record.get('eval_rows', '?')} users={record.get('eval_users', '?')} "
+        f"parquet={record.get('eval_parquet', '?')}"
+    )
 
 def load_rows(reward_dir: Path) -> list[dict]:
     rows = []
@@ -107,8 +106,9 @@ def main() -> None:
     found = {p.parents[3].name: p for p in root.glob(f"raw/*/sweep/{a.cell}/{a.mode}/reward")}
     if not found:
         raise SystemExit(f"FAIL: no reward dirs under {root}/raw/*/sweep/{a.cell}/{a.mode}")
-    order = [k for k in PREFERRED if k in found] + sorted(set(found) - set(PREFERRED), key=_step_order)
-
+    order = [k for k in PREFERRED if k in found] + sorted(
+        set(found) - set(PREFERRED), key=_step_order
+    )
     # State the split this table is scored on. Without it a train-set table is visually identical
     # to a held-out one, which is precisely how an overfit curve gets published as generalisation.
     split_note = f"# split: {declared_split(root)}"

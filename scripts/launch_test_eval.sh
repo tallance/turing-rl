@@ -27,12 +27,18 @@
 #                                                          # judge-only re-run over existing pairs
 #   GEN_ONLY=9b-grpo-step8 bash scripts/launch_test_eval.sh
 #
+#   # Reuse pairs/models from another result root.
+#   EVAL_ROOT=$REPO/results/<new> MODELS_ROOT=$REPO/results/<old>/models \
+#   GEN_KEY_PREFIX=9b-full5ep-step STEPS="0 32 ..." DO_GEN=0 \
+#   JUDGES="gemma4-31b" bash scripts/launch_test_eval.sh
+#
 #   # a non-held-out arm: the split must be DECLARED, or check_eval_split.py aborts pre-submit
 #   EVAL_ROOT=$REPO/results/<date>-trainset-eval MODELS_ROOT=<existing>/models \
 #   EVAL_PARQUET=<...>/grpo/train_used2048.parquet EVAL_EXPECT=train PAIRS_TAG=2048 \
 #   GEN_KEY_PREFIX=9b-grpo-train-step bash scripts/launch_test_eval.sh
 set -uo pipefail
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?run via scripts/cluster_launch.sh}
+SBATCH=${TURING_RL_CODE_ROOT:+$TURING_RL_CODE_ROOT/scripts/snapshot_sbatch.sh}
 cd "$REPO" || exit 2
 
 EVAL_ROOT=${EVAL_ROOT:-$REPO/results/2026-08-03-test-eval-9b-half}
@@ -50,7 +56,7 @@ MERGED_EP3=${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsd
 # EVAL_PARQUET is exported so generator_infer.sh / build_pairs.sh inherit it via --export=ALL.
 # EVAL_EXPECT is asserted by scripts/check_eval_split.py below: pointing this at train/val data
 # without declaring it aborts, so a train-set curve can never be published as held-out.
-export EVAL_PARQUET=${EVAL_PARQUET:-$REPO/data/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
+export EVAL_PARQUET=${EVAL_PARQUET:-$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/test.parquet}
 export EVAL_EXPECT=${EVAL_EXPECT:-heldout}
 export PAIRS_TAG=${PAIRS_TAG:-880}
 # Lets a new EVAL_ROOT reuse dense models already merged+gated under another root.
@@ -91,9 +97,10 @@ for s in $STEPS; do
 done
 
 CELLS=$(/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python -c "
-from configs.judge_sweep_cells import cell_list
-for c in cell_list('qwen3.5'):
-    print(c['cell_name'], c['model_id'], c['tp'], c['replicas'])
+from configs.judge_sweep_cells import cell_list, extra_cell
+cells = cell_list('qwen3.5') + [extra_cell('gemma4-12b'), extra_cell('gemma4-31b')]
+for c in cells:
+    print(c['cell_name'], c['model_id'], c['tp'], c['replicas'], c.get('concurrency', 32))
 ")
 FILTERED=""
 for j in $JUDGES; do
@@ -112,9 +119,15 @@ submit () {
     echo "[DRY] sbatch $deparg $*" >&2
     echo "dry$RANDOM"; return 0
   fi
-  sbatch --parsable $deparg "$@"
+  [ -n "$SBATCH" ] || { echo "FATAL: run through scripts/cluster_launch.sh" >&2; return 2; }
+  "$SBATCH" --parsable $deparg "$@"
 }
-need_jid () { [ -n "$1" ] || { echo "FATAL: no job id for $2" >&2; exit 1; }; }
+need_jid () {
+  if [ "$DRY" = "1" ]; then [ -n "$1" ] && return 0; fi
+  case "$1" in
+    ''|*[!0-9]*) echo "FATAL: sbatch failed for $2 (got '$1')" >&2; exit 1 ;;
+  esac
+}
 
 mkdir -p "$EVAL_ROOT/raw/pairs" "$EVAL_ROOT/raw/sweep" "$REPO/logs"
 
@@ -147,10 +160,11 @@ for entry in $GENERATORS; do
     # gpu:1 overrides generator_infer.sh's gpu:8 header -- vLLM runs TP=1, so 7 would idle.
     gjid=$(submit "$CHAIN_AFTER" --gres=gpu:1 --job-name=tegen_${gk} \
       --export=ALL,GEN_KEY=$gk,MODEL_ID=$model,CKPT=,BACKEND=$BACKEND \
+      -- \
       scripts/slurm/generator_infer.sh)
     need_jid "$gjid" "gen $gk"; echo "submitted gen  $gk -> $gjid ($model)" >&2
     bjid=$(submit "afterok:$gjid" --gres=gpu:0 --job-name=tebuild_${gk} \
-      --export=ALL,GEN_KEY=$gk scripts/slurm/build_pairs.sh)
+      --export=ALL,GEN_KEY=$gk -- scripts/slurm/build_pairs.sh)
     need_jid "$bjid" "build $gk"; echo "submitted build $gk -> $bjid" >&2
     BUILD_DEPS="${BUILD_DEPS}${gk}|${bjid}
 "
@@ -180,7 +194,7 @@ for dep_entry in $BUILD_DEPS; do
   sweep_root=$EVAL_ROOT/raw/$gk/sweep
   # Here-string, NOT `echo | while`: a pipe puts the loop in a subshell and PREV would not
   # survive, silently breaking judge serialization (and blowing the 8-GPU budget).
-  while read -r cell_name model_id tp replicas; do
+  while read -r cell_name model_id tp replicas concurrency; do
     [ -z "$cell_name" ] && continue
     for mode in $MODES; do
       gpus=$((tp*replicas))
@@ -202,7 +216,8 @@ for dep_entry in $BUILD_DEPS; do
       [ -n "$bjid" ] && dep="afterok:$bjid"
       [ -n "$PREV" ] && dep="${dep:+$dep,}afterany:$PREV"
       sjid=$(submit "$dep" --gres=gpu:$gpus --job-name=tejudge_${gk}_${cell_name}_${mode} \
-        --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,THINKING_MODE=$mode,CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
+        --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=$mode,CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
+        -- \
         scripts/slurm/judge_sweep_cell.sh)
       need_jid "$sjid" "judge $gk $cell_name $mode"
       echo "submitted judge $gk $cell_name/$mode -> $sjid (gpu:$gpus)" >&2
@@ -213,3 +228,4 @@ done
 
 echo "=== submitted. reward dumps: $EVAL_ROOT/raw/<gen_key>/sweep/<cell>/<mode>/reward ==="
 echo "=== verify with: python scripts/verify_judge_completeness.py --eval_root $EVAL_ROOT ==="
+echo "chain tail job: $PREV" >&2

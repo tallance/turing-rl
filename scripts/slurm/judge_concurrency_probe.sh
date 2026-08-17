@@ -29,12 +29,13 @@
 #
 # Env: CONCURRENCIES (default 8,32,64,128)  N (default 64)  TIMEOUT (default 1800)
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 PYTHONUNBUFFERED=1 VLLM_LOGGING_LEVEL=WARNING
 export PYTORCH_ALLOC_CONF=expandable_segments:True
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 cd "$REPO" || exit 2
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 VLLM=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/vllm

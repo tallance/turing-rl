@@ -3,7 +3,8 @@
 How the GRPO reward for one generated user-turn is computed. Source of truth:
 `training/grpo/reward.py` (`score_turing_with_info` / `_score_pairwise_likert_with_info`).
 Note: in the **judge sweep** the final reward is NOT used (`final_reward=None` in dumps);
-only the derived `rating` is recorded/analyzed. This tree documents the full training-time path.
+only the production reward path's effective `rating` is recorded/analyzed. This tree documents
+the full training-time path.
 
 ```
 compute reward for one generated response (metric="turing")
@@ -55,6 +56,9 @@ compute reward for one generated response (metric="turing")
 - The judge's own `rating` is **usually discarded** — the rating is re-derived from the
   **6 dimension scores + 8 penalties**, so those rubric fields (not the number) drive the reward.
   The explicit `rating` is used only when the model emits no dimension scores.
+- Sweep accuracy is directional: chance is 0.5, and values below 0.5 are anti-correlated rather
+  than increasingly human-like. A post-hoc direction-adjusted diagnostic is `max(acc, 1-acc)`;
+  it must be labeled post-hoc unless the direction is selected on separate calibration data.
 - Judge score is **capped at 5** before normalizing → ratings 5/6/7 all map to the same max
   (`(5−1)/6 = 0.667`), then ×0.9 ≈ **0.6 max** contribution from the judge.
 - Generator-side `format_score` (+) and `length_penalty` (−) are added on top; hard-zeros

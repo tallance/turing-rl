@@ -16,6 +16,7 @@
 # The orchestrator (launch_judge_throughput_sweep.sh) sets both.
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 

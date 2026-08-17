@@ -83,6 +83,8 @@ wandb/
 
 # Claude Code local state
 .claude/
+# Codex local state and nested worktrees
+.codex/
 
 # SLURM logs
 slurm-*.out
@@ -99,6 +101,7 @@ past/
 
 # Scratch files
 bash_scripts/Untitled
+temp/
 
 # Python bytecode (robust against data/ un-ignores)
 *.pyc

@@ -22,8 +22,11 @@ def _run_openai_chat_capture(monkeypatch):
     """Call the real ``_openai_chat`` and return the payload it would POST."""
     captured = {}
 
-    async def _fake_post_chat_async(session, payload, *, semaphore, max_retries=None):
+    async def _fake_post_chat_async(
+        session, payload, *, semaphore, max_retries=None, api_key=None
+    ):
         captured["payload"] = payload
+        captured["api_key"] = api_key
         return ""
 
     # Stub only the network transport; env-reading + build_chat_payload stay real.
@@ -39,6 +42,7 @@ def _run_openai_chat_capture(monkeypatch):
 
     asyncio.run(_drive())
     assert "payload" in captured, "post_chat_async was never called"
+    assert captured["api_key"] == "unused-key"
     return captured["payload"]
 
 

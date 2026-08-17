@@ -49,10 +49,9 @@ source of truth (SSOT), it's named — edit there, not here.
 SSOT: `configs/judge_sweep_cells.py` (model matrix), `scripts/run_judge_sweep_cell.py`
 (`cell_env`), `training/grpo/reward.py` (reward math), `scripts/slurm/judge_sweep_cell.sh` (serving).
 
-**These defaults apply to ALL judges** (any Qwen3.5 size), not just the 397B anchor.
-Only two things vary per judge — the **model_id** and the **serving shape** (TP/replicas,
-quantization), chosen by memory footprint via `tp_for_size` in `configs/judge_sweep_cells.py`.
-Sampling, reasoning parser, output schema, and reward math are **shared across judges**.
+These defaults apply to the Qwen and Gemma judges used by the full evaluation. Model ID,
+serving shape, reasoning parser, runtime environment, and client concurrency vary by model;
+sampling, output schema, completion budget, and reward math remain shared.
 
 Per-judge serving (footprint-based): fits one 40GB GPU (≤30GB) → **TP=1, 8 replicas**;
 else whole node → **TP=8, 1 replica**.
@@ -61,21 +60,24 @@ else whole node → **TP=8, 1 replica**.
 |---|---|---|
 | 397B anchor (training judge) | `Qwen/Qwen3.5-397B-A17B-GPTQ-Int4` | TP=8/1rep, Int4, env `judge-vllm` (hybrid-Mamba MoE) |
 | 122B | `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4` | TP=8/1rep, Int4 |
-| 4B / 9B / 27B / 35B-A3B | `Qwen/Qwen3.5-{4B,9B,27B,35B-A3B}` | TP=1/8rep (bf16), env `turing-rl-train` |
+| 4B / 9B | `Qwen/Qwen3.5-{4B,9B}` | TP=1/8rep (bf16), env `turing-rl-train` |
+| 27B / 35B-A3B | `Qwen/Qwen3.5-{27B,35B-A3B}` | TP=8/1rep (bf16), env `turing-rl-train` |
+| Gemma 4 12B | `google/gemma-4-12B-it` | TP=1/8rep, concurrency 4, pinned nightly env/snapshot |
+| Gemma 4 31B | `google/gemma-4-31B-it` | TP=8/1rep, concurrency 4, pinned nightly env/snapshot |
 
 Shared serving/sampling defaults (all judges):
 
 | Param | Default | Notes |
 |---|---|---|
-| Serving common | `--dtype bfloat16`, `--max-model-len 32768`, `--gpu-memory-utilization 0.85`, `--disable-custom-all-reduce` (TP>1) | |
-| Thinking mode | `on` → `--reasoning-parser qwen3`, `PERSONA_JUDGE_ENABLE_THINKING=1` | off = no reasoning parser. **`qwen3` is the correct parser for Qwen — NOT `deepseek_r1`** (see Flags) |
+| Serving common | `--dtype bfloat16`, `--max-model-len 32768`, `--disable-custom-all-reduce` (TP>1) | GPU utilization 0.85 Qwen, 0.90 Gemma |
+| Thinking mode | `PERSONA_JUDGE_ENABLE_THINKING=1`; parser `qwen3` for Qwen, `gemma4` for Gemma | off = no reasoning parser |
 | **Sampling** | **`repetition_penalty=1.1`, `temperature=0.6`** (pin explicitly) | inject via `PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'`. Pin temp so it's **uniform across judges** regardless of each model's `generation_config.json` (see Flags) |
-| Output schema | `PERSONA_JUDGE_JSON_SCHEMA=1` (strict json_schema; `rating` required) | |
+| Output schema | `PERSONA_JUDGE_JSON_SCHEMA=1` (ordered 37-field schema; all fields required, no extras, `rating` last) | See `docs/judge-response-schema.md` |
 | Max completion tokens | `PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192` | |
 | Client timeout | `PERSONA_OPENAI_TIMEOUT_SECONDS=1800` (thinking-on 397B) | reward.py fallback is 400 |
 | Retries | `PERSONA_OPENAI_MAX_RETRIES=3` | |
-| Concurrency | judge sweep: 32 per endpoint (8 endpoints); GRPO **`TURING_JUDGE_MAX_CONCURRENCY=64`** on DP-8 | **Corrected 2026-08-04** — see the correction note above. The old value (4, run as 8) starved the server: measured 6.4× throughput at 64 with flat latency, no KV pressure. Pair with `PERSONA_OPENAI_TIMEOUT_SECONDS=1800` |
-| Reward math | **no clip** (`TURING_JUDGE_SCORE_CLIP_MAX=7`, a no-op on the 1–7 Likert), then `(score−1)/6`, ×**0.9**; rating re-derived from 6 dims + penalties (mean×3) | `TURING_JUDGE_SCORE_CLIP_MAX`, `TURING_RAW_REWARD_SCALE`. **Export 7 explicitly** — the code constant is still 5.0 (see Flags) |
+| Concurrency | full eval: Qwen 32 per endpoint, Gemma 4 per endpoint; GRPO **`TURING_JUDGE_MAX_CONCURRENCY=64`** on DP-8 | **Corrected 2026-08-04** — see the correction note above. The old GRPO value starved the server; pair 64 with `PERSONA_OPENAI_TIMEOUT_SECONDS=1800` |
+| Reward math | **no clip** (`TURING_JUDGE_SCORE_CLIP_MAX=7`, a no-op on the 1–7 Likert), then `(score−1)/6`, ×**0.9**; rating re-derived from 6 dimensions + penalties (mean×3) | `TURING_JUDGE_SCORE_CLIP_MAX`, `TURING_RAW_REWARD_SCALE` |
 
 ## Generator
 SSOT: `training/sft/configs/qwen3_8b_lora.yaml` (base), `bash_scripts/grpo/train_grpo.sh` (GRPO, upstream = paper Table 6).

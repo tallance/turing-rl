@@ -1,5 +1,6 @@
 import os
 from shared.api_client import build_chat_payload
+from shared.judge_prompts import TURING_RESPONSE_PROPERTIES, TURING_RESPONSE_SCHEMA
 
 
 def test_sampling_merged():
@@ -32,7 +33,13 @@ def test_json_schema_on(monkeypatch):
     monkeypatch.setenv("PERSONA_JUDGE_JSON_SCHEMA", "1")
     rf = _resolve_response_format()
     assert rf["type"] == "json_schema"
-    assert "rating" in rf["json_schema"]["schema"]["required"]
+    schema = rf["json_schema"]["schema"]
+    assert schema is TURING_RESPONSE_SCHEMA
+    assert list(schema["properties"]) == list(TURING_RESPONSE_PROPERTIES)
+    assert schema["required"] == list(TURING_RESPONSE_PROPERTIES)
+    assert schema["required"][-1] == "rating"
+    assert len(schema["required"]) == 37
+    assert schema["additionalProperties"] is False
 
 
 def test_json_schema_off(monkeypatch):

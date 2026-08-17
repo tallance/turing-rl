@@ -1,4 +1,4 @@
-"""Minimal web viewer for judge-response dumps.
+r"""Minimal web viewer for judge-response dumps.
 
 Renders JSONL files from two sources:
   - HTTP-layer dumps written by shared/api_client.py:_dump_judge_response
@@ -16,14 +16,14 @@ parent directory picks up both types.
 Run on the RFAI cluster (login node — no GPU needed; recipe verified 2026-07-16):
   # A bare `... &` background process is reaped when the ssh session closes on the
   # k8s login pod, so launch inside tmux (persists). PYTHONPATH is required because
-  # the viewer imports training.grpo.reward; use the turing-rl-train env.
+  # the viewer imports training.grpo.reward; use a published immutable source SHA.
   ssh -p 2223 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null lancewicki@localhost \
     'tmux kill-session -t viewer 2>/dev/null; \
-     tmux new-session -d -s viewer "cd /home/lancewicki/projects/turing-rl && \
-       export PYTHONPATH=/home/lancewicki/projects/turing-rl && \
-       /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python scripts/dump_viewer.py \
-         --dumps results/grpo/rl-generator/<run>/reward_dump --port 8082 --host 127.0.0.1 \
-         2>&1 | tee logs/dump_viewer.log"'
+     tmux new-session -d -s viewer "CODE=/home/lancewicki/projects/turing-rl-sources/<sha>; \
+       STATE=/home/lancewicki/projects/turing-rl; cd \$STATE && export PYTHONPATH=\$CODE && \
+       /home/lancewicki/miniconda3/envs/turing-rl-train/bin/python \$CODE/scripts/dump_viewer.py \
+         --dumps \$STATE/results/grpo/rl-generator/<run>/reward_dump --port 8082 --host 127.0.0.1 \
+         2>&1 | tee \$STATE/logs/dump_viewer.log"'
   # verify:  curl -sf -m6 -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082/   (expect 200)
   # stop:    ssh ... 'tmux kill-session -t viewer'
 

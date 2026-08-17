@@ -1,10 +1,33 @@
+import pytest
+
 from scripts.calibration_report import extrapolate_wall_hours
 from scripts.run_judge_sweep_cell import (
+    _api_key_for_endpoint,
     _final_metadata,
+    _raise_on_scoring_errors,
     cell_env,
     cell_output_dirs,
     shard_indices,
 )
+
+
+def test_local_endpoint_does_not_require_secret(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+    def fail_if_called():
+        raise AssertionError("remote secret resolver called for local vLLM")
+
+    assert _api_key_for_endpoint("http://localhost:8123/v1", fail_if_called) == "EMPTY"
+
+
+def test_remote_endpoint_keeps_strict_secret_resolution():
+    assert _api_key_for_endpoint("https://api.example/v1", lambda: "real-key") == "real-key"
+
+
+def test_scoring_errors_fail_the_cell_after_collection():
+    _raise_on_scoring_errors(0)
+    with pytest.raises(RuntimeError, match="3 scoring error"):
+        _raise_on_scoring_errors(3)
 
 
 def test_cell_env_locks_config():

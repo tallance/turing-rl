@@ -52,10 +52,11 @@ from upstream `6aaecfb`): `top_p=1.0, top_k=-1, repetition_penalty=1.0 (off), pr
 temp=0.6 (prism), max_tokens=2048` — no tail truncation, so low-temp loops occur. **The paper audit
 (2026-07-13, arXiv 2606.19336 Table 4) confirms these are byte-for-byte the paper's decoding params.**
 
-**Decision.** **Keep the faithful generator** (no regeneration). The degeneration is inherent to the
-paper's own recipe, not our deviation; and the judge sweep measures small-judge-vs-397B agreement on
-the *same* pairs, so a shared degenerate tail doesn't bias that comparison. Revisit sampling only if
-the downstream adversarial GRPO phase needs a cleaner generator (that would be a documented deviation).
+**Decision.** **Keep the paper-configured generator** (no regeneration). The degeneration was observed
+under the paper's published decoding recipe, so it is not a parameter deviation introduced by this
+experiment. Every judge sees the *same* frozen pairs, which makes the comparison paired; the reported
+results remain conditional on this pair set, including its degenerate tail. Revisit sampling only if the
+downstream adversarial GRPO phase needs a cleaner generator (that would be a documented deviation).
 
 **Impact.** Frozen pair-set stands. See the full paper-vs-code table:
 `docs/superpowers/post-plans/2026-07-08-judge-sweep/2026-07-13-paper-vs-code-methodology-audit.md` (all 8 points match the
@@ -80,7 +81,7 @@ or hard-fail. Count how many were stripped → `meta.reasoning_residue_stripped`
 a post-strip sanity check. Commit `539465d`; unit tests cover stray-trailing-tag + leaked-second-block.
 
 **Impact.** Frozen pair-set `raw/pairs/prism_heldout_880.parquet`: **880 pairs**,
-`exact_match_count=0` (generator doesn't copy the human turn — good Turing signal),
+`exact_match_count=0` (no generated turn exactly copies its paired human turn),
 `reasoning_residue_stripped=2`.
 
 ---

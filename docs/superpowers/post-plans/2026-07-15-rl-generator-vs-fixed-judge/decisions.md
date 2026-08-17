@@ -116,21 +116,24 @@ first via the no-GPU `wandb_smoke.sh` dummy job (10020), then confirmed in the r
 
 ## Corrected scientific verdict (detour from the plan's success expectation)
 
-The plan's Stage-0 gate expected a clean overfit (≥8/10 "proves the judge is hackable"). The honest result:
+The plan's Stage-0 gate expected a clean overfit (≥8/10 "proves the production reward is readily
+optimizable"). The observed result:
 
-- At **paper-faithful hyperparameters** (KL β=1e-3, lr 1e-5, cap lifted to 7), GRPO drives the frozen
-  9B judge from a **0.27 baseline to ~0.5–0.6 win-rate** on the 10-turn overfit set — **substantial
-  gaming, but NOT a decisive strict ≥8/10.** Final strict gate (epoch ~40) = **5/10**; the count
+- At **paper-faithful hyperparameters** (KL β=1e-3, lr 1e-5, cap lifted to 7), GRPO drives the
+  production reward-derived generator win rate from a **0.27 baseline to ~0.5–0.6** on the
+  10-turn overfit set — **a substantial increase, but NOT a decisive strict ≥8/10.** Final strict
+  gate (epoch ~40) = **5/10**; the count
   oscillated 5–7 across epochs (a lucky epoch-32 snapshot briefly hit 7, and pre-fix reporting called
-  it 9). So the judge is **partially gameable but resists a full hack** on this set at faithful settings.
+  it 9). Thus the reward was partially optimized but did not reach the planned full-overfit gate on
+  this set at faithful settings.
 - **Metric caveat:** a single final-epoch snapshot is noisy (swings 5–9); a last-K-epoch average would
   be steadier.
-- Per-rollout judge verdicts are **bimodal** (~3 "human wins" vs ~5–6 "fake wins", rarely 4) — see the
-  scatter plot.
+- Per-rollout production effective ratings are **bimodal** (~3 "human wins" vs ~5–6 "generated
+  wins", rarely 4) — see the scatter plot.
 
 **This motivated a new experiment not in the original plan:** a **weaker-KL sweep** (chained overfit
 runs at `kl_loss_coef=1e-4` then `0`, 50 epochs each, no early-stop) to test whether relaxing the KL
-anchor lets GRPO reach a clean ≥8/10 (judge fully hackable) or whether it still resists. In flight
+anchor lets GRPO reach the reward-derived ≥8/10 gate. In flight
 (jobs 10111 → 10112).
 
 ---

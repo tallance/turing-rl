@@ -4,6 +4,12 @@ Date: 2026-07-08
 Repo: `/storage/home/lancewicki/projects/turing-rl`
 Paper: "Learning User Simulators with Turing Rewards" (arXiv:2606.19336)
 
+> **Correction (2026-08-10):** This historical design specifies a rating-only JSON
+> Schema. That schema was later shown to force `rating` first and cause malformed,
+> overlong completions. Production now uses the ordered 37-field prompt-matched schema
+> documented in `docs/judge-response-schema.md`; historical text below is preserved as
+> provenance and must not be used as current configuration guidance.
+
 ## Guiding Principle
 
 **Maximum fidelity to the paper's SFT checkpoint.** Where our repo already contains upstream Turing-RL code, we use it as-is. Where we've patched it (documented in `our_patches.md`), we revert to upstream for the SFT path unless the patch is strictly necessary. Any deviation from paper procedure gets called out as a caveat, not silently absorbed.

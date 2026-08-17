@@ -18,14 +18,15 @@
 # Output: checkpoints/sft/qwen3_8b_prism_full_s42/
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
 # Source any .env (HF_TOKEN if needed, etc.)
-if [ -f /home/lancewicki/projects/turing-rl/.env ]; then
+if [ -f $TURING_RL_STATE_ROOT/.env ]; then
   set -a
   # shellcheck disable=SC1091
-  source /home/lancewicki/projects/turing-rl/.env
+  source $TURING_RL_STATE_ROOT/.env
   set +a
 fi
 
@@ -33,8 +34,7 @@ export HF_HUB_DISABLE_XET=1
 export HF_HOME=/home/lancewicki/data/hf_cache
 export HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export PYTHONUNBUFFERED=1
-# Enable wandb logging. lora_sft.py reads `report_to` from the YAML,
-# so we temporarily patch the YAML to `wandb`, run, then restore. (No CLI flag exists.)
+# Enable wandb logging without modifying the immutable committed YAML.
 export WANDB_MODE=online
 export WANDB_PROJECT=turing-rl-sft
 export WANDB_RUN_GROUP=sft-full
@@ -43,26 +43,11 @@ export WANDB_RUN_GROUP=sft-full
 export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-REPO=/home/lancewicki/projects/turing-rl
-DATA=$REPO/data/sft/prism_full_s42_sft_cot.jsonl
+REPO=${TURING_RL_WORK_ROOT:?}
+DATA=$TURING_RL_GENERATED_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl
 OUT=$REPO/checkpoints/sft/qwen3_8b_prism_full_s42
-YAML=$REPO/training/sft/configs/qwen3_8b_lora.yaml
-YAML_BAK=${YAML}.full-bak
 
 mkdir -p "$OUT"
-
-restore_yaml() {
-  if [ -f "$YAML_BAK" ]; then
-    mv -f "$YAML_BAK" "$YAML"
-    echo "[cleanup] restored $YAML"
-  fi
-}
-trap restore_yaml EXIT
-
-# Snapshot YAML, swap report_to: none -> report_to: wandb.
-cp -p "$YAML" "$YAML_BAK"
-sed -i 's/^report_to:.*/report_to: wandb/' "$YAML"
-echo "[patched] $(grep -E '^report_to:' "$YAML")"
 
 echo "============================================"
 echo "SFT full (QLoRA, 8 GPU, step-checkpointing + auto-resume)"
@@ -79,9 +64,9 @@ echo "============================================"
 cd "$REPO"
 
 $PY -u -m training.sft.lora_sft --model qwen3-8b \
-    --data_path $REPO/data/sft/prism_full_s42_sft_cot.jsonl \
+    --data_path $TURING_RL_GENERATED_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl \
     --output_dir $REPO/checkpoints/sft/qwen3_8b_prism_full_s42 \
-    --max_seq_length 8192 --resume_from_checkpoint auto
+    --max_seq_length 8192 --resume_from_checkpoint auto --report_to wandb
 RC=$?
 
 echo ""

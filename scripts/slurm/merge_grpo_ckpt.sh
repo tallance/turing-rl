@@ -21,18 +21,19 @@
 #
 # Required env: STEP (e.g. 8)   Optional: EVAL_ROOT, RUN_TAG, DISTINCT_FROM
 #
-#   sbatch --export=ALL,STEP=8 scripts/slurm/merge_grpo_ckpt.sh
+#   Pass --export=ALL,STEP=8 and this script through scripts/submit_snapshot_job.sh.
 #
 # A gate failure exits 5 and hf_dense STILL EXISTS on disk, so callers must gate on the job's
 # exit status, never on the directory being present.
 #
 # End-to-end runbook: docs/test-set-eval.md
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export PYTHONUNBUFFERED=1
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 
-REPO=/home/lancewicki/projects/turing-rl
+REPO=${TURING_RL_WORK_ROOT:?}
 cd "$REPO" || exit 2
 export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 

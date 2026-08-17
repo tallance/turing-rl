@@ -14,13 +14,14 @@
 # Decision gate for whether GRPO smoke uses online wandb or offline mode.
 
 set -uo pipefail
+source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
-if [ -f /home/lancewicki/projects/turing-rl/.env ]; then
+if [ -f $TURING_RL_STATE_ROOT/.env ]; then
   set -a
   # shellcheck disable=SC1091
-  source /home/lancewicki/projects/turing-rl/.env
+  source $TURING_RL_STATE_ROOT/.env
   set +a
 fi
 
