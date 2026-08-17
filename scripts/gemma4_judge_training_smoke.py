@@ -247,16 +247,31 @@ def main() -> int:
 
     # The endpoint is passed through the same env var the reward path reads.
     os.environ["OPENAI_API_BASE"] = a.endpoint
-    os.environ.setdefault("PERSONA_DISABLE_OPENROUTER_EXTRAS", "1")
+
+    # Two env vars decide what payload actually goes over the wire, and the two callers we
+    # are imitating disagree on BOTH of them. Tie them to --mode rather than picking one
+    # setting, or the gate stops measuring the thing it is named after:
+    #
+    #   training (rl_generator_run_9b.sh) : schema unset -> json_object
+    #                                       extras NOT disabled -> OpenRouter routing fields
+    #                                       are included in the payload sent to vLLM
+    #   eval (run_judge_sweep_cell.py:66) : PERSONA_JUDGE_JSON_SCHEMA=1
+    #                                       PERSONA_DISABLE_OPENROUTER_EXTRAS=1
+    #
+    # Disabling the extras in training mode would hide a judge that rejects those fields;
+    # leaving them on in eval mode would make the reference comparison unmatched.
     if a.mode == "eval":
         os.environ["PERSONA_JUDGE_JSON_SCHEMA"] = "1"
+        os.environ["PERSONA_DISABLE_OPENROUTER_EXTRAS"] = "1"
     else:
         os.environ.pop("PERSONA_JUDGE_JSON_SCHEMA", None)
+        os.environ.pop("PERSONA_DISABLE_OPENROUTER_EXTRAS", None)
 
     rows = load_prompts(a.dump_glob, a.split, a.n, a.seed)
     fmt = resolve_response_format()["type"]
-    print(f"[smoke] mode={a.mode} response_format={fmt} prompts={len(rows)} "
-          f"concurrency={a.concurrency} repeat={a.repeat}", flush=True)
+    extras = os.environ.get("PERSONA_DISABLE_OPENROUTER_EXTRAS") != "1"
+    print(f"[smoke] mode={a.mode} response_format={fmt} openrouter_extras={extras} "
+          f"prompts={len(rows)} concurrency={a.concurrency} repeat={a.repeat}", flush=True)
     ref_models = {r["ref_model"] for r in rows if r.get("ref_model")}
     print(f"[smoke] prompts drawn from dumps judged by: {sorted(ref_models)}", flush=True)
 
