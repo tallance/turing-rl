@@ -59,6 +59,22 @@ def test_arms_do_not_share_one_merge_output_directory():
     assert "${MODEL_TAG:-step${STEP}}" in _code(MERGE)
 
 
+def test_checkpoint_layout_is_a_template_not_a_hardcoded_4b_path():
+    """The 4B arms predate the RL_CKPT_DIR fix and live in the shared tree; the 9B arms
+    honour it and live under their own run roots. One hardcoded layout cannot serve both."""
+    code = _code(LAUNCH)
+    assert "ACTOR_TEMPLATE=${ACTOR_TEMPLATE:-" in code
+    assert "${ACTOR_TEMPLATE//%ARM%/$arm}" in code
+    assert "${actor//%STEP%/$STEP}" in code
+    assert "Qwen3.5-4B_${arm}_full" not in code, "the 4B layout must not be hardcoded"
+
+
+def test_model_label_names_the_row_so_sizes_do_not_collide():
+    code = _code(LAUNCH)
+    assert "MODEL_LABEL=${MODEL_LABEL:-judge-4b}" in code
+    assert "tag=${MODEL_LABEL}-${arm}-step${STEP}" in code
+
+
 def test_launcher_rejects_an_unknown_arm():
     assert "arm must be directional or graded" in _text(LAUNCH)
 

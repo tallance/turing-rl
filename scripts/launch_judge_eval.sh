@@ -34,6 +34,13 @@ STEP=${STEP:-52}
 # Checkpoints land in the SHARED state-root results tree keyed only on the run tag, because a
 # job's $REPO/results is a symlink to it -- not under the per-run root.
 CKPT_ROOT=${CKPT_ROOT:-/home/lancewicki/projects/turing-rl/results/grpo/judge}
+# %ARM% and %STEP% are substituted per arm. A template rather than a fixed layout because
+# the two generations of judge runs landed in different places: the 4B arms predate the
+# RL_CKPT_DIR fix and sit in the SHARED tree keyed on run tag, while the 9B arms honour
+# RL_CKPT_DIR and sit under their own per-run roots.
+ACTOR_TEMPLATE=${ACTOR_TEMPLATE:-$CKPT_ROOT/Qwen3.5-4B_%ARM%_full/checkpoints/global_step_%STEP%/actor}
+# Names the merge output dir, the sweep cell and therefore the results row.
+MODEL_LABEL=${MODEL_LABEL:-judge-4b}
 # Stock Qwen3.5-4B: the judge was trained from these weights, and this snapshot's
 # config/tokenizer are the 4.x form the serving env can load (the checkpoint's own are 5.4).
 CONTAINER=${CONTAINER:-/home/lancewicki/data/hf_cache/models--Qwen--Qwen3.5-4B/snapshots/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a}
@@ -70,8 +77,9 @@ for arm in $ARMS; do
     *) echo "FATAL: arm must be directional or graded, got '$arm'" >&2; exit 2 ;;
   esac
 
-  actor=$CKPT_ROOT/Qwen3.5-4B_${arm}_full/checkpoints/global_step_${STEP}/actor
-  tag=judge-4b-${arm}-step${STEP}
+  actor=${ACTOR_TEMPLATE//%ARM%/$arm}
+  actor=${actor//%STEP%/$STEP}
+  tag=${MODEL_LABEL}-${arm}-step${STEP}
   dense=$EVAL_ROOT/models/$tag/hf_dense
 
   merge_exports="ALL,STEP=$STEP,ACTOR_DIR=$actor,CONTAINER=$CONTAINER"
