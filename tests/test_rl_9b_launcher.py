@@ -3,10 +3,16 @@ import pathlib
 import re
 import subprocess
 
+import yaml
+
 S = pathlib.Path("scripts/slurm/rl_generator_train_9b.sh").read_text()
 SINGLE_NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b_1node.sh").read_text()
 RUN_2NODE = pathlib.Path("scripts/slurm/rl_generator_run_9b.sh").read_text()
 CFG_9B = pathlib.Path("training/grpo/configs/qwen3_9b_grpo_turing.yaml").read_text()
+# Guard the 9B recipe on the parsed tree, not on substrings of the text. Every value below
+# appears as a literal in this file (the `defaults:` include supplies none of them), so a
+# plain safe_load resolves them -- the same argument tests/test_grpo_config.py makes.
+CFG_9B_TREE = yaml.safe_load(CFG_9B)
 
 
 def mode_arm(name: str) -> str:
@@ -247,23 +253,39 @@ def test_9b_config_pins_the_recipe_both_completed_9b_runs_used():
     # Verbatim from the command lines of 13634 (half) and 14217 (full5), which are identical
     # on all twelve settings. Resolved through veRL's own entry point, the new config
     # reproduces every one of them.
-    for k in (
-        "kl_loss_coef: 0.0001",     # 8B base says 0.001 -- 10x too much KL pull
-        "lr: 0.0001",               # 8B base says 1.0e-5 -- 10x too small a step
-        "temperature: 1.0",         # 8B base says 0.6
-        "train_batch_size: 64",
-        "ppo_mini_batch_size: 64",
-        "top_p: 1.0",
-        "top_k: -1",
-    ):
-        assert k in CFG_9B, f"9B config must pin {k}"
+    #
+    # Asserted at exact key paths on the parsed tree. The earlier version of this test matched
+    # substrings, which cannot distinguish the two settings this file spells the same way:
+    # `lr: 0.0001` appears twice (actor, then critic -- and GRPO never reads the critic), and
+    # there are two `temperature:` values (1.0 for training rollouts, 0.7 for validation).
+    # Corrupting the actor lr to the 8B value that flat-lined job 15143 left the substring
+    # form fully green, so the guard did not in fact guard the thing it was written for.
+    c = CFG_9B_TREE
+    actor = c["actor_rollout_ref"]["actor"]
+    rollout = c["actor_rollout_ref"]["rollout"]
+
+    assert actor["optim"]["lr"] == 1e-4      # 8B base says 1.0e-5 -- 10x too small a step
+    assert actor["kl_loss_coef"] == 1e-4     # 8B base says 0.001 -- 10x too much KL pull
+    assert actor["use_kl_loss"] is True
+    assert actor["ppo_mini_batch_size"] == 64
+    assert c["data"]["train_batch_size"] == 64
+
+    assert rollout["temperature"] == 1.0     # 8B base says 0.6
+    assert rollout["top_p"] == 1.0
+    assert rollout["top_k"] == -1
+
     # Validation sampling is narrower than training, and must not fall back to the 8B base's
     # greedy val_kwargs (temperature 0, do_sample False).
-    for k in ("temperature: 0.7", "top_p: 0.8", "top_k: 20", "do_sample: true", "n: 1"):
-        assert k in CFG_9B, f"9B config must pin val_kwargs {k}"
+    val = rollout["val_kwargs"]
+    assert val["temperature"] == 0.7
+    assert val["top_p"] == 0.8
+    assert val["top_k"] == 20
+    assert val["do_sample"] is True
+    assert val["n"] == 1
+
     # Inherit the shared base rather than fork it: qwen3_8b_grpo.yaml is the SSOT that
     # tests/test_grpo_config.py locks, and 8B runs still load it.
-    assert "- qwen3_8b_grpo" in CFG_9B
+    assert "qwen3_8b_grpo" in c["defaults"]
 
 
 def test_9b_rollout_defaults_match_what_both_9b_runs_actually_ran():
