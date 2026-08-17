@@ -298,6 +298,26 @@ def test_training_reads_the_checkpoint_dir_under_the_generator_name():
     assert "RL_CKPT_DIR" in _text(TRAIN)
 
 
+def test_judge_training_disables_the_generator_presence_penalty():
+    """A 37-field ordered JSON is maximally repetitive; a presence penalty fights it.
+
+    Measured at step 1 vs the penalty-free probe: 2B 0.460->0.090, 4B 0.735->0.523,
+    9B 0.855->0.594. The 2B landed on the GRPO bootstrapping edge and collapsed to 0.000.
+    Overridable, so the old behaviour is still reachable for a comparison run.
+    """
+    assert "export PERSONA_VLLM_PRESENCE_PENALTY=${PERSONA_VLLM_PRESENCE_PENALTY:-0}" in _text(TRAIN)
+
+
+def test_the_shared_runtime_patch_default_is_left_alone():
+    """verl_runtime_patch.py's 0.5 is the GENERATOR recipe (REPO_TRAINING_PRESENCE_PENALTY).
+
+    Neutralising the penalty there would silently change generator RL, which is a different
+    experiment that wants it. The judge opt-out belongs in the judge job script only.
+    """
+    patch = os.path.join(ROOT, "training", "grpo", "verl_runtime_patch.py")
+    assert '_float_env("PERSONA_VLLM_PRESENCE_PENALTY", 0.5)' in _text(patch)
+
+
 def test_train_launcher_can_chain_an_arm_behind_another_run():
     """The 0/1 arm is chained behind the graded arm of the same size with afterok.
 

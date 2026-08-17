@@ -40,6 +40,17 @@ export JUDGE_TASK_WEIGHT=${JUDGE_TASK_WEIGHT:-0.9}
 export JUDGE_FORMAT_WEIGHT=${JUDGE_FORMAT_WEIGHT:-0.1}
 # The judge REASONS before answering; this mirrors what generator RL ran against.
 export PERSONA_JUDGE_ENABLE_THINKING=1
+# Presence penalty is a GENERATOR-era setting: it stops a user simulator repeating itself.
+# A judge must emit a 37-field ORDERED JSON, which is maximally repetitive by construction
+# ('"', ':', ',', '_a', '_b', 'score', 'penalty' over and over), so the penalty fights the
+# exact output the format reward pays for. Measured at training step 1 against the
+# penalty-free probe: 2B 0.460->0.090 (-80%), 4B 0.735->0.523 (-29%), 9B 0.855->0.594 (-31%).
+# The 4B/9B absorbed it (~95% of 4-rollout groups still contain a compliant sample, so the
+# format term keeps a gradient); the 2B was pushed onto the bootstrapping edge at 31% and one
+# run decayed to exactly 0.000 while its twin, starting at 0.09, climbed to 0.62 in 8 steps.
+# Scoped HERE and not in verl_runtime_patch.py: that patch's 0.5 default is the generator
+# recipe (REPO_TRAINING_PRESENCE_PENALTY), and changing it would silently alter generator RL.
+export PERSONA_VLLM_PRESENCE_PENALTY=${PERSONA_VLLM_PRESENCE_PENALTY:-0}
 
 DATA_DIR=${DATA_DIR:-${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1}
 TRAIN_FILE=${TRAIN_FILE:-$DATA_DIR/train.parquet}
