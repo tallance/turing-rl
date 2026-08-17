@@ -34,6 +34,8 @@ GRIDLINE = "#e1e0d9"
 AXIS = "#c3c2b7"
 
 DISPLAY = {
+    "judge-9b-graded-step52": "Qwen3.5-9B judge — Brier RL",
+    "judge-9b-directional-step52": "Qwen3.5-9B judge — 0/1 RL",
     "judge-4b-graded-step52": "Qwen3.5-4B judge — Brier RL",
     "judge-4b-directional-step52": "Qwen3.5-4B judge — 0/1 RL",
     "qwen35-27b": "Qwen3.5-27B",
@@ -56,7 +58,7 @@ def load(path: Path) -> list[dict]:
 
 
 def render(rows: list[dict], out: Path, title: str) -> None:
-    fig, ax = plt.subplots(figsize=(9.2, 4.6), dpi=200)
+    fig, ax = plt.subplots(figsize=(9.6, 5.4), dpi=200)
     fig.patch.set_facecolor(SURFACE)
     ax.set_facecolor(SURFACE)
 
