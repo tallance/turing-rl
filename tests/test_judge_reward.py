@@ -136,12 +136,23 @@ def test_unrecoverable_verdict_scores_zero_but_still_reports():
 
 
 def test_malformed_but_parseable_still_earns_task_reward():
+    from training.grpo.judge_verdict import TURING_FIELDS
+
     data = json.loads(_verdict_json(7))
     del data["reasoning"]
     result = _score(json.dumps(data), "B")
+
+    # The point of the ladder: a schema-imperfect verdict still contains a prediction, so the
+    # task reward is untouched. Only the format term is docked.
     assert result["judge_task_reward"] == 1.0
     assert result["judge_fmt_all_fields"] == 0.0
-    assert result["score"] == pytest.approx(0.9 + 0.1 * 0.75)
+    assert result["judge_fmt_exact_schema"] == 0.0
+    # Coverage is dense: dropping the second-to-last field costs the tail, not the whole term.
+    expected_coverage = TURING_FIELDS.index("reasoning") / len(TURING_FIELDS)
+    assert result["judge_fmt_ordered_coverage"] == pytest.approx(expected_coverage)
+    assert result["score"] == pytest.approx(0.9 + 0.1 * result["judge_format_score"])
+    # Still comfortably above the compact-JSON shortcut, which earns 0.9 + 0.1*0.1.
+    assert result["score"] > 0.91
 
 
 def test_tie_is_reported_and_excluded_from_strict_accuracy():

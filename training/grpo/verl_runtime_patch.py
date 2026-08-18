@@ -15,6 +15,7 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 _SINGLE_TURN_SAMPLING_PARAMS_LOGGED = False
 _SINGLE_TURN_PROMPT_PREFILL_STRIP_LOGGED = False
+_ENABLE_THINKING_RESOLVED_LOGGED = False
 _SINGLE_TURN_THINK_CLOSE_STRIP_LOGGED = False
 
 _PROPAGATED_RUNTIME_ENV_VARS = (
@@ -337,6 +338,97 @@ def _runtime_env_propagation_enabled() -> bool:
 
 def _worker_process_setup_hook_enabled() -> bool:
     return _bool_env("PERSONA_ENABLE_WORKER_PROCESS_SETUP_HOOK", True)
+
+
+def _enable_thinking_env_name() -> str:
+    # Read the name from shared.prompt_utils rather than re-spelling it: a second copy of the
+    # literal is how PERSONA_JUDGE_ENABLE_THINKING came to look like it controlled training.
+    from shared.prompt_utils import ENABLE_THINKING_OVERRIDE_ENV
+
+    return ENABLE_THINKING_OVERRIDE_ENV
+
+
+def _coerce_enable_thinking(value: Any, source: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"Cannot interpret {source}={value!r} as a boolean enable_thinking value.")
+
+
+def _resolve_config_enable_thinking(config: Any) -> bool:
+    """Resolve data.apply_chat_template_kwargs.enable_thinking, failing closed.
+
+    This function exists because the value was previously never read at all. The judge config
+    asked for thinking ON, `get_chat_template_kwargs_for_prompt_mode` consulted only
+    PERSONA_ENABLE_THINKING (unset), and four judge runs trained for ~9h each against an empty
+    `<think></think>` block with nothing in the log to say so. Every failure mode here therefore
+    raises: a crashed job costs minutes, a silently wrong-mode job costs a day and a conclusion.
+    """
+    env_name = _enable_thinking_env_name()
+    hint = f"Set {env_name}=0|1 explicitly to override."
+
+    if config is None:
+        raise RuntimeError(
+            "veRL did not pass a config to get_ppo_ray_runtime_env, so "
+            f"data.apply_chat_template_kwargs.enable_thinking cannot be resolved. {hint}"
+        )
+    data_cfg = _config_get(config, "data", None)
+    if data_cfg is None:
+        raise RuntimeError(f"veRL config has no `data` section. {hint}")
+    apply_kwargs = _config_get(data_cfg, "apply_chat_template_kwargs", None)
+    if apply_kwargs is None:
+        raise RuntimeError(f"veRL config has no `data.apply_chat_template_kwargs`. {hint}")
+    value = _config_get(apply_kwargs, "enable_thinking", None)
+    if value is None:
+        raise RuntimeError(
+            f"`data.apply_chat_template_kwargs.enable_thinking` is unset. {hint}"
+        )
+    return _coerce_enable_thinking(value, "data.apply_chat_template_kwargs.enable_thinking")
+
+
+def _seed_enable_thinking_env_from_config(config: Any) -> None:
+    """Make the config the source of truth for thinking mode, with env as an explicit override."""
+    env_name = _enable_thinking_env_name()
+    explicit = os.environ.get(env_name, "").strip()
+    if explicit:
+        # Validate it now rather than letting a typo resolve to False deep in a Ray worker.
+        resolved = _coerce_enable_thinking(explicit, env_name)
+        print(
+            f"PERSONA_DEBUG_AGENT_LOOP: enable_thinking={resolved} source={env_name} (explicit override)",
+            flush=True,
+        )
+        return
+
+    resolved = _resolve_config_enable_thinking(config)
+    os.environ[env_name] = "1" if resolved else "0"
+    print(
+        "PERSONA_DEBUG_AGENT_LOOP: enable_thinking="
+        f"{resolved} source=data.apply_chat_template_kwargs.enable_thinking",
+        flush=True,
+    )
+
+
+def _assert_enable_thinking_propagated() -> bool:
+    """Abort in a worker whose thinking mode never arrived, instead of defaulting to OFF.
+
+    Called OUTSIDE the broad `except Exception` around prompt rendering in
+    patched_single_turn_run: that handler falls back to veRL's own apply_chat_template, which
+    would swallow this and silently restore exactly the bug being fixed.
+    """
+    env_name = _enable_thinking_env_name()
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        raise RuntimeError(
+            f"{env_name} is unset in this rollout worker, so the chat template would silently "
+            "render with enable_thinking=False. The driver seeds it from "
+            "data.apply_chat_template_kwargs.enable_thinking and propagates it through the Ray "
+            "runtime env; that propagation failed."
+        )
+    return _coerce_enable_thinking(raw, env_name)
 
 
 def _ray_loopback_advertise_enabled() -> bool:
@@ -1233,6 +1325,17 @@ def _agent_loop_score_context(args: tuple[Any, ...], call_kwargs: Mapping[str, A
 
 def _merge_propagated_runtime_env_vars(runtime_env: Mapping[str, Any] | None) -> dict[str, Any]:
     merged_runtime_env = dict(runtime_env or {})
+
+    # Thinking mode propagates unconditionally, outside both the _runtime_env_propagation_enabled
+    # gate (default False, so that path is inert) and the worker-setup-hook gate (default True,
+    # but flippable). A rollout worker that renders with the wrong thinking mode produces a run
+    # that looks healthy and measures the wrong model, so this must not depend on a feature flag.
+    thinking_env_name = _enable_thinking_env_name()
+    if os.environ.get(thinking_env_name, "").strip():
+        env_vars = dict(merged_runtime_env.get("env_vars") or {})
+        env_vars[thinking_env_name] = os.environ[thinking_env_name]
+        merged_runtime_env["env_vars"] = env_vars
+
     propagated_env_vars = _collect_propagated_runtime_env_vars()
     if propagated_env_vars:
         env_vars = dict(merged_runtime_env.get("env_vars") or {})
@@ -1266,6 +1369,9 @@ def _patch_ppo_ray_runtime_env(constants_ppo_mod: Any) -> None:
     original_get_ppo_ray_runtime_env = constants_ppo_mod.get_ppo_ray_runtime_env
 
     def patched_get_ppo_ray_runtime_env(*args, **kwargs):
+        # veRL 0.9 passes the resolved config here (preflight check 18); this is the earliest
+        # point where the config and the Ray runtime env are both in hand.
+        _seed_enable_thinking_env_from_config(args[0] if args else kwargs.get("config"))
         return _merge_propagated_runtime_env_vars(original_get_ppo_ray_runtime_env(*args, **kwargs))
 
     constants_ppo_mod.get_ppo_ray_runtime_env = patched_get_ppo_ray_runtime_env
@@ -1686,11 +1792,30 @@ def _render_text_prompt_ids(
 ) -> tuple[list[int], bool]:
     from shared.prompt_utils import get_chat_template_kwargs_for_prompt_mode
 
-    prompt_text = tokenizer.apply_chat_template(
-        messages,
-        **get_chat_template_kwargs_for_prompt_mode(prompt_mode),
-    )
+    apply_kwargs = get_chat_template_kwargs_for_prompt_mode(prompt_mode)
+    prompt_text = tokenizer.apply_chat_template(messages, **apply_kwargs)
+    _log_rendered_thinking_once(apply_kwargs, prompt_text)
     return _tokenize_without_specials(tokenizer, prompt_text), False
+
+
+def _log_rendered_thinking_once(apply_kwargs: Mapping[str, Any], prompt_text: Any) -> None:
+    """Print the resolved thinking mode and the rendered prompt tail, once per process.
+
+    The tail is the only direct observable for the bug: thinking ON ends the prompt with an open
+    `<think>`, while thinking OFF ends it with an already-closed empty `<think></think>` block.
+    A shell banner cannot show this, because the value is resolved from Hydra config long after
+    the job script has run.
+    """
+    global _ENABLE_THINKING_RESOLVED_LOGGED
+    if _ENABLE_THINKING_RESOLVED_LOGGED:
+        return
+    _ENABLE_THINKING_RESOLVED_LOGGED = True
+    tail = repr(prompt_text[-80:]) if isinstance(prompt_text, str) else repr(prompt_text)[:120]
+    print(
+        "PERSONA_DEBUG_AGENT_LOOP: rendered_enable_thinking="
+        f"{apply_kwargs.get('enable_thinking')} prompt_tail={tail}",
+        flush=True,
+    )
 
 
 def _log_prompt_prefill_preserve_once(stripped: bool) -> None:
@@ -1956,6 +2081,9 @@ def apply_verl_runtime_patch() -> bool:
     async def patched_single_turn_run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         sampling_params = _apply_presence_penalty_to_sampling_params(sampling_params)
         _log_single_turn_sampling_params_once(sampling_params)
+        # Deliberately OUTSIDE the try/except around prompt rendering below: that handler falls
+        # back to veRL's apply_chat_template on ANY exception, which would swallow this abort.
+        _assert_enable_thinking_propagated()
         _suppress_fast_tokenizer_pad_advisory(self.tokenizer)
         extra_info = _coerce_mapping(kwargs.get("extra_info"))
         rewritten_messages, extra_info = _maybe_override_prompt_messages_for_runtime_conditioning(extra_info)

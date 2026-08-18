@@ -99,6 +99,12 @@ def _metrics(verdict: JudgeVerdict, human_is_b: bool, arm: str) -> dict[str, flo
         "judge_fmt_all_fields": float(verdict.fmt_all_fields),
         "judge_fmt_arith": float(verdict.fmt_arith),
         "judge_fmt_rating_range": float(verdict.fmt_rating_range),
+        # The three that actually drive format_score. Coverage is the one to watch: it is dense,
+        # so it moves before all_fields/exact_schema ever flip, and a near-zero exact_schema
+        # beside a healthy coverage means the </think> split broke, not that the model is weak.
+        "judge_fmt_ordered_coverage": float(verdict.fmt_ordered_coverage),
+        "judge_fmt_exact_schema": float(verdict.fmt_exact_schema),
+        "judge_fmt_strict_json": float(verdict.fmt_strict_json),
         "judge_acc": acc,
         "judge_correct_strict": correct_strict,
         "judge_tie": 1.0 if (verdict.recovered and is_tie) else 0.0,
