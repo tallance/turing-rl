@@ -106,11 +106,25 @@ def load_prompts(dump_glob: str, split: str | None, limit: int, seed: int) -> li
                 prompt = rec.get("judge_prompt")
                 if not prompt:
                     continue
+                # Compare like with like. `turing_judge_score_raw` is NOT the judge's rating:
+                # it is the rating re-oriented for the randomized A/B order, so it equals the
+                # rating when the ground truth came first and 8 - rating when the generation
+                # did (observed: rating 2 -> raw 6.0, rating 3 -> raw 5.0). Comparing a freshly
+                # parsed `rating` against `turing_judge_score_raw` mixes the two orientations
+                # and manufactures a ~0.5-point gap out of nothing -- which is exactly what the
+                # first run of this gate reported. Take the rating in the orientation the
+                # replayed prompt actually used.
+                order = rec.get("randomized_order")
+                ref_rating = (
+                    rec.get("rating_gen_first") if order == "gen_first"
+                    else rec.get("rating_gt_first")
+                )
                 rows.append(
                     {
                         "key": f"{rec.get('user_id')}|{rec.get('post_id')}|{rec.get('target_idx')}",
                         "prompt": prompt,
-                        "ref_score": rec.get("turing_judge_score_raw"),
+                        "ref_rating": ref_rating if isinstance(ref_rating, (int, float)) else None,
+                        "ref_scored": rec.get("turing_judge_score_raw") is not None,
                         "ref_finish": rec.get("judge_finish_reason"),
                         "ref_model": rec.get("judge_model"),
                     }
@@ -131,7 +145,7 @@ def load_prompts(dump_glob: str, split: str | None, limit: int, seed: int) -> li
 
 async def score_one(session, sem, row: dict, model: str, max_tokens: int) -> dict:
     t0 = time.monotonic()
-    out = {"key": row["key"], "ref_score": row["ref_score"]}
+    out = {"key": row["key"], "ref_rating": row["ref_rating"]}
     try:
         payload = build_chat_payload(
             model=model,
@@ -205,23 +219,35 @@ def summarize(tag: str, results: list[dict], wall_s: float, concurrency: int) ->
     return summary
 
 
-def compare_to_reference(results: list[dict]) -> dict | None:
-    """Agreement against the ratings the reference serving path recorded per prompt."""
+def compare_to_reference(results: list[dict], same_judge: bool) -> dict | None:
+    """Per-prompt agreement against the rating the reference serving path recorded.
+
+    `same_judge` says whether the reference was produced by the SAME model. In eval mode it
+    was (the eval's own gemma run), so this is a serving-path equivalence test and a large
+    disagreement is a finding. In training mode the prompts come from a qwen-judged dump, so
+    this is a CROSS-JUDGE comparison: two different models will disagree by construction and
+    the numbers carry no pass/fail meaning. Labelled either way so a reader cannot mistake
+    one for the other.
+    """
     pairs = [
-        (r["ref_score"], r["rating"])
+        (r["ref_rating"], r["rating"])
         for r in results
-        if isinstance(r.get("rating"), int) and isinstance(r.get("ref_score"), (int, float))
+        if isinstance(r.get("rating"), int) and isinstance(r.get("ref_rating"), (int, float))
     ]
     if not pairs:
         return None
-    new = [p[1] for p in pairs]
     ref = [p[0] for p in pairs]
-    diffs = [abs(a - b) for a, b in zip(new, ref)]
+    new = [p[1] for p in pairs]
+    diffs = [abs(a - b) for a, b in pairs]
+    signed = [b - a for a, b in pairs]
+    se = (statistics.pstdev(signed) / len(signed) ** 0.5) if len(signed) > 1 else None
     return {
+        "comparison": "same-judge serving paths" if same_judge else "CROSS-JUDGE (not a gate)",
         "n_compared": len(pairs),
         "ref_mean": round(statistics.fmean(ref), 4),
         "new_mean": round(statistics.fmean(new), 4),
         "mean_delta": round(statistics.fmean(new) - statistics.fmean(ref), 4),
+        "se_of_delta": round(se, 4) if se is not None else None,
         "exact_agreement": round(sum(d == 0 for d in diffs) / len(diffs), 4),
         "within_1": round(sum(d <= 1 for d in diffs) / len(diffs), 4),
         "mean_abs_diff": round(statistics.fmean(diffs), 4),
@@ -284,7 +310,7 @@ def main() -> int:
             for r in results:
                 handle.write(json.dumps({**r, "pass": i}) + "\n")
             s = summarize(f"{a.mode}-pass{i}", results, wall, a.concurrency)
-            cmp_ref = compare_to_reference(results)
+            cmp_ref = compare_to_reference(results, same_judge=(a.mode == "eval"))
             if cmp_ref:
                 s["vs_reference"] = cmp_ref
             all_summaries.append(s)
