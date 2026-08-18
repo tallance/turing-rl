@@ -1,0 +1,21 @@
+{
+  "code_root": "/home/lancewicki/projects/turing-rl-sources/11d946ed35f4f358071085542dcd9bc2550cfbe9",
+  "debug_label": null,
+  "dependency_profile": "eval",
+  "environment_keys": [
+    "BASELINE_CELL_ROOT",
+    "EVAL_ROOT",
+    "MODEL",
+    "SOURCE_EVAL_ROOT",
+    "STEPS"
+  ],
+  "format_version": 1,
+  "launched_at_utc": "2026-08-17T21:17:31.524398+00:00",
+  "launcher": "scripts/launch_brier_judge_trajectory.sh",
+  "launcher_args": [],
+  "main_sha": "11d946ed35f4f358071085542dcd9bc2550cfbe9",
+  "run_class": "retained",
+  "run_root": "/home/lancewicki/projects/turing-rl/results/2026-08-17-test-eval-9b-full5ep-brier-judge-halfsteps",
+  "source_sha": "11d946ed35f4f358071085542dcd9bc2550cfbe9",
+  "state_root": "/home/lancewicki/projects/turing-rl"
+}
