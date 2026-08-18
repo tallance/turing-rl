@@ -83,7 +83,12 @@ actor_rollout_ref:
     # veRL's "use 8192 or the full sequence length" advice is a throughput heuristic, not a
     # correctness requirement.
     max_num_batched_tokens: 4096
-    response_length: 7680
+    # Interpolated, never a second literal. These two keys must always agree: data.* sizes the
+    # training batch while this one is what vLLM actually receives as max_new_tokens. Holding the
+    # number twice meant `data.max_response_length=10752` alone raised the batch allowance and
+    # left generation capped at 7680 -- a smoke that answered the wrong question while looking
+    # correctly configured (job 18583, 100% unclosed_thinking).
+    response_length: ${data.max_response_length}
     # The parent is an 8B *generator* profile; every value below is overridden because the
     # inherited one is wrong for a judge run -- the failure mode that cost jobs 15143/13634.
     # TP=1 matches the working 9B recipe (a 2B/4B judge has no reason to shard).

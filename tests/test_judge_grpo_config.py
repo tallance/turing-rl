@@ -52,7 +52,11 @@ def test_prompt_and_response_budgets_fit_the_context_window():
     data = c["data"]
     rollout = c["actor_rollout_ref"]["rollout"]
     assert data["max_prompt_length"] + data["max_response_length"] <= rollout["max_model_len"]
-    assert data["max_response_length"] == rollout["response_length"]
+    # Interpolation, not equal literals. Two literals agreed at rest but diverged the moment a
+    # caller overrode data.max_response_length: the batch allowance rose while vLLM stayed at
+    # max_new_tokens 7680 (job 18583). Equality alone could not catch that, since it only ever
+    # inspects the committed file, never the overridden run.
+    assert rollout["response_length"] == "${data.max_response_length}"
 
 
 def test_optimiser_follows_the_9b_recipe():
