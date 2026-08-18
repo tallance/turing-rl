@@ -2,6 +2,15 @@
 
 **Date:** 2026-08-12 · **Status:** design (pre-plan) · **Author:** Tal Lancewicki (Mac agent)
 
+> **Round 1 did not run as specified.** Two defects were found after four runs completed.
+> The "Judge thinking: ON" decision below was silently not applied — the agent loop resolved the
+> mode from an environment variable no launcher set, so every rollout trained with an empty
+> `<think></think>` block. Separately, the format reward made partial JSON near-optimal, so
+> all-37-fields was worth 0.025 of total reward. Both fixed in `ef217fa` (2026-08-18); the four
+> completed runs are retained as a labelled thinking-OFF ablation.
+> See `docs/judge-thinking-off-ablation.md` for mechanism, scope and measurements, and
+> `results/2026-08-12-judge-only-rlvr/README.txt` for provenance.
+
 ## 1. Objective
 
 Train the **discriminator alone** with GRPO to identify which of two candidate turns was written by
