@@ -67,3 +67,26 @@ def test_brier_trajectory_copies_the_baseline_into_a_mode_scoped_directory():
     text = (SCRIPTS / "launch_brier_judge_trajectory.sh").read_text()
 
     assert 'cell / os.environ["THINKING_MODE"]' in text, "baseline copy destination is mode-blind"
+
+
+def test_no_launcher_anywhere_pins_the_thinking_mode():
+    """Repo-wide guard, so this cannot be reintroduced by a launcher that does not exist yet.
+
+    `scripts/launch_judge_eval.sh` currently pins THINKING_MODE=on, but it lives on the fork's
+    branch (worktree-judge-4b-eval) and is theirs to change -- editing it here would manufacture
+    the same-file conflict CLAUDE.md asks us to avoid. See
+    docs/agent-comms/2026-08-12-judge-only-rlvr/handoff-eval-thinking-mode.md. This test enforces
+    the requirement automatically the moment that file reaches a shared branch, rather than
+    relying on the handoff note being read.
+    """
+    offenders = [
+        path.name
+        for path in sorted(SCRIPTS.glob("launch_*.sh"))
+        if "THINKING_MODE=on," in path.read_text()
+    ]
+
+    assert not offenders, (
+        f"these launchers pin the thinking mode: {offenders}. Evaluation mode must be a "
+        "caller-supplied parameter -- a judge trained thinking-OFF scored ON is a cross-mode "
+        "measurement."
+    )
