@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 
 STEP_RE = re.compile(r"step(\d+)$")
-BRIER_STEPS = [0, 64, 128, 192, 256, 320]
+BRIER_STEPS = list(range(0, 321, 32))
 SERIES = [
     ("qwen35-4b", "4B judge", "#2f7ed8", "-", "o", 2.0),
     ("qwen35-9b", "9B judge (trained against)", "#f26b32", "-", "o", 3.2),
@@ -141,8 +141,8 @@ def main() -> None:
     fig.text(
         0.02,
         0.925,
-        f"{dense_n} pairs per zero-shot checkpoint; trained Brier judge shown at step 0 and "
-        f"one checkpoint per epoch on its {brier_n}-pair common subset.",
+        f"{dense_n} pairs per zero-shot checkpoint; trained Brier judge scores every checkpoint "
+        f"on its {brier_n}-pair common subset.",
         ha="left",
         va="top",
         color="#76736b",

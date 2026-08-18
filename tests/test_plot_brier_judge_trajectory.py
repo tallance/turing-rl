@@ -36,11 +36,11 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     for cell in BASE_CELLS:
         _write_summary(base / f"summary_{cell}.csv", full_steps)
     brier = tmp_path / "summary_judge-9b-brier.csv"
-    _write_summary(brier, (0, 64, 128, 192, 256, 320), n=872)
+    _write_summary(brier, full_steps, n=872)
     return base, brier, tmp_path / "overlay.png"
 
 
-def test_renders_five_dense_curves_and_sparse_brier_trajectory(tmp_path: Path) -> None:
+def test_renders_five_dense_curves_and_full_brier_trajectory(tmp_path: Path) -> None:
     base, brier, out = _fixture(tmp_path)
     result = subprocess.run(
         [
@@ -65,9 +65,9 @@ def test_renders_five_dense_curves_and_sparse_brier_trajectory(tmp_path: Path) -
         assert image.height > 700
 
 
-def test_rejects_a_non_epoch_brier_checkpoint(tmp_path: Path) -> None:
+def test_rejects_a_missing_half_epoch_brier_checkpoint(tmp_path: Path) -> None:
     base, brier, out = _fixture(tmp_path)
-    _write_summary(brier, (0, 32, 64, 128, 192, 256, 320), n=872)
+    _write_summary(brier, (0, 32, 64, 96, 128, 160, 192, 224, 256, 320), n=872)
 
     result = subprocess.run(
         [
@@ -86,4 +86,4 @@ def test_rejects_a_non_epoch_brier_checkpoint(tmp_path: Path) -> None:
     )
 
     assert result.returncode != 0
-    assert "expected Brier steps [0, 64, 128, 192, 256, 320]" in result.stderr
+    assert "expected Brier steps [0, 32, 64, 96, 128, 160, 192, 224, 256, 288, 320]" in result.stderr
