@@ -7,7 +7,12 @@
 # MODE=overfit builds a tiny side-balanced subset first and pins the batch to fit it. That is
 # R0: it proves the loop learns before six real runs are committed. Train accuracy should
 # climb toward 1.0 on a handful of examples; if it does not, nothing downstream is worth
-# launching.
+# launching. Note it also points data.val_files at that training subset, so its "validation"
+# numbers are training numbers -- use MODE=valsmoke when you need a real held-out reading.
+#
+# MODE=valsmoke keeps a real held-out val slice (default 100 pairs = 200 rows) and runs a single
+# step with validation before and after. It is the ~20-minute way to compare two configurations
+# -- e.g. thinking ON vs OFF -- on format and accuracy before spending ~9h per full arm.
 #
 # Usage:
 #   scripts/cluster_launch.sh --dependency-profile training \
@@ -40,6 +45,13 @@ TRAIN_FILE=$DATA_DIR/train.parquet
 VAL_FILE=$DATA_DIR/val.parquet
 EXTRA=${EXTRA_OVERRIDES:-}
 
+case "$MODE" in
+  full|overfit|valsmoke) ;;
+  # Without this, a typo'd MODE falls through to `full` and quietly starts a ~9h run in place of
+  # a 20-minute check.
+  *) echo "FATAL: MODE must be full, overfit or valsmoke, got '$MODE'" >&2; exit 2 ;;
+esac
+
 if [ "$MODE" = overfit ]; then
   TRAIN_FILE=$DATA_DIR/train_overfit${OVERFIT_PAIRS}.parquet
   $PY scripts/build_judge_overfit.py --src "$DATA_DIR/train.parquet" \
@@ -53,6 +65,30 @@ if [ "$MODE" = overfit ]; then
   # run itself; R0 only asks whether TRAIN accuracy saturates.
   EXTRA="$EXTRA data.val_files=$TRAIN_FILE"
   echo "=== R0 overfit gate: $rows rows ($OVERFIT_PAIRS pairs x 2 orders) ==="
+fi
+
+if [ "$MODE" = valsmoke ]; then
+  # A cheap check of the VALIDATION path -- used to A/B thinking ON vs OFF before committing to
+  # six ~9h runs. Distinct from overfit precisely because overfit points data.val_files at its
+  # own 16-row training subset: reusing it here would "validate" on the training rows and report
+  # nothing about held-out format or accuracy.
+  VALSMOKE_PAIRS=${VALSMOKE_PAIRS:-100}
+  VALSMOKE_TRAIN_PAIRS=${VALSMOKE_TRAIN_PAIRS:-8}
+  TRAIN_FILE=$DATA_DIR/train_overfit${VALSMOKE_TRAIN_PAIRS}.parquet
+  $PY scripts/build_judge_overfit.py --src "$DATA_DIR/train.parquet" \
+      --out "$TRAIN_FILE" --n_pairs "$VALSMOKE_TRAIN_PAIRS" || exit 2
+  # Same pair-wise, side-balanced slicer, applied to val: taking raw head rows could land an
+  # odd number and unbalance which slot holds the human.
+  VAL_FILE=$DATA_DIR/val_smoke${VALSMOKE_PAIRS}.parquet
+  $PY scripts/build_judge_overfit.py --src "$DATA_DIR/val.parquet" \
+      --out "$VAL_FILE" --n_pairs "$VALSMOKE_PAIRS" || exit 2
+  rows=$((VALSMOKE_TRAIN_PAIRS * 2))
+  EXTRA="$EXTRA data.train_batch_size=$rows actor_rollout_ref.actor.ppo_mini_batch_size=$rows"
+  EXTRA="$EXTRA trainer.total_epochs=1 trainer.save_freq=-1"
+  # val_before_train gives the step-0 reading, which is the whole point: it measures the base
+  # model under the real rollout path before any gradient step can confound it.
+  EXTRA="$EXTRA trainer.val_before_train=True trainer.test_freq=1"
+  echo "=== validation smoke: $((VALSMOKE_PAIRS * 2)) val rows, $rows train rows ==="
 fi
 
 RUN_TAG=${JUDGE_RUN_TAG:-$(basename "$JUDGE_MODEL_PATH")_${JUDGE_REWARD_ARM}_${MODE}}

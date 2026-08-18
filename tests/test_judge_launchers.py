@@ -337,3 +337,37 @@ def test_overfit_mode_keeps_the_subset_side_balanced_and_batch_sized():
     assert "scripts/build_judge_overfit.py" in text
     assert "data.train_batch_size=$rows" in text
     assert "rows=$((OVERFIT_PAIRS * 2))" in text
+
+
+def test_valsmoke_mode_validates_on_a_real_heldout_slice():
+    """The whole point of valsmoke: overfit mode redirects data.val_files at its own 16-row
+    TRAINING subset, so its "validation" numbers are training numbers. A cheap thinking ON/OFF
+    A/B needs a genuine held-out reading, so valsmoke must leave data.val_files alone and pass a
+    real val slice through VAL_FILE instead.
+    """
+    # Code only: the block's comments legitimately discuss data.val_files to explain the contrast.
+    code = "\n".join(_code_lines(TRAIN_LAUNCH))
+    valsmoke = code.split('if [ "$MODE" = valsmoke ]; then', 1)[1]
+    text = _text(TRAIN_LAUNCH)
+
+    assert "data.val_files" not in valsmoke, "valsmoke must not redirect validation at train rows"
+    assert 'VAL_FILE=$DATA_DIR/val_smoke${VALSMOKE_PAIRS}.parquet' in valsmoke
+    assert '--src "$DATA_DIR/val.parquet"' in valsmoke
+    # Same pair-wise slicer as overfit, so both A/B orders survive and human_is_b stays balanced.
+    assert "scripts/build_judge_overfit.py" in valsmoke
+
+
+def test_valsmoke_measures_the_base_model_before_any_gradient_step():
+    text = _text(TRAIN_LAUNCH)
+    valsmoke = text.split('if [ "$MODE" = valsmoke ]; then', 1)[1]
+
+    assert "trainer.val_before_train=True" in valsmoke
+    assert "trainer.test_freq=1" in valsmoke
+    assert "trainer.total_epochs=1" in valsmoke
+    assert "trainer.save_freq=-1" in valsmoke, "a smoke must not write checkpoints"
+
+
+def test_unknown_mode_is_rejected_rather_than_treated_as_full():
+    """A typo'd MODE previously fell through to `full`, starting a ~9h run instead of a check."""
+    code = "\n".join(_code_lines(TRAIN_LAUNCH))
+    assert "full|overfit|valsmoke)" in code

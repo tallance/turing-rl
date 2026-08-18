@@ -17,6 +17,12 @@ CONTINUE_SCRIPT=${CONTINUE_SCRIPT:-$REPO/scripts/slurm/continue_full_schema_eval
 GEN_KEY_PREFIX=${GEN_KEY_PREFIX:-9b-full5ep-step}
 PAIRS_TAG=${PAIRS_TAG:-880}
 JOB_PREFIX=${JOB_PREFIX:-te}
+# Thinking mode is a comparison-defining property, not a constant. Judges trained thinking-OFF
+# must be scored OFF and judges trained ON must be scored ON, and every model inside one
+# comparison must use the same mode. judge_sweep_cell.sh writes to $CELL_NAME/$THINKING_MODE,
+# so the two families land side by side instead of overwriting each other.
+THINKING_MODE=${THINKING_MODE:-on}
+case "$THINKING_MODE" in on|off) ;; *) echo "FATAL: THINKING_MODE must be on|off, got $THINKING_MODE" >&2; exit 2 ;; esac
 OFFSET=${OFFSET:-0}
 BATCH_SIZE=${BATCH_SIZE:-8}
 CHAIN_AFTER=${CHAIN_AFTER:-}
@@ -58,7 +64,11 @@ export TURING_JUDGE_SCORE_CLIP_MAX=7
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 export PERSONA_OPENAI_TIMEOUT_SECONDS=1800
 export REPO EVAL_ROOT EVAL_PARQUET SLURM_SCRIPT CONTINUE_SCRIPT GEN_KEY_PREFIX PAIRS_TAG
-export BATCH_SIZE STEPS JUDGES JOB_PREFIX
+# THINKING_MODE must be exported, not just set: continue_full_schema_eval.sh re-invokes this
+# script with only OFFSET overridden and inherits everything else via --export=ALL, so an
+# unexported mode would silently revert to the default after the first batch -- splitting one
+# sweep across two thinking modes.
+export BATCH_SIZE STEPS JUDGES JOB_PREFIX THINKING_MODE
 
 submit() {
   local dep="$1"; shift
@@ -102,7 +112,7 @@ EOF
   }
 
   sweep_root=$EVAL_ROOT/raw/$gen_key/sweep
-  reward_dir=$sweep_root/$judge/on/reward
+  reward_dir=$sweep_root/$judge/$THINKING_MODE/reward
   if [ -d "$reward_dir" ] && [ -n "$(ls -A "$reward_dir" 2>/dev/null)" ]; then
     echo "FATAL: refusing stale output in $reward_dir" >&2
     exit 2
@@ -112,7 +122,7 @@ EOF
   [ -n "$PREV" ] && dep="afterok:$PREV"
   gpus=$((tp * replicas))
   jid=$(submit "$dep" --gres=gpu:$gpus --job-name="${JOB_PREFIX}_${judge}_${step}" \
-    --export=ALL,MODEL=$model,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=on,CELL_NAME=$judge,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
+    --export=ALL,MODEL=$model,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=$THINKING_MODE,CELL_NAME=$judge,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
     -- \
     "$SLURM_SCRIPT")
   need_jid "$jid" "$judge/step$step"

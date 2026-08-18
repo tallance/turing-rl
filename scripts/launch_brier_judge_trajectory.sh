@@ -18,6 +18,11 @@ GEN_KEY_PREFIX=${GEN_KEY_PREFIX:-9b-full5ep-step}
 PAIRS_TAG=${PAIRS_TAG:-880}
 CELL_NAME=${CELL_NAME:-judge-9b-brier}
 JOB_PREFIX=${JOB_PREFIX:-te_brier}
+# Thinking mode defines the comparison. A judge trained thinking-OFF must be scored OFF, and
+# every model in one trajectory must share the mode. judge_sweep_cell.sh writes to
+# $CELL_NAME/$THINKING_MODE, so the families coexist rather than overwrite.
+THINKING_MODE=${THINKING_MODE:-on}
+case "$THINKING_MODE" in on|off) ;; *) echo "FATAL: THINKING_MODE must be on|off, got $THINKING_MODE" >&2; exit 2 ;; esac
 TP=${TP:-1}
 REPLICAS=${REPLICAS:-8}
 CONCURRENCY=${CONCURRENCY:-32}
@@ -26,6 +31,15 @@ DRY=${DRY:-0}
 [ -d "$MODEL" ] || { echo "FATAL: missing trained judge model: $MODEL" >&2; exit 2; }
 [ -d "$BASELINE_CELL_ROOT/reward" ] || {
   echo "FATAL: missing reused step-0 reward dir: $BASELINE_CELL_ROOT/reward" >&2
+  exit 2
+}
+# The reused step-0 cell must have been scored in THIS mode. judge_sweep_cell.sh names the leaf
+# directory after the mode, so a mismatch is mechanically detectable -- and worth detecting: an
+# ON step-0 grafted onto an OFF trajectory makes the whole curve cross-mode at its baseline.
+baseline_mode=$(basename "$BASELINE_CELL_ROOT")
+[ "$baseline_mode" = "$THINKING_MODE" ] || {
+  echo "FATAL: BASELINE_CELL_ROOT is a '$baseline_mode' cell but THINKING_MODE=$THINKING_MODE." >&2
+  echo "       Rescore step 0 in $THINKING_MODE mode instead of reusing the other family's cell." >&2
   exit 2
 }
 
@@ -41,6 +55,7 @@ done
 # operation is idempotent only when every existing destination is byte-identical; a mixed or
 # partially copied baseline is rejected rather than silently reused.
 export EVAL_ROOT SOURCE_EVAL_ROOT BASELINE_CELL_ROOT GEN_KEY_PREFIX PAIRS_TAG CELL_NAME STEPS
+export THINKING_MODE
 "$PY" - <<'PY'
 from __future__ import annotations
 
@@ -94,7 +109,7 @@ split_guard = source_eval / "split_guard.json"
 if split_guard.is_file():
     copy_exact(split_guard, eval_root / "split_guard.json")
 
-destination = eval_root / "raw" / f"{prefix}0" / "sweep" / cell / "on"
+destination = eval_root / "raw" / f"{prefix}0" / "sweep" / cell / os.environ["THINKING_MODE"]
 source_files = [baseline / "run_metadata.json", *sorted((baseline / "reward").glob("*.jsonl"))]
 if not source_files[0].is_file() or len(source_files) == 1:
     raise SystemExit(f"FATAL: incomplete reused step-0 cell: {baseline}")
@@ -143,7 +158,7 @@ previous=""
 for step in "${step_values[@]}"; do
   pairs=$EVAL_ROOT/raw/pairs/gen_${GEN_KEY_PREFIX}${step}_${PAIRS_TAG}.parquet
   sweep_root=$EVAL_ROOT/raw/${GEN_KEY_PREFIX}${step}/sweep
-  reward_dir=$sweep_root/$CELL_NAME/on/reward
+  reward_dir=$sweep_root/$CELL_NAME/$THINKING_MODE/reward
   if [ -d "$reward_dir" ] && [ -n "$(find "$reward_dir" -maxdepth 1 -type f -print -quit)" ]; then
     echo "FATAL: refusing stale output in $reward_dir" >&2
     exit 2
@@ -152,7 +167,7 @@ for step in "${step_values[@]}"; do
   dep=""
   [ -n "$previous" ] && dep="afterok:$previous"
   exports="ALL,MODEL=$MODEL,TP=$TP,REPLICAS=$REPLICAS,CONCURRENCY=$CONCURRENCY"
-  exports="$exports,THINKING_MODE=on,CELL_NAME=$CELL_NAME,PAIRS=$pairs,SWEEP_ROOT=$sweep_root"
+  exports="$exports,THINKING_MODE=$THINKING_MODE,CELL_NAME=$CELL_NAME,PAIRS=$pairs,SWEEP_ROOT=$sweep_root"
   jid=$(submit "$dep" --gres=gpu:$((TP * REPLICAS)) --job-name="${JOB_PREFIX}_${step}" \
     --export="$exports" -- scripts/slurm/judge_sweep_cell.sh)
   need_jid "$jid" "Brier judge step$step"
