@@ -40,6 +40,23 @@ cd "$REPO"
 # self-hosted endpoint (same recipe as the working SFT runs — sft_full.sh/wandb_smoke.sh).
 # Exported here so the trainer srun step inherits them (fixes 404 createRunFiles / no-sync).
 if [ -f "$REPO/.env" ]; then set -a; source "$REPO/.env"; set +a; fi
+# Point the Python secret loader at that same file explicitly.
+#
+# Sourcing it above only populates this shell. shared/load_env.py:get_openai_api_key calls
+# load_local_env() BEFORE inspecting the process environment and raises if no .env FILE is
+# found, so exporting OPENAI_API_KEY is not sufficient. Its default search is
+# `Path(__file__).resolve().parents[1]/.env` -- and .resolve() follows the runtime view's
+# symlinks back into the immutable source snapshot, which by design never contains secrets.
+# `~/.env` does not exist on this cluster either, so both candidates miss.
+#
+# Job 18570 resumed correctly from global_step_60 and then died 9 min later when the first
+# reward call reached resolve_judge_api_key(): "Missing OPENAI_API_KEY/OPENROUTER_API_KEY in
+# .env file. Expected one of: .../turing-rl-sources/<sha>/.env". Ray workers inherit env
+# vars, so exporting ENV_FILE here reaches the reward workers that actually raise.
+if [ -z "${ENV_FILE:-}" ] && [ -f "$REPO/.env" ]; then
+  export ENV_FILE="$REPO/.env"
+  echo "=== judge secret file pinned: ENV_FILE=$ENV_FILE ==="
+fi
 export WANDB_BASE_URL="${WANDB_BASE_URL:-https://meta.wandb.io}"
 export WANDB_MODE=online
 # Keep the wandb run dir OFF FSx. Job 13634 completed all 32 steps, yet wandb kept only 30 train

@@ -2,6 +2,7 @@
 import pathlib
 import re
 import subprocess
+import sys
 
 import yaml
 
@@ -452,3 +453,41 @@ def test_runtime_view_guard_actually_fires_in_both_children():
 
         standalone = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
         assert "SOURCED" in standalone.stdout, f"{name}: must prepare its own view standalone"
+
+
+def test_driver_pins_env_file_for_the_python_secret_loader():
+    # Sourcing .env populates the shell, but shared/load_env.py:get_openai_api_key calls
+    # load_local_env() BEFORE looking at the process environment and raises if no .env FILE
+    # exists. Its default search resolves relative to its own module path, and .resolve()
+    # follows the runtime view's symlinks into the immutable source snapshot, which by design
+    # holds no secrets. Job 18570 resumed from global_step_60 correctly and then died 9 min
+    # later on the first reward call with "Missing OPENAI_API_KEY/OPENROUTER_API_KEY".
+    assert 'export ENV_FILE="$REPO/.env"' in RUN_2NODE
+    assert "judge secret file pinned:" in RUN_2NODE
+    # Respect an explicit override rather than clobbering it.
+    assert 'if [ -z "${ENV_FILE:-}" ] && [ -f "$REPO/.env" ]; then' in RUN_2NODE
+
+
+def test_env_file_override_actually_reaches_the_loader():
+    # Functional: prove ENV_FILE is honoured by the real loader when the module-relative
+    # candidate does not exist. Asserting the export string alone would not catch the loader
+    # changing its lookup.
+    import tempfile
+    import textwrap
+
+    with tempfile.TemporaryDirectory() as tmp:
+        envfile = pathlib.Path(tmp) / "secrets.env"
+        envfile.write_text("OPENAI_API_KEY=sk-test-value\n")
+        prog = textwrap.dedent(
+            f"""
+            import os, sys
+            sys.path.insert(0, {str(pathlib.Path.cwd())!r})
+            os.environ["ENV_FILE"] = {str(envfile)!r}
+            os.environ.pop("OPENAI_API_KEY", None)
+            from shared.load_env import get_openai_api_key
+            print(get_openai_api_key())
+            """
+        )
+        proc = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True)
+        assert proc.returncode == 0, f"loader rejected ENV_FILE: {proc.stderr[-800:]}"
+        assert "sk-test-value" in proc.stdout, proc.stdout
