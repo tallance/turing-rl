@@ -10,6 +10,7 @@ because it still contains a prediction worth scoring.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import sys
@@ -57,14 +58,74 @@ def extract_json_object(text: str | None) -> dict | None:
         return None
     return parsed if isinstance(parsed, dict) else None
 
-def top_level_json_keys(text: str | None) -> list[str]:
-    """Stream the top-level object's keys, in emission order, tolerating truncation.
+def _scan_string(text: str, i: int, n: int) -> tuple[str | None, int]:
+    """``i`` is the opening quote. Returns (contents, index after closing quote), or (None, -1)."""
+    j = i + 1
+    chars: list[str] = []
+    while j < n:
+        c = text[j]
+        if c == "\\":
+            if j + 1 >= n:
+                return None, -1
+            chars.append(text[j + 1])
+            j += 2
+            continue
+        if c == '"':
+            return "".join(chars), j + 1
+        chars.append(c)
+        j += 1
+    return None, -1
 
-    Deliberately not a regex over raw text: field names occur inside string values (notably the
-    ``reasoning`` field) and a regex would count those as emitted, which is a reward the model
-    could farm by *talking about* the schema. This walks the structure and records only keys at
-    depth 1. Truncation is expected -- the 2B saturates the response cap -- so a cut-off string
-    or object simply ends the scan and keeps whatever was parsed.
+
+def _scan_value(text: str, i: int, n: int) -> int:
+    """Index just past a complete JSON value at ``i``, or -1 if truncated or absent."""
+    if i >= n:
+        return -1
+    ch = text[i]
+    if ch == '"':
+        return _scan_string(text, i, n)[1]
+    if ch in "{[":
+        depth = 0
+        j = i
+        while j < n:
+            c = text[j]
+            if c == '"':
+                _, j = _scan_string(text, j, n)
+                if j == -1:
+                    return -1
+                continue
+            if c in "{[":
+                depth += 1
+            elif c in "}]":
+                depth -= 1
+                if depth == 0:
+                    return j + 1
+            j += 1
+        return -1
+    # number / true / false / null: runs until a structural delimiter or whitespace.
+    j = i
+    while j < n and text[j] not in ',}] \t\r\n':
+        j += 1
+    return j if j > i else -1
+
+
+def top_level_json_entries(text: str | None) -> list[tuple[str, str]]:
+    """Completed top-level (key, raw value) entries, in emission order.
+
+    Two properties matter, and both are reward-security properties rather than niceties.
+
+    Only depth-1 keys count, so field names occurring inside string values -- notably the
+    ``reasoning`` field -- earn nothing. A regex would let the model farm coverage by *talking
+    about* the schema.
+
+    Only completed entries count. An earlier version recorded a key on seeing `"name":` and never
+    checked that a value followed, so the invalid string `{"immediate_target_a":,...}` -- 37 keys,
+    no values, not parseable JSON -- scored coverage 1.0 and a total reward of 0.96, beating an
+    honest compact answer at 0.91 for a fraction of the effort. A value must now parse completely
+    AND be followed by ',' or '}'.
+
+    Truncation is expected (the 2B saturates the response cap): the scan stops at the cut and
+    keeps the entries completed before it, costing at most the one field being written.
     """
     if not isinstance(text, str):
         return []
@@ -72,86 +133,126 @@ def top_level_json_keys(text: str | None) -> list[str]:
     if start == -1:
         return []
 
-    keys: list[str] = []
-    depth = 0
-    i = start
+    entries: list[tuple[str, str]] = []
     n = len(text)
+    i = start + 1
     while i < n:
-        ch = text[i]
-        if ch == '"':
-            j = i + 1
-            chars: list[str] = []
-            closed = False
-            while j < n:
-                c = text[j]
-                if c == "\\":
-                    # Escapes cannot appear in a canonical field name, so consuming the pair
-                    # without unescaping is enough to keep the scanner in sync.
-                    j += 2
-                    continue
-                if c == '"':
-                    closed = True
-                    break
-                chars.append(c)
-                j += 1
-            if not closed:
-                break  # truncated mid-string
-            after = j + 1
-            while after < n and text[after].isspace():
-                after += 1
-            if depth == 1 and after < n and text[after] == ":":
-                keys.append("".join(chars))
-            i = j + 1
-            continue
-        if ch in "{[":
-            depth += 1
-        elif ch in "}]":
-            depth -= 1
-            if depth == 0:
-                break
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n or text[i] != '"':
+            break  # closing brace, truncation, or malformed key position
+        key, i = _scan_string(text, i, n)
+        if i == -1:
+            break
+        while i < n and text[i].isspace():
+            i += 1
+        if i >= n or text[i] != ":":
+            break
         i += 1
-    return keys
+        while i < n and text[i].isspace():
+            i += 1
+        value_start = i
+        end = _scan_value(text, i, n)
+        if end == -1:
+            break
+        i = end
+        while i < n and text[i].isspace():
+            i += 1
+        if i < n and text[i] in ",}":
+            entries.append((key, text[value_start:end]))  # type: ignore[arg-type]
+            if text[i] == "}":
+                break
+            i += 1
+            continue
+        break
+    return entries
 
 
-def ordered_prefix_coverage(keys: list[str]) -> float:
-    """Fraction of TURING_FIELDS emitted as an unbroken prefix in canonical order.
+def top_level_json_keys(text: str | None) -> list[str]:
+    """Keys of the completed top-level entries, in emission order."""
+    return [key for key, _ in top_level_json_entries(text)]
+
+
+def _value_conforms(name: str, raw: str) -> bool:
+    """True when this field's emitted value parses and satisfies its declared spec."""
+    spec = _FIELD_SPECS.get(name)
+    if spec is None:
+        return False
+    try:
+        value = json.loads(raw, parse_constant=_reject_non_finite)
+    except (json.JSONDecodeError, ValueError):
+        return False
+    return _values_are_well_formed({name: value})
+
+
+def ordered_prefix_coverage(entries: list[tuple[str, str]] | list[str]) -> float:
+    """Fraction of TURING_FIELDS emitted, in canonical order, with a schema-conforming value.
 
     Order is load-bearing: the schema puts the dimension primitives first and ``rating`` last,
     precisely because the rating is *derived* from the primitives. Crediting an unordered set
-    would pay a model for emitting ``{"score_gap", "rating"}`` -- two late fields, asserted
-    rather than derived -- which is the shortcut this term exists to close.
+    would pay for ``{"score_gap", "rating"}`` -- two late fields, asserted rather than derived.
+
+    Values must conform too. Structure-only coverage still paid 0.98 total for a verdict
+    asserting dimension scores of 10 (bounded to [0,1]) and a score_gap of 30 (bounded to
+    [-3,3]), because the numbers were internally consistent even though the rubric cannot
+    produce them. Coverage measures how much of the schema was correctly produced, not how many
+    colons were typed.
     """
     matched = 0
-    for key in keys:
-        if matched < len(TURING_FIELDS) and key == TURING_FIELDS[matched]:
-            matched += 1
-        else:
+    for entry in entries:
+        key, raw = entry if isinstance(entry, tuple) else (entry, None)
+        if matched >= len(TURING_FIELDS) or key != TURING_FIELDS[matched]:
             break
+        if raw is not None and not _value_conforms(key, raw):
+            break
+        matched += 1
     return matched / len(TURING_FIELDS)
 
 
-# Types come from the schema, not a hand-maintained list: 15 of the 37 fields are strings
-# (the per-dimension justifications), and hardcoding "reasoning" as the only one silently failed
-# every perfect verdict.
-_FIELD_TYPES: dict[str, str] = {
-    name: schema["type"] for name, schema in TURING_RESPONSE_PROPERTIES.items()
-}
+# Constraints come from the schema, not a hand-maintained list: 15 of the 37 fields are strings
+# (the per-dimension justifications), and all 22 numeric fields declare minimum/maximum.
+_FIELD_SPECS: dict[str, dict] = dict(TURING_RESPONSE_PROPERTIES)
 
 
-def _values_are_well_typed(parsed: dict) -> bool:
+def _values_are_well_formed(parsed: dict) -> bool:
+    """Type AND range conformance for every field, against the declared schema.
+
+    Checking types alone was not enough. Dimension scores are bounded to [0,1] and score_gap to
+    [-3,3], but a verdict asserting scores of 10 and a gap of 30 is internally consistent, so it
+    passed both the type check and the arithmetic check and earned a total reward of 1.0 -- the
+    maximum, for numbers the rubric cannot produce.
+    """
     for name, value in parsed.items():
-        declared = _FIELD_TYPES.get(name)
-        if declared is None:
+        spec = _FIELD_SPECS.get(name)
+        if spec is None:
             return False  # not part of the schema at all
-        if declared == "string":
+        if spec["type"] == "string":
             if not isinstance(value, str):
                 return False
-        elif name == "rating":
-            if _coerce_turing_rating(value) is None:
+            continue
+        # bool is an int subclass in Python; True would otherwise satisfy a 0..1 numeric range.
+        if isinstance(value, bool):
+            return False
+        if spec["type"] == "integer":
+            if not isinstance(value, int):
                 return False
-        elif isinstance(value, bool) or not isinstance(value, (int, float)):
+        else:
+            if not isinstance(value, (int, float)):
+                return False
+            if not math.isfinite(value):
+                return False
+        minimum, maximum = spec.get("minimum"), spec.get("maximum")
+        if minimum is not None and value < minimum:
+            return False
+        if maximum is not None and value > maximum:
             return False
     return True
+
+
+def _reject_non_finite(constant: str) -> float:
+    # json.loads accepts NaN/Infinity/-Infinity by default, none of which are legal JSON. A NaN
+    # score_gap silently satisfied every range and arithmetic comparison and scored 1.0.
+    raise ValueError(f"non-finite JSON constant: {constant}")
 
 
 def strict_parse_answer(answer_text: str | None) -> tuple[dict | None, bool]:
@@ -165,12 +266,12 @@ def strict_parse_answer(answer_text: str | None) -> tuple[dict | None, bool]:
     if not isinstance(answer_text, str):
         return None, False
     try:
-        parsed = json.loads(answer_text.strip())
+        parsed = json.loads(answer_text.strip(), parse_constant=_reject_non_finite)
     except (json.JSONDecodeError, ValueError):
         return None, False
     if not isinstance(parsed, dict):
         return None, False
-    exact = tuple(parsed.keys()) == TURING_FIELDS and _values_are_well_typed(parsed)
+    exact = tuple(parsed.keys()) == TURING_FIELDS and _values_are_well_formed(parsed)
     return parsed, exact
 
 
@@ -299,20 +400,22 @@ def parse_judge_verdict(completion: str | None) -> JudgeVerdict:
     # whole string would fail json.loads on every well-formed answer and would credit field names
     # the model merely mentioned while reasoning.
     answer_text = split_after_hidden_thinking(text)
-    ordered_coverage = ordered_prefix_coverage(top_level_json_keys(answer_text))
+    ordered_coverage = ordered_prefix_coverage(top_level_json_entries(answer_text))
     strict_parsed, exact_schema = strict_parse_answer(answer_text)
     strict_json = strict_parsed is not None
 
-    # The task-reward ladder stays lenient. It prefers the answer, then falls back to the whole
-    # completion: extract_json_object slices first-`{` to last-`}`, so a stray brace in the
-    # reasoning block would otherwise splice prose into the candidate and lose a recoverable
-    # rating that the pre-thinking code would have found.
+    # The task-reward ladder stays lenient about FORM -- prose around the object, a fenced block,
+    # a missing field -- but not about LOCATION: it reads the answer, never the reasoning block.
+    # Recovering from the full completion let a rollout that reasoned its way to a full verdict
+    # and then emitted no answer at all take the dimensions rung and full task credit. Since
+    # judge_reward scores an unrecovered verdict at task 0.0, closing this drops "reason but never
+    # answer" from 0.91 to 0.00 and makes answering strictly necessary.
+    # When no </think> marker is present, answer_text IS the whole completion, so thinking-OFF
+    # rollouts and the retained ablation runs behave exactly as before.
     data = extract_json_object(answer_text)
-    if not isinstance(data, dict):
-        data = extract_json_object(text)
 
     if not isinstance(data, dict):
-        recovered = _extract_turing_rating(text)
+        recovered = _extract_turing_rating(answer_text)
         return JudgeVerdict(
             rating=recovered,
             recovery_rung="rating_text" if recovered is not None else "none",
@@ -345,7 +448,7 @@ def parse_judge_verdict(completion: str | None) -> JudgeVerdict:
             recovery_rung="dimensions",
             fmt_json_valid=True,
             fmt_all_fields=fmt_all_fields,
-            fmt_arith=_arithmetic_is_consistent(data, rating, score_gap),
+            fmt_arith=_arithmetic_is_consistent(data, rating, score_gap) and _values_are_well_formed(data),
             fmt_rating_range=fmt_rating_range,
             **answer_fmt,
         )
@@ -372,7 +475,7 @@ def parse_judge_verdict(completion: str | None) -> JudgeVerdict:
             **answer_fmt,
         )
 
-    recovered = _extract_turing_rating(text)
+    recovered = _extract_turing_rating(answer_text)
     return JudgeVerdict(
         rating=recovered,
         recovery_rung="rating_text" if recovered is not None else "none",

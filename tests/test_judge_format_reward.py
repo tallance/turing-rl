@@ -227,7 +227,14 @@ def test_scanner_ignores_nested_and_quoted_keys():
 
 
 def test_scanner_survives_truncation_mid_string():
-    assert top_level_json_keys('{"a": 1, "b": "unterminated') == ["a", "b"]
+    """Only COMPLETED entries count, so "b" -- whose value is unterminated -- is not yet emitted."""
+    assert top_level_json_keys('{"a": 1, "b": "unterminated') == ["a"]
+
+
+def test_scanner_requires_a_delimited_value():
+    """A key with no value earns nothing. This is the key-only farming exploit, in miniature."""
+    assert top_level_json_keys('{"a":,"b":}') == []
+    assert top_level_json_keys('{"a": 1,"b":}') == ["a"]
 
 
 def test_scanner_returns_nothing_without_an_object():
@@ -251,3 +258,95 @@ def test_verdict_defaults_keep_old_constructions_working():
     )
 
     assert verdict.format_score == pytest.approx(0.0)
+
+
+# --- reward-hacking regression cover ---------------------------------------------------------
+#
+# Each case below scored at or above an honest answer before being closed. The invariant that
+# ties them together: a correct, complete, in-range verdict must strictly dominate every
+# degenerate alternative. Numbers assume a correct rating, i.e. task reward 1.0.
+
+
+def _total(text, task=1.0):
+    verdict = parse_judge_verdict(text)
+    effective_task = task if verdict.recovered else 0.0
+    return 0.9 * effective_task + 0.1 * verdict.format_score
+
+
+def _absurd_verdict():
+    """Internally consistent arithmetic over values the rubric cannot produce."""
+    payload = _full_verdict_dict()
+    for field in ("immediate_target_score_b", "human_goal_score_b", "communication_style_score_b"):
+        payload[field] = 10.0        # declared maximum is 1.0
+    payload["base_score_b"] = 30.0   # declared maximum is 3.0
+    payload["response_b_score"] = 30.0
+    payload["score_gap"] = 30.0      # declared range is [-3, 3]
+    payload["rating"] = derive_rating(payload)[0]
+    return json.dumps(payload)
+
+
+def test_key_only_output_earns_nothing():
+    """`{"field":,"field":,...}` is 37 keys, no values, invalid JSON. It scored 0.96."""
+    key_only = "{" + ",".join(f'"{name}":' for name in TURING_FIELDS) + "}"
+
+    assert parse_judge_verdict(key_only).fmt_ordered_coverage == pytest.approx(0.0)
+    assert _total(key_only) == pytest.approx(0.0)
+
+
+def test_reasoning_only_completion_earns_no_task_reward():
+    """Reasoning to a full verdict then emitting no answer scored 0.91, tying honest compact.
+
+    judge_reward scores an unrecovered verdict at task 0.0, so refusing to read the reasoning
+    block makes actually answering necessary rather than merely worth 0.1.
+    """
+    completion = f"thinking {_full_verdict_json()} done\n</think>\n\n"
+    verdict = parse_judge_verdict(completion)
+
+    assert verdict.recovered is False
+    assert verdict.recovery_rung == "none"
+    assert _total(completion) == pytest.approx(0.0)
+
+
+def test_out_of_range_values_lose_coverage_schema_and_arithmetic():
+    """Scores of 10 and a gap of 30 are internally consistent, and scored a perfect 1.0."""
+    verdict = parse_judge_verdict(_absurd_verdict())
+
+    assert verdict.fmt_exact_schema is False
+    assert verdict.fmt_arith is False, "arithmetic over impossible values is not consistency"
+    assert verdict.fmt_ordered_coverage < 0.2
+
+
+def test_non_finite_numbers_are_not_valid_json():
+    """json.loads accepts NaN/Infinity by default; a NaN score_gap satisfied every check."""
+    payload = _full_verdict_dict()
+    payload["score_gap"] = float("nan")
+    text = json.dumps(payload)
+
+    verdict = parse_judge_verdict(text)
+
+    assert verdict.fmt_strict_json is False
+    assert verdict.fmt_exact_schema is False
+
+
+def test_rating_must_be_a_strict_in_range_integer():
+    for bad in (99, 0, 6.0, True):
+        payload = _full_verdict_dict()
+        payload["rating"] = bad
+        assert parse_judge_verdict(json.dumps(payload)).fmt_exact_schema is False, bad
+
+
+def test_honest_output_strictly_dominates_every_known_exploit():
+    """The invariant. If this fails, some degenerate policy pays at least as well as answering."""
+    honest = _total(_full_verdict_json())
+    nan_payload = _full_verdict_dict()
+    nan_payload["score_gap"] = float("nan")
+
+    exploits = {
+        "key-only": "{" + ",".join(f'"{n}":' for n in TURING_FIELDS) + "}",
+        "reasoning-only": f"thinking {_full_verdict_json()} done\n</think>\n\n",
+        "out-of-range": _absurd_verdict(),
+        "non-finite": json.dumps(nan_payload),
+        "compact": COMPACT,
+    }
+    for name, text in exploits.items():
+        assert _total(text) < honest, f"{name} scores {_total(text):.4f} vs honest {honest:.4f}"
