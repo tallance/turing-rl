@@ -159,6 +159,19 @@ def get_chat_template_kwargs_for_prompt_mode(prompt_mode: str | None) -> dict[st
     }
 
 
+def has_hidden_thinking_close(text: str | None) -> bool:
+    """True when the completion closed its Qwen thinking block at least once.
+
+    Distinguishes "reasoned, then answered" from "was still reasoning when the response cap cut
+    it off". Under thinking-ON those mean opposite things, and ``split_after_hidden_thinking``
+    alone cannot tell them apart because it returns the input unchanged in both the marker-absent
+    and thinking-disabled cases.
+    """
+    if not isinstance(text, str):
+        return False
+    return _HIDDEN_THINKING_CLOSE_TAG_RE.search(text) is not None
+
+
 def split_after_hidden_thinking(text: str | None) -> str:
     """Return the answer portion following the final Qwen ``</think>`` marker.
 

@@ -27,7 +27,18 @@ ARMS = (ARM_DIRECTIONAL, ARM_GRADED)
 DEFAULT_TASK_WEIGHT = 0.9
 DEFAULT_FORMAT_WEIGHT = 0.1
 
-RECOVERY_RUNGS = ("dimensions", "score_gap", "rating_field", "rating_text", "none")
+# "unclosed_thinking" is distinct from "none": the model never closed its <think> block, so the
+# response cap cut it off mid-reasoning and no answer was produced. Worth its own metric because
+# under thinking-ON it is the failure mode that decides whether a size is trainable at all --
+# the 2B logged a 93.75% clip ratio at step 0.
+RECOVERY_RUNGS = (
+    "dimensions",
+    "score_gap",
+    "rating_field",
+    "rating_text",
+    "unclosed_thinking",
+    "none",
+)
 
 _TIE_RATING = 4
 

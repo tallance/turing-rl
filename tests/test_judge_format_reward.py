@@ -167,7 +167,7 @@ def test_reasoning_then_answer_earns_full_format_credit():
     """
     completion = f"Let me weigh both turns.\n</think>\n\n{_full_verdict_json()}"
 
-    verdict = parse_judge_verdict(completion)
+    verdict = parse_judge_verdict(completion, thinking_enabled=True)
 
     assert verdict.format_score == pytest.approx(1.0, abs=0.01)
     assert verdict.fmt_strict_json is True
@@ -179,7 +179,7 @@ def test_reasoning_naming_fields_with_a_compact_answer_earns_no_coverage():
     named = " ".join(f'"{name}"' for name in TURING_FIELDS[:20])
     completion = f"I will report {named}.\n</think>\n\n{COMPACT}"
 
-    verdict = parse_judge_verdict(completion)
+    verdict = parse_judge_verdict(completion, thinking_enabled=True)
 
     assert verdict.fmt_ordered_coverage == pytest.approx(0.0)
     assert verdict.format_score == pytest.approx(0.1, abs=0.01)
@@ -188,7 +188,7 @@ def test_reasoning_naming_fields_with_a_compact_answer_earns_no_coverage():
 def test_only_the_final_think_marker_splits_the_answer():
     completion = f"a</think>b</think>\n{_full_verdict_json()}"
 
-    assert parse_judge_verdict(completion).fmt_exact_schema is True
+    assert parse_judge_verdict(completion, thinking_enabled=True).fmt_exact_schema is True
 
 
 def test_thinking_off_completions_are_unaffected():
@@ -267,8 +267,8 @@ def test_verdict_defaults_keep_old_constructions_working():
 # degenerate alternative. Numbers assume a correct rating, i.e. task reward 1.0.
 
 
-def _total(text, task=1.0):
-    verdict = parse_judge_verdict(text)
+def _total(text, task=1.0, thinking_enabled=None):
+    verdict = parse_judge_verdict(text, thinking_enabled=thinking_enabled)
     effective_task = task if verdict.recovered else 0.0
     return 0.9 * effective_task + 0.1 * verdict.format_score
 
@@ -300,11 +300,11 @@ def test_reasoning_only_completion_earns_no_task_reward():
     block makes actually answering necessary rather than merely worth 0.1.
     """
     completion = f"thinking {_full_verdict_json()} done\n</think>\n\n"
-    verdict = parse_judge_verdict(completion)
+    verdict = parse_judge_verdict(completion, thinking_enabled=True)
 
     assert verdict.recovered is False
     assert verdict.recovery_rung == "none"
-    assert _total(completion) == pytest.approx(0.0)
+    assert _total(completion, thinking_enabled=True) == pytest.approx(0.0)
 
 
 def test_out_of_range_values_lose_coverage_schema_and_arithmetic():
@@ -349,4 +349,72 @@ def test_honest_output_strictly_dominates_every_known_exploit():
         "compact": COMPACT,
     }
     for name, text in exploits.items():
-        assert _total(text) < honest, f"{name} scores {_total(text):.4f} vs honest {honest:.4f}"
+        thinking = name == "reasoning-only"
+        got = _total(text, thinking_enabled=thinking)
+        assert got < honest, f"{name} scores {got:.4f} vs honest {honest:.4f}"
+
+
+# --- unclosed thinking: the dominant shape at a 93.75% clip ratio -----------------------------
+
+
+def test_capped_mid_reasoning_earns_nothing_under_thinking_on():
+    """A response cut off before it ever emits </think> has produced no answer.
+
+    Inferring the mode from the text scored the *reasoning* as the answer here, paying 0.97 for a
+    rollout that rambled a full verdict mid-thought and got cut off -- while a rollout that
+    closed its block and then failed to answer paid 0.00. That rewarded never terminating the
+    reasoning, and at the 2B's measured 93.75% clip ratio it is the common path, not an edge case.
+    """
+    completion = f"Let me work through it. {_full_verdict_json()} hmm, but wait"
+
+    verdict = parse_judge_verdict(completion, thinking_enabled=True)
+
+    assert verdict.recovery_rung == "unclosed_thinking"
+    assert verdict.recovered is False
+    assert verdict.format_score == pytest.approx(0.0)
+    assert _total(completion, thinking_enabled=True) == pytest.approx(0.0)
+
+
+def test_closing_the_block_is_never_worse_than_not_closing_it():
+    """The perverse-incentive check: terminating your reasoning must not cost reward."""
+    body = f"Let me work through it. {_full_verdict_json()}"
+    unclosed = _total(body, thinking_enabled=True)
+    closed_no_answer = _total(f"{body}\n</think>\n\n", thinking_enabled=True)
+    closed_answered = _total(f"{body}\n</think>\n\n{_full_verdict_json()}", thinking_enabled=True)
+
+    assert unclosed <= closed_no_answer
+    assert closed_no_answer < closed_answered
+
+
+def test_thinking_on_still_pays_for_a_truncated_ANSWER():
+    """Truncation after </think> is partial work and still earns its ordered prefix."""
+    full = _full_verdict_json()
+    completion = f"reasoning\n</think>\n\n{full[: full.index(chr(34) + TURING_FIELDS[6] + chr(34))]}"
+
+    verdict = parse_judge_verdict(completion, thinking_enabled=True)
+
+    assert verdict.recovery_rung != "unclosed_thinking"
+    assert verdict.fmt_ordered_coverage > 0.0
+
+
+def test_thinking_off_treats_the_whole_completion_as_the_answer():
+    """The retained ablation runs and every generator run must be unaffected."""
+    marker_free = f"prose {_full_verdict_json()} more prose"
+
+    verdict = parse_judge_verdict(marker_free, thinking_enabled=False)
+
+    assert verdict.recovery_rung == "dimensions"
+    assert verdict.fmt_ordered_coverage == pytest.approx(1.0)
+
+
+def test_mode_defaults_to_the_propagated_environment(monkeypatch):
+    """Reward scoring must see the same mode generation ran under, without being told twice."""
+    from shared.prompt_utils import ENABLE_THINKING_OVERRIDE_ENV
+
+    completion = f"reasoning {_full_verdict_json()} still going"
+
+    monkeypatch.setenv(ENABLE_THINKING_OVERRIDE_ENV, "1")
+    assert parse_judge_verdict(completion).recovery_rung == "unclosed_thinking"
+
+    monkeypatch.setenv(ENABLE_THINKING_OVERRIDE_ENV, "0")
+    assert parse_judge_verdict(completion).recovery_rung == "dimensions"

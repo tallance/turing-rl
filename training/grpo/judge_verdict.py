@@ -24,7 +24,11 @@ from shared.judge_utils import (
     _extract_turing_rating,
     _rating_from_turing_score_gap,
 )
-from shared.prompt_utils import split_after_hidden_thinking
+from shared.prompt_utils import (
+    has_hidden_thinking_close,
+    prompt_mode_uses_chat_template_thinking,
+    split_after_hidden_thinking,
+)
 
 TURING_FIELDS: tuple[str, ...] = tuple(TURING_RESPONSE_PROPERTIES)
 
@@ -391,7 +395,31 @@ def _arithmetic_is_consistent(data: dict, rating: int, score_gap: float) -> bool
     return _coerce_turing_rating(data.get("rating")) == rating
 
 
-def parse_judge_verdict(completion: str | None) -> JudgeVerdict:
+def resolve_answer_text(completion: str, thinking_enabled: bool | None = None) -> str | None:
+    """The answer portion of a completion, or None when no answer was produced.
+
+    ``thinking_enabled`` defaults to the propagated PERSONA_ENABLE_THINKING, which the driver
+    seeds from ``data.apply_chat_template_kwargs.enable_thinking`` and pushes to every rollout
+    worker, so reward scoring sees the same mode generation ran under.
+
+    The mode has to be an input rather than inferred from the text. Inferring it left a large
+    hole: under thinking-ON, a response capped before it ever emitted ``</think>`` has no marker,
+    so treating "no marker" as "the whole completion is the answer" scored the *reasoning* as an
+    answer. A rollout that rambled a full verdict mid-thought and got cut off earned 0.97, while
+    one that closed its block and then failed to answer earned 0.00 -- rewarding the model for
+    never terminating its reasoning. At the 2B's measured 93.75% clip rate that is the dominant
+    path, not an edge case.
+    """
+    if thinking_enabled is None:
+        thinking_enabled = prompt_mode_uses_chat_template_thinking()
+    if not thinking_enabled:
+        return completion
+    if not has_hidden_thinking_close(completion):
+        return None  # still reasoning when the cap hit: nothing was answered
+    return split_after_hidden_thinking(completion)
+
+
+def parse_judge_verdict(completion: str | None, *, thinking_enabled: bool | None = None) -> JudgeVerdict:
     """Recover a rating and score format quality from one rollout completion."""
     text = completion if isinstance(completion, str) else ""
 
@@ -399,7 +427,19 @@ def parse_judge_verdict(completion: str | None) -> JudgeVerdict:
     # `reasoning...</think>\n\n{json}`, and </think> survives skip_special_tokens, so scoring the
     # whole string would fail json.loads on every well-formed answer and would credit field names
     # the model merely mentioned while reasoning.
-    answer_text = split_after_hidden_thinking(text)
+    resolved = resolve_answer_text(text, thinking_enabled)
+    if resolved is None:
+        # Thinking was enabled and the block never closed. No answer exists, so there is nothing
+        # to score on either axis; judge_reward turns an unrecovered verdict into task 0.0.
+        return JudgeVerdict(
+            rating=None,
+            recovery_rung="unclosed_thinking",
+            fmt_json_valid=False,
+            fmt_all_fields=False,
+            fmt_arith=False,
+            fmt_rating_range=False,
+        )
+    answer_text = resolved
     ordered_coverage = ordered_prefix_coverage(top_level_json_entries(answer_text))
     strict_parsed, exact_schema = strict_parse_answer(answer_text)
     strict_json = strict_parsed is not None
