@@ -21,8 +21,8 @@ def _env(tmp_path: Path) -> dict[str, str]:
 
     baseline = tmp_path / "source-judge" / "on"
     (baseline / "reward").mkdir(parents=True)
-    (baseline / "reward" / "reward-18447-1.jsonl").write_text('{"pair": 1}\n')
-    (baseline / "run_metadata.json").write_text('{"slurm_job_id": "18447"}\n')
+    (baseline / "reward" / "reward-12345-1.jsonl").write_text('{"pair": 1}\n')
+    (baseline / "run_metadata.json").write_text('{"slurm_job_id": "12345"}\n')
 
     model = tmp_path / "judge" / "hf_dense"
     model.mkdir(parents=True)
@@ -69,11 +69,11 @@ def test_reuses_step0_and_records_exact_source_hashes(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     eval_root = Path(env["EVAL_ROOT"])
     reused = eval_root / "raw/9b-full5ep-step0/sweep/judge-9b-brier/on"
-    assert (reused / "reward/reward-18447-1.jsonl").read_text() == '{"pair": 1}\n'
+    assert (reused / "reward/reward-12345-1.jsonl").read_text() == '{"pair": 1}\n'
     assert (eval_root / "raw/pairs/gen_9b-full5ep-step0_880.parquet").read_text() == "pairs-0\n"
 
     provenance = json.loads((eval_root / "provenance/baseline_reuse.json").read_text())
-    assert provenance["source_slurm_job_id"] == "18447"
+    assert provenance["source_slurm_job_id"] == "12345"
     assert provenance["source_cell_root"] == env["BASELINE_CELL_ROOT"]
     assert len(provenance["source_tree_sha256"]) == 64
     assert len(provenance["pair_sha256"]) == 64
@@ -115,3 +115,29 @@ def test_refuses_a_missing_model_or_epoch_pair_set(tmp_path: Path) -> None:
     )
     assert missing_pairs.returncode != 0
     assert "missing pair set" in missing_pairs.stderr
+
+
+def test_requires_explicit_judge_model_and_step0_baseline(tmp_path: Path) -> None:
+    missing_model_env = _env(tmp_path / "missing-model")
+    missing_model_env.pop("MODEL")
+    missing_model = subprocess.run(
+        ["bash", str(LAUNCHER)],
+        env=missing_model_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert missing_model.returncode != 0
+    assert "set MODEL" in missing_model.stderr
+
+    missing_baseline_env = _env(tmp_path / "missing-baseline")
+    missing_baseline_env.pop("BASELINE_CELL_ROOT")
+    missing_baseline = subprocess.run(
+        ["bash", str(LAUNCHER)],
+        env=missing_baseline_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert missing_baseline.returncode != 0
+    assert "set BASELINE_CELL_ROOT" in missing_baseline.stderr

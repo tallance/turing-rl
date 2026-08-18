@@ -1,5 +1,5 @@
 #!/bin/bash
-# Score one generator checkpoint per epoch with the trained Qwen3.5-9B graded/Brier judge.
+# Score generator checkpoints with an explicitly selected trained Brier judge.
 set -euo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -11,8 +11,8 @@ cd "$REPO"
 
 EVAL_ROOT=${EVAL_ROOT:-${TURING_RL_RUN_ROOT:?}}
 SOURCE_EVAL_ROOT=${SOURCE_EVAL_ROOT:-/home/lancewicki/projects/turing-rl/results/2026-08-10-test-eval-9b-full5ep-full-schema}
-BASELINE_CELL_ROOT=${BASELINE_CELL_ROOT:-/home/lancewicki/projects/turing-rl/results/2026-08-17-judge-9b-eval/raw/sweep/judge-9b-graded-step52/on}
-MODEL=${MODEL:-/home/lancewicki/projects/turing-rl/results/2026-08-17-judge-9b-eval/models/judge-9b-graded-step52/hf_dense}
+BASELINE_CELL_ROOT=${BASELINE_CELL_ROOT:?set BASELINE_CELL_ROOT to the selected judge completed step-0 cell}
+MODEL=${MODEL:?set MODEL to the validated dense trained-judge directory}
 STEPS=${STEPS:-"64 128 192 256 320"}
 GEN_KEY_PREFIX=${GEN_KEY_PREFIX:-9b-full5ep-step}
 PAIRS_TAG=${PAIRS_TAG:-880}
