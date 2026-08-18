@@ -412,40 +412,43 @@ def test_gemma_snapshot_pin_matches_the_eval_cell_script():
     assert "--reasoning-parser gemma4" in SWEEP_CELL
 
 
-def test_serve_script_reuses_the_parents_runtime_view_instead_of_recreating_it():
+def test_srun_children_reuse_the_parents_runtime_view_instead_of_recreating_it():
     # turing_rl_prepare_runtime keys its work directory off SLURM_JOB_ID alone and hard-fails
-    # if it already exists. rl_generator_run_9b.sh prepares the runtime and then sruns this
-    # script inside the SAME job, so an unconditional bootstrap collides with the parent and
-    # kills the judge step ~12 s in -- jobs 18499 and 18500 both died exactly there, with
-    # "FATAL: runtime work directory already exists". The parent exports TURING_RL_WORK_ROOT,
-    # so guard on it: present means reuse, absent means this script is the top-level job.
-    assert 'if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then' in SERVE
-    guard_at = SERVE.index('if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then')
-    bootstrap_at = SERVE.index("cluster_job_bootstrap.sh")
-    assert guard_at < bootstrap_at, "the bootstrap must be inside the guard, not before it"
-    # The driver still prepares one, so the pair as a whole always has a runtime view.
+    # if it already exists. rl_generator_run_9b.sh prepares the runtime and then sruns BOTH
+    # the judge server and the trainer inside the SAME job, so an unconditional bootstrap in
+    # either child collides with the parent. Both failure modes were observed:
+    #   18499/18500 -- the judge step died ~12 s in
+    #   18502       -- the judge came up and published its endpoint, then the trainer died
+    # The parent exports TURING_RL_WORK_ROOT, so guard on it: present means reuse, absent
+    # means this script is the top-level job and must prepare its own view.
+    for name, src in (("judge_serve_9b_replicas.sh", SERVE), ("rl_generator_train_9b.sh", S)):
+        assert 'if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then' in src, f"{name} lacks the guard"
+        guard_at = src.index('if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then')
+        bootstrap_at = src.index("cluster_job_bootstrap.sh")
+        assert guard_at < bootstrap_at, f"{name}: bootstrap must be inside the guard"
+    # The driver is the top-level script and still prepares one unconditionally.
     assert "cluster_job_bootstrap.sh" in RUN_2NODE
+    driver_guard = RUN_2NODE.find('if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then')
+    assert driver_guard == -1, "the driver IS the top-level script; it must not guard"
 
 
-def test_serve_script_bootstrap_guard_actually_fires():
-    # Functional counterpart: run the real guard both ways. A `-n` test would pass even if
-    # the condition were inverted.
-    start = SERVE.index('if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then')
-    guard = SERVE[start : SERVE.index("fi", start) + 2]
-    # Stub the bootstrap so we observe only whether it WOULD have been sourced.
-    script = (
-        'set -uo pipefail\n'
-        'TURING_RL_CODE_ROOT=/nonexistent\n'
-        'source() { echo SOURCED; }\n'
-        + guard.replace("source ", "source ")
-        + '\necho DONE'
-    )
-    parent_prepared = subprocess.run(
-        ["bash", "-c", "TURING_RL_WORK_ROOT=/some/work/root\n" + script],
-        capture_output=True, text=True,
-    )
-    assert "SOURCED" not in parent_prepared.stdout, "must NOT re-prepare when the parent did"
-    assert "DONE" in parent_prepared.stdout
+def test_runtime_view_guard_actually_fires_in_both_children():
+    # Functional counterpart: run the real guard both ways. A static check would pass even
+    # if the condition were inverted.
+    for name, src in (("judge_serve_9b_replicas.sh", SERVE), ("rl_generator_train_9b.sh", S)):
+        start = src.index('if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then')
+        guard = src[start : src.index("fi", start) + 2]
+        script = (
+            'set -uo pipefail\n'
+            'TURING_RL_CODE_ROOT=/nonexistent\n'
+            'source() { echo SOURCED; }\n' + guard + '\necho DONE'
+        )
+        parent = subprocess.run(
+            ["bash", "-c", "TURING_RL_WORK_ROOT=/some/work/root\n" + script],
+            capture_output=True, text=True,
+        )
+        assert "SOURCED" not in parent.stdout, f"{name}: must not re-prepare under a parent"
+        assert "DONE" in parent.stdout, f"{name}: {parent.stderr}"
 
-    standalone = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-    assert "SOURCED" in standalone.stdout, "must prepare its own view when run standalone"
+        standalone = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+        assert "SOURCED" in standalone.stdout, f"{name}: must prepare its own view standalone"

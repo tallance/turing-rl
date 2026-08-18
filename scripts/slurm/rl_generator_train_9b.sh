@@ -17,7 +17,14 @@
 # run_verl_main_ppo directly (option A) with explicit overrides + the reward env inherited
 # from the driver. Scancels the judge serve job on exit.
 set -uo pipefail
-source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
+# Prepare a runtime view only when we are the top-level job script -- see the identical
+# guard in judge_serve_9b_replicas.sh. turing_rl_prepare_runtime keys its work directory
+# off SLURM_JOB_ID and hard-fails if it exists, and rl_generator_run_9b.sh sruns BOTH the
+# judge and this trainer inside one job. Job 18502 got the judge up and published its
+# endpoint, then died here with "FATAL: runtime work directory already exists".
+if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then
+  source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
+fi
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
