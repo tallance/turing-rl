@@ -64,7 +64,8 @@ def test_defaults_to_thinking_on_for_all_nine_comparison_cells(tmp_path: Path) -
     planned = _planned(result)
     assert len(planned) == 9
     assert all("THINKING_MODE=on" in line for line in planned)
-    assert sum("--dependency=afterany:" in line for line in planned) == 8
+    assert sum("--dependency=afterok:" in line for line in planned) == 8
+    assert not any("--dependency=afterany:" in line for line in planned)
 
 
 def test_thinking_off_requires_explicit_confirmation(tmp_path: Path) -> None:

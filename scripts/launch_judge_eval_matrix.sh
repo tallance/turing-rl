@@ -47,8 +47,7 @@ done
 
 # cell_name, model, tensor parallelism, replicas, and concurrency per endpoint.
 # Every row occupies one eight-A100 node. The known high-retry directional 9B cell is
-# deliberately last; afterany serialization lets all independent rows finish even if it
-# exits nonzero for a small number of truncated records.
+# deliberately last so a failure there cannot block the other comparison cells.
 MATRIX=$(cat <<EOF
 judge-9b-graded-step52 $JUDGE_9B_GRADED_MODEL 1 8 32
 judge-4b-graded-step52 $JUDGE_4B_GRADED_MODEL 1 8 32
@@ -81,7 +80,7 @@ while read -r cell model tp replicas concurrency; do
   [ -n "$cell" ] || continue
   gpus=$((tp * replicas))
   dependency=""
-  [ -n "$previous" ] && dependency="--dependency=afterany:$previous"
+  [ -n "$previous" ] && dependency="--dependency=afterok:$previous"
   exports="ALL,MODEL=$model,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency"
   exports="$exports,THINKING_MODE=$THINKING_MODE,CELL_NAME=$cell,PAIRS=$PAIRS,SWEEP_ROOT=$SWEEP_ROOT"
 
@@ -96,7 +95,7 @@ while read -r cell model tp replicas concurrency; do
       ''|*[!0-9]*) echo "FATAL: sbatch failed for $cell (got '$jid')" >&2; exit 1 ;;
     esac
   fi
-  echo "submitted $cell ($THINKING_MODE) -> $jid${previous:+ (afterany $previous)}"
+  echo "submitted $cell ($THINKING_MODE) -> $jid${previous:+ (afterok $previous)}"
   previous=$jid
 done <<< "$MATRIX"
 
