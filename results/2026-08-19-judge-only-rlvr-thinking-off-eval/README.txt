@@ -1,5 +1,5 @@
-Judge-only RLVR round 1: thinking-OFF held-out evaluation
-=========================================================
+Judge-only RLVR round 1: held-out thinking-mode comparison
+===========================================================
 Provenance and mechanical validation only. Finalized 2026-08-19.
 
 RUN
@@ -12,6 +12,10 @@ Git source/main SHA: a0599c6aa7d3fee19d904a533a0c5c1870a3acea
 Launcher: scripts/launch_judge_eval_matrix.sh
 Run class/dependency profile: retained / eval
 Evaluation interval: 2026-08-19T08:01:28 through 2026-08-19T11:05:17 UTC.
+
+Thinking-ON zero-shot source root:
+  /home/lancewicki/projects/turing-rl/results/2026-08-10-test-eval-9b-full5ep-full-schema
+Source commit: a6b3990f702f43b28ba0b233197c2885b01c5fff
 
 Jobs and cells are recorded in job_accounting.txt:
   18637 judge-9b-graded-step52
@@ -53,10 +57,15 @@ Rows/users: 880 / 128
 Parquet SHA-256:
   95f48a9c52d85a6f6c49fd3387e60efe0e1ee5e436bd961f1884750ecfcf7783
 
-Every cell used THINKING_MODE=off, the full ordered response schema, 8192
+New cells used THINKING_MODE=off, the full ordered response schema, 8192
 maximum completion tokens, and the model generation_config sampling defaults.
 The four trained judges and Qwen 4B/9B/Gemma 12B used TP=1 x 8 replicas.
 Qwen 27B and Gemma 31B used TP=8 x 1 replica.
+
+Thinking-ON zero-shot rows use the finalized corrected full-schema step-0
+summaries. Source jobs: Qwen 9B=15245, Gemma 12B=15365, Gemma 31B=15557,
+Qwen 4B=15961, and Qwen 27B=17022. The plot includes only the 4B and 9B
+graded/Brier RL judges; the directional/0-1 RL rows are omitted.
 
 For each record:
   rating = rating_gt_first for randomized_order=gt_first, else rating_gen_first
@@ -76,24 +85,25 @@ Local plot: Python 3.9.6, matplotlib 3.9.4.
 
 MECHANICAL VALIDATION
 ---------------------
-All nine jobs completed with exit 0:0. Every cell has exactly 880 JSONL rows,
-880 unique (user_id, post_id, target_idx) keys, 880 ratings in [1, 7], zero
-unparsed records, and zero length-truncated records. See validation.txt.
+All nine thinking-OFF jobs completed with exit 0:0 and 880 valid ratings per
+cell. The five thinking-ON zero-shot cells have 880 pair rows; Qwen 9B has 870
+valid Likert ratings, Qwen 27B has 878, and the other three have 880. See
+validation.txt.
 
 ARTIFACTS
 ---------
   judge_eval_880.csv
-    9d6429e0ae14433e53ac7d448075fb9a421e3c9a4502ce6f607bc4aed8d080ee
+    0859e0bae1da6c439186659d289fed67bfde10a6a54f8278e8a66c25691f7c09
   judge_eval_880_accuracy.png
-    8762473c5851d100d50a2876312579e8ad9a5e67fe6e5e55a4b0c0d6b96c5e68
+    a4625f959570396e66af556e03386e9c436441d38582353057a5065b279273ca
   job_accounting.txt
-    3acab820e946aa22a89eb562db37982ef674efa5acead07fb06a4f8051930e76
+    b0fa919afc4224f643eab8e4f791716e1819ee2521378eb736bafa176d76feef
   validation.txt
-    b846e92f64509e728d0f607f18919a30345ef33081dca631ee3f55e6969da6c0
+    a14a4cb2e023751534157173e8f47e7d30aa685696868be1d8924ec76ab2662d
   plot/plot_judge_eval.py
-    b361de9e803aaa8e04089e11a9f8b19376b28165c9429c20807465d628e5ed6d
+    317c42c6f2ec45aa1b1118ee621d74cbb196fc947e19dcd5c0f40ef5f4c573fe
 
-The earlier 2026-08-12 plot is retained separately; it evaluated these
+The earlier 2026-08-12 plot is retained separately; it evaluated the
 thinking-OFF-trained judges with THINKING_MODE=on.
 
 REPRODUCTION

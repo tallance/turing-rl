@@ -1,7 +1,14 @@
 Mechanical validation performed 2026-08-19.
 
-All jobs 18637-18645: COMPLETED, exit 0:0.
-Every cell: 880 JSONL rows, 880 unique (user_id, post_id, target_idx) keys,
-880 ratings in [1, 7], zero unparsed records, zero length-truncated records.
-Every cell output path is mode-scoped under <cell>/off/.
-Every client shard reported err=0 and the parent job reported clients exit 0.
+Thinking-OFF source: all jobs 18637-18645 COMPLETED with exit 0:0. Every cell
+has 880 JSONL rows, 880 unique (user_id, post_id, target_idx) keys, 880 ratings
+in [1, 7], zero unparsed records, and zero length-truncated records. Every client
+shard reported err=0 and the parent job reported clients exit 0.
+
+Thinking-ON zero-shot source: finalized corrected full-schema step-0 summaries
+from results/2026-08-10-test-eval-9b-full5ep-full-schema. All five cells have
+880 unique pair rows. Valid Likert counts are Qwen 9B=870, Qwen 27B=878, and
+Qwen 4B/Gemma 12B/Gemma 31B=880. Source jobs are recorded in job_accounting.txt.
+
+Plot CSV: two Brier-RL OFF/OFF rows plus paired ON/OFF rows for all five
+zero-shot models. No directional/0-1 RL row is included.
