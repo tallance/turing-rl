@@ -7,6 +7,7 @@ correctly configured, reported `data.max_response_length: 10752`, and still gene
 7680 tokens -- answering the wrong question (job 18583, 100% unclosed_thinking at step 0).
 """
 
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -109,3 +110,53 @@ def test_overfit_gate_still_uses_deterministic_leading_pairs():
     overfit = launcher.split('if [ "$MODE" = overfit ]; then', 1)[1].split('if [ "$MODE" = valsmoke ]', 1)[0]
 
     assert "--select" not in overfit, "the overfit gate should keep the default 'first' selection"
+
+
+def test_longest_selection_actually_picks_the_longest_pairs():
+    """Behavioural, not a string match on the launcher.
+
+    The previous test only asserted that '--select longest' appears in launch_judge_train.sh,
+    which would still pass if the flag were parsed and ignored. This exercises the selection.
+    """
+    import pandas as pd
+
+    from scripts.build_judge_overfit import build_judge_overfit
+
+    rows = []
+    for pair, size in enumerate([10, 500, 30, 900, 70]):  # deliberately unordered
+        for human_is_b in (False, True):
+            rows.append(
+                {
+                    "data_source": "prism_judge",
+                    "prompt": [{"role": "user", "content": "x" * size}],
+                    "reward_model": {"style": "rule"},
+                    "extra_info": {"pair_id": f"p{pair}", "human_is_b": human_is_b},
+                }
+            )
+    src = Path(tempfile.mkdtemp()) / "src.parquet"
+    pd.DataFrame(rows).to_parquet(src, index=False)
+
+    longest = build_judge_overfit(str(src), str(src.parent / "longest.parquet"), 2, "longest")
+    first = build_judge_overfit(str(src), str(src.parent / "first.parquet"), 2, "first")
+
+    got = {info["pair_id"] for info in longest["extra_info"]}
+    assert got == {"p3", "p1"}, f"expected the 900- and 500-char pairs, got {got}"
+    assert {info["pair_id"] for info in first["extra_info"]} == {"p0", "p1"}
+    # Both orders of each pair survive, so human_is_b stays balanced.
+    assert len(longest) == 4
+    assert sum(info["human_is_b"] for info in longest["extra_info"]) * 2 == len(longest)
+
+
+def test_longest_selection_rejects_an_unknown_mode():
+    import pandas as pd
+
+    from scripts.build_judge_overfit import build_judge_overfit
+
+    src = Path(tempfile.mkdtemp()) / "s.parquet"
+    pd.DataFrame(
+        [{"data_source": "d", "prompt": [{"role": "user", "content": "x"}],
+          "reward_model": {"style": "rule"}, "extra_info": {"pair_id": "p0", "human_is_b": False}}]
+    ).to_parquet(src, index=False)
+
+    with pytest.raises(ValueError, match="select must be"):
+        build_judge_overfit(str(src), str(src.parent / "o.parquet"), 1, "middle")
