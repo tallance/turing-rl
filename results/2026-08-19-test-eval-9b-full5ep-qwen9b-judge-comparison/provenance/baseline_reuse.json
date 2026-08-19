@@ -1,0 +1,9 @@
+{
+  "destination_cell_root": "/home/lancewicki/projects/turing-rl/results/2026-08-19-test-eval-9b-full5ep-brier-train-off-eval-thinking-off/raw/9b-full5ep-step0/sweep/judge-9b-brier-train-off/off",
+  "format_version": 1,
+  "pair_sha256": "95f48a9c52d85a6f6c49fd3387e60efe0e1ee5e436bd961f1884750ecfcf7783",
+  "pair_source": "/home/lancewicki/projects/turing-rl/results/2026-08-10-test-eval-9b-full5ep-full-schema/raw/pairs/gen_9b-full5ep-step0_880.parquet",
+  "source_cell_root": "/home/lancewicki/projects/turing-rl/results/2026-08-19-judge-only-rlvr-thinking-off-eval/raw/sweep/judge-9b-graded-step52/off",
+  "source_slurm_job_id": "18637",
+  "source_tree_sha256": "fb702d5ece49db0d55fa945e25ecfffc9f6b5c57afb275ac56f82a8657541d0f"
+}

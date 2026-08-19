@@ -1,12 +1,23 @@
-_step,epoch,val_reward_mean,source
-0,0,0.44647938507908047,wandb u5qaz45l
-6,1,0.4529921155560508,wandb u5qaz45l
-12,2,0.49656334084284026,wandb u5qaz45l
-18,3,0.5194544911553914,wandb u5qaz45l
-24,4,0.5567897286488336,wandb u5qaz45l
-30,5,0.5862046215281059,wandb u5qaz45l
-36,6,0.5997618533755568,wandb u5qaz45l
-42,7,0.5957764495820315,wandb u5qaz45l
-48,8,0.6082594981522892,wandb u5qaz45l
-54,9,0.607027904712595,wandb u5qaz45l
-60,10,0.5994352643928406,training log (Final validation metrics)
+step,epoch,val_reward_mean,segment,source
+0,0,0.44647938507908047,job 15371 (epochs 1-10),wandb u5qaz45l
+6,1,0.4529921155560508,job 15371 (epochs 1-10),wandb u5qaz45l
+12,2,0.49656334084284026,job 15371 (epochs 1-10),wandb u5qaz45l
+18,3,0.5194544911553914,job 15371 (epochs 1-10),wandb u5qaz45l
+24,4,0.5567897286488336,job 15371 (epochs 1-10),wandb u5qaz45l
+30,5,0.5862046215281059,job 15371 (epochs 1-10),wandb u5qaz45l
+36,6,0.5997618533755568,job 15371 (epochs 1-10),wandb u5qaz45l
+42,7,0.5957764495820315,job 15371 (epochs 1-10),wandb u5qaz45l
+48,8,0.6082594981522892,job 15371 (epochs 1-10),wandb u5qaz45l
+54,9,0.607027904712595,job 15371 (epochs 1-10),wandb u5qaz45l
+60,10,0.5994352643928406,job 15371 (epochs 1-10),training log (Final validation metrics); wandb lost this point
+60,10,0.5747068401807073,job 18571 (epochs 11-20),wandb clzo0hpw -- val_before_train: SAME weights as the row above
+66,11,0.5890037255224094,job 18571 (epochs 11-20),wandb clzo0hpw
+72,12,0.5874566240765323,job 18571 (epochs 11-20),wandb clzo0hpw
+78,13,0.6015889574720693,job 18571 (epochs 11-20),wandb clzo0hpw
+84,14,0.6062749855230901,job 18571 (epochs 11-20),wandb clzo0hpw
+90,15,0.5830780987373807,job 18571 (epochs 11-20),wandb clzo0hpw
+96,16,0.6085429867327382,job 18571 (epochs 11-20),wandb clzo0hpw
+102,17,0.6042686117474328,job 18571 (epochs 11-20),wandb clzo0hpw
+108,18,0.6054088771766559,job 18571 (epochs 11-20),wandb clzo0hpw
+114,19,0.6231384219771082,job 18571 (epochs 11-20),wandb clzo0hpw
+120,20,0.6025790565181524,job 18571 (epochs 11-20),training log (Final validation metrics); wandb lost this point

@@ -1,0 +1,25 @@
+{
+  "code_root": "/home/lancewicki/projects/turing-rl-sources/9c591dd5ea190cf73fcb59ac0bd0ece8fa672060",
+  "debug_label": null,
+  "dependency_profile": "eval",
+  "environment_keys": [
+    "BASELINE_CELL_ROOT",
+    "CELL_NAME",
+    "CONFIRM_THINKING_OFF",
+    "EVAL_ROOT",
+    "JOB_PREFIX",
+    "MODEL",
+    "SOURCE_EVAL_ROOT",
+    "STEPS",
+    "THINKING_MODE"
+  ],
+  "format_version": 1,
+  "launched_at_utc": "2026-08-19T14:56:26.740068+00:00",
+  "launcher": "scripts/launch_brier_judge_trajectory.sh",
+  "launcher_args": [],
+  "main_sha": "9c591dd5ea190cf73fcb59ac0bd0ece8fa672060",
+  "run_class": "retained",
+  "run_root": "/home/lancewicki/projects/turing-rl/results/2026-08-19-test-eval-9b-full5ep-brier-train-off-eval-thinking-off",
+  "source_sha": "9c591dd5ea190cf73fcb59ac0bd0ece8fa672060",
+  "state_root": "/home/lancewicki/projects/turing-rl"
+}

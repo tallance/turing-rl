@@ -20,13 +20,28 @@ CELL_NAME=${CELL_NAME:-judge-9b-brier}
 JOB_PREFIX=${JOB_PREFIX:-te_brier}
 # Thinking mode defines the comparison. A judge trained thinking-OFF must be scored OFF, and
 # every model in one trajectory must share the mode. judge_sweep_cell.sh writes to
-# $CELL_NAME/$THINKING_MODE, so the families coexist rather than overwrite.
+# $CELL_NAME/$THINKING_MODE, so the two families coexist rather than overwrite each other.
 THINKING_MODE=${THINKING_MODE:-on}
-case "$THINKING_MODE" in on|off) ;; *) echo "FATAL: THINKING_MODE must be on|off, got $THINKING_MODE" >&2; exit 2 ;; esac
+CONFIRM_THINKING_OFF=${CONFIRM_THINKING_OFF:-0}
 TP=${TP:-1}
 REPLICAS=${REPLICAS:-8}
 CONCURRENCY=${CONCURRENCY:-32}
 DRY=${DRY:-0}
+
+case "$THINKING_MODE" in
+  on) ;;
+  off)
+    [ "$CONFIRM_THINKING_OFF" = "1" ] || {
+      echo "FATAL: thinking-off evaluation requires CONFIRM_THINKING_OFF=1" >&2
+      exit 2
+    }
+    case "$EVAL_ROOT" in
+      /*thinking-off*) ;;
+      *) echo "FATAL: a thinking-off EVAL_ROOT must contain 'thinking-off': $EVAL_ROOT" >&2; exit 2 ;;
+    esac
+    ;;
+  *) echo "FATAL: THINKING_MODE must be on|off, got '$THINKING_MODE'" >&2; exit 2 ;;
+esac
 
 [ -d "$MODEL" ] || { echo "FATAL: missing trained judge model: $MODEL" >&2; exit 2; }
 [ -d "$BASELINE_CELL_ROOT/reward" ] || {
@@ -38,8 +53,7 @@ DRY=${DRY:-0}
 # ON step-0 grafted onto an OFF trajectory makes the whole curve cross-mode at its baseline.
 baseline_mode=$(basename "$BASELINE_CELL_ROOT")
 [ "$baseline_mode" = "$THINKING_MODE" ] || {
-  echo "FATAL: BASELINE_CELL_ROOT is a '$baseline_mode' cell but THINKING_MODE=$THINKING_MODE." >&2
-  echo "       Rescore step 0 in $THINKING_MODE mode instead of reusing the other family's cell." >&2
+  echo "FATAL: cross-mode baseline: BASELINE_CELL_ROOT is '$baseline_mode', THINKING_MODE=$THINKING_MODE" >&2
   exit 2
 }
 
@@ -50,6 +64,18 @@ for step in 0 "${step_values[@]}"; do
   pairs=$SOURCE_EVAL_ROOT/raw/pairs/gen_${GEN_KEY_PREFIX}${step}_${PAIRS_TAG}.parquet
   [ -f "$pairs" ] || { echo "FATAL: missing pair set: $pairs" >&2; exit 2; }
 done
+
+# Claim the root before copying the baseline or submitting the first job. This prevents two
+# concurrent invocations from appending duplicate records while both chains are still pending.
+claim=$EVAL_ROOT/provenance/brier_trajectory_submission.claim
+mkdir -p "$EVAL_ROOT/provenance"
+if ! mkdir "$claim" 2>/dev/null; then
+  echo "FATAL: EVAL_ROOT is already claimed for submission: $claim" >&2
+  exit 2
+fi
+printf 'thinking_mode=%s\nsource_sha=%s\nclaimed_at_utc=%s\n' \
+  "$THINKING_MODE" "${TURING_RL_SOURCE_SHA:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$claim/metadata.txt"
 
 # Materialize the already-completed step-0 cell and all six pair sets in this run root. The
 # operation is idempotent only when every existing destination is byte-identical; a mixed or

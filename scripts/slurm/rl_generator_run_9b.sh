@@ -19,10 +19,16 @@
 #
 # Submit through scripts/cluster_launch.sh + scripts/submit_snapshot_job.sh with
 # B0_ROLLOUT_SYNC=1 JUDGE=9b MODE=overfit OVERFIT_EPOCHS=8 RUN_TAG=9b_b0_spike.
-#   JUDGE = 9b | 397b     MODE = overfit | full | epoch1 | full5 | frac10ep10
+#   JUDGE = 9b | 397b | gemma4-12b
+#   MODE  = overfit | full | epoch1 | full5 | frac10ep10 | frac10ep20
 #   full5 = full-dataset 5-epoch production run (325 steps; ckpt + validate every 32).
-#   frac10ep10 = 10% of train (417 rows), 10 epochs (60 steps; ckpt + validate every 6),
-#                validating on 50% of the val split. Judge identical to full5.
+#   frac10ep10 / frac10ep20 = 10% of train (384 rows), 10 or 20 epochs (6 steps/epoch;
+#                ckpt + validate every 6), validating on 50% of the val split.
+#                Re-submitting frac10ep20 with a finished frac10ep10 RUN_TAG RESUMES it
+#                (trainer.resume_mode=auto keys off default_local_dir); a fresh RUN_TAG
+#                starts from the SFT init.
+#   gemma4-12b judge serves from the CUDA-13 nightly env at a pinned snapshot; see
+#                scripts/slurm/gemma4_judge_training_smoke.sh for the acceptance gates.
 #   B0_ROLLOUT_SYNC=1 turns on the Step-3b rollout-sync hook (writes rollout_sync.json).
 set -uo pipefail
 source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
@@ -34,6 +40,23 @@ cd "$REPO"
 # self-hosted endpoint (same recipe as the working SFT runs — sft_full.sh/wandb_smoke.sh).
 # Exported here so the trainer srun step inherits them (fixes 404 createRunFiles / no-sync).
 if [ -f "$REPO/.env" ]; then set -a; source "$REPO/.env"; set +a; fi
+# Point the Python secret loader at that same file explicitly.
+#
+# Sourcing it above only populates this shell. shared/load_env.py:get_openai_api_key calls
+# load_local_env() BEFORE inspecting the process environment and raises if no .env FILE is
+# found, so exporting OPENAI_API_KEY is not sufficient. Its default search is
+# `Path(__file__).resolve().parents[1]/.env` -- and .resolve() follows the runtime view's
+# symlinks back into the immutable source snapshot, which by design never contains secrets.
+# `~/.env` does not exist on this cluster either, so both candidates miss.
+#
+# Job 18570 resumed correctly from global_step_60 and then died 9 min later when the first
+# reward call reached resolve_judge_api_key(): "Missing OPENAI_API_KEY/OPENROUTER_API_KEY in
+# .env file. Expected one of: .../turing-rl-sources/<sha>/.env". Ray workers inherit env
+# vars, so exporting ENV_FILE here reaches the reward workers that actually raise.
+if [ -z "${ENV_FILE:-}" ] && [ -f "$REPO/.env" ]; then
+  export ENV_FILE="$REPO/.env"
+  echo "=== judge secret file pinned: ENV_FILE=$ENV_FILE ==="
+fi
 export WANDB_BASE_URL="${WANDB_BASE_URL:-https://meta.wandb.io}"
 export WANDB_MODE=online
 # Keep the wandb run dir OFF FSx. Job 13634 completed all 32 steps, yet wandb kept only 30 train
@@ -45,13 +68,21 @@ mkdir -p "$WANDB_DIR"
 # Arm-B trainer env (same one rl_generator_train_9b.sh runs in), used for the exit-time sync.
 WANDB_BIN=${WANDB_BIN:-/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/wandb}
 
-JUDGE=${JUDGE:?set JUDGE=9b|397b}
-MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep10}
-case "$JUDGE" in 9b|397b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
-case "$MODE" in overfit|full|epoch1|full5|frac10ep10) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
+JUDGE=${JUDGE:?set JUDGE=9b|397b|gemma4-12b}
+MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep10|frac10ep20}
+case "$JUDGE" in 9b|397b|gemma4-12b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
+case "$MODE" in overfit|full|epoch1|full5|frac10ep10|frac10ep20) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
+# Serving shape per judge. TP x DP is always 8 (one node): a model whose bf16 footprint fits
+# one 40GB A100 with KV/CUDA-graph headroom runs TP=1 across 8 replicas for throughput,
+# otherwise it spans the node at TP=8. Same rule configs/judge_sweep_cells.py:tp_for_size
+# applies on the eval side -- gemma-4-12B is ~24GB bf16, so it gets the 8-replica shape.
+# REASONING_PARSER is PINNED here, never inherited: the boundary detector is model-family
+# specific (qwen3 vs gemma4) and a wrong one silently mis-splits thinking text out of
+# .content, which the reward path would then fail to parse with nothing in the log saying why.
 case "$JUDGE" in
-  9b)   JUDGE_MODEL=Qwen/Qwen3.5-9B;                  TP=1; DP=8 ;;
-  397b) JUDGE_MODEL=Qwen/Qwen3.5-397B-A17B-GPTQ-Int4; TP=8; DP=1 ;;
+  9b)        JUDGE_MODEL=Qwen/Qwen3.5-9B;                  TP=1; DP=8; REASONING_PARSER=qwen3  ;;
+  397b)      JUDGE_MODEL=Qwen/Qwen3.5-397B-A17B-GPTQ-Int4; TP=8; DP=1; REASONING_PARSER=qwen3  ;;
+  gemma4-12b) JUDGE_MODEL=google/gemma-4-12B-it;           TP=1; DP=8; REASONING_PARSER=gemma4 ;;
 esac
 
 # Two allocated nodes: node0 -> judge, node1 -> trainer.
@@ -69,9 +100,10 @@ rm -f "$ENDPOINT_FILE"
 
 echo ">> RL-gen atomic 9B run: JUDGE=$JUDGE MODEL=$JUDGE_MODEL MODE=$MODE job=$SLURM_JOB_ID"
 echo ">> nodes: judge=$NODE_JUDGE trainer=$NODE_TRAIN  run_dir=$RUN_DIR"
+echo "=== judge serving pinned: model=$JUDGE_MODEL tp=$TP dp=$DP parser=$REASONING_PARSER ==="
 
-# --- judge step on node0 (concurrent, backgrounded; frozen 9B judge, unchanged) ---
-MODEL=$JUDGE_MODEL TP=$TP DP=$DP JUDGE_ENDPOINT_FILE=$ENDPOINT_FILE \
+# --- judge step on node0 (concurrent, backgrounded; frozen judge) ---
+MODEL=$JUDGE_MODEL TP=$TP DP=$DP REASONING_PARSER=$REASONING_PARSER JUDGE_ENDPOINT_FILE=$ENDPOINT_FILE \
   srun --nodes=1 --ntasks=1 --nodelist="$NODE_JUDGE" --gres=gpu:8 --overlap \
   bash scripts/slurm/judge_serve_9b_replicas.sh &
 JUDGE_PID=$!

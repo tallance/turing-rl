@@ -1,0 +1,13 @@
+PASS: package mechanical validation
+steps=0,32,64,96,128,160,192,224,256,288,320
+expected_pairs_per_step=880
+regular_summary_sha256=708b0b7b72ca0fad2c2dd763a85cd9b5ecb9dd6f07f12896b904131c20822524
+brier_summary_sha256=f46e3e699365a14e9c472572b061fea1a054ca06f8339c4c01d9f708a7c34f47
+regular_source_verifier_rows=11
+brier_source_verifier_rows=11
+regular_job_rows=11
+brier_job_rows=11
+split_guard_verdict=PASS
+split_guard_eval_rows=880
+split_guard_eval_users=128
+brier_source_sha=9c591dd5ea190cf73fcb59ac0bd0ece8fa672060

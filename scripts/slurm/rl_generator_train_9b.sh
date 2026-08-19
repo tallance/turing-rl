@@ -17,7 +17,14 @@
 # run_verl_main_ppo directly (option A) with explicit overrides + the reward env inherited
 # from the driver. Scancels the judge serve job on exit.
 set -uo pipefail
-source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
+# Prepare a runtime view only when we are the top-level job script -- see the identical
+# guard in judge_serve_9b_replicas.sh. turing_rl_prepare_runtime keys its work directory
+# off SLURM_JOB_ID and hard-fails if it exists, and rl_generator_run_9b.sh sruns BOTH the
+# judge and this trainer inside one job. Job 18502 got the judge up and published its
+# endpoint, then died here with "FATAL: runtime work directory already exists".
+if [ -z "${TURING_RL_WORK_ROOT:-}" ]; then
+  source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
+fi
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
@@ -187,35 +194,50 @@ case "$MODE" in
       # delete the first four of this run's ten checkpoints.
       trainer.max_actor_ckpt_to_keep=null
     ) ;;
-  frac10ep10)
-    # Low-compute contrast arm to full5: 10% of the train split, 10 epochs, one checkpoint and
-    # one validation pass per epoch. The question is whether the smaller slice overfits MORE,
-    # which reads off train/val divergence WITHIN this run (10 views per sample vs full5's 5).
-    # This is NOT a matched-compute comparison: 60 steps is ~18% of full5's 325, so a final-val
-    # gap between the two runs must not be read as coverage-vs-repetition.
+  frac10ep10|frac10ep20)
+    # Low-compute contrast arm to full5: 10% of the train split, one checkpoint and one
+    # validation pass per epoch. The question is whether the smaller slice overfits MORE,
+    # which reads off train/val divergence WITHIN the run (many views per sample vs full5's 5).
+    # This is NOT a matched-compute comparison: even at 20 epochs, 120 steps is ~37% of full5's
+    # 325, so a final-val gap between the runs must not be read as coverage-vs-repetition.
+    #
+    # The epoch count is the mode-name suffix: frac10ep10 -> 10, frac10ep20 -> 20. Everything
+    # else is identical, so the two modes cannot drift apart in the parts that define the slice.
+    _EPOCHS=${MODE#frac10ep}
     #
     # 384 = 6 x 64, i.e. 9.2% of the 4174-row train split, NOT the round 10% (417).
     # The train loader sets drop_last=True (ray_trainer.py:409), so with 417 rows each epoch
     # would train on 384 and discard 33 -- and because the sampler reshuffles per epoch, a
-    # DIFFERENT 33 each time, leaving samples seen 9.21 times on average instead of 10 and
-    # unevenly. 384 divides the batch exactly: nothing is dropped, every sample is seen exactly
-    # once per epoch and exactly 10 times over the run. Step count is identical either way
-    # (6 steps/epoch, 60 total), so the clean repeat costs nothing.
+    # DIFFERENT 33 each time, leaving samples seen 9.21 times per 10 epochs on average instead
+    # of 10, and unevenly. 384 divides the batch exactly: nothing is dropped, every sample is
+    # seen exactly once per epoch and exactly $_EPOCHS times over the run. Step count is
+    # identical either way (6 steps/epoch), so the clean repeat costs nothing. Verified on the
+    # completed 10-epoch run: 384 keys judged exactly 40x (10 epochs x 4 rollouts), no rotation.
     #
     # save_freq=test_freq=6 puts checkpoints and validation on the same epoch-aligned grid
-    # (6,12,...,60), so every saved ckpt has a val score. Because save_freq already equals
-    # steps_per_epoch, the epoch-end hook is turned OFF -- left on it would fire at the same
-    # steps and write 10 duplicate checkpoints (~190 GB).
+    # (6,12,...,6*$_EPOCHS), so every saved ckpt has a val score. Because save_freq already
+    # equals steps_per_epoch, the epoch-end hook is turned OFF -- left on it would fire at the
+    # same steps and write a duplicate checkpoint per epoch (~19 GB each).
     #
     # 352 = 50% of the 705-row val split. At seed 42 this is the SAME subset the half-data run
-    # used (data/.../grpo/val_used352.meta.json), so val is comparable across the two runs.
+    # used (data/.../grpo/val_used352.meta.json), so val is comparable across runs -- confirmed
+    # byte-identical parquet (sha256 41611b08...) between the half-data and frac10 runs.
     # Subsampling is native to veRL (rl_dataset.py: rng.choice(total, size, replace=False)
     # under data.shuffle=true); no new parquet files are needed.
+    #
+    # RESUME: trainer.resume_mode=auto (set above) picks up the latest checkpoint under
+    # trainer.default_local_dir, which is derived from RUN_TAG. So re-submitting frac10ep20
+    # with the RUN_TAG of a completed frac10ep10 run continues it from global_step_60 rather
+    # than starting over, while a fresh RUN_TAG trains from the SFT init. Extending the epoch
+    # count is safe for the optimizer: lr_scheduler_type defaults to "constant" with
+    # lr_warmup_steps_ratio 0.0, so the LR is flat at 1e-4 and does not depend on
+    # total_training_steps. And 6*$_EPOCHS is a multiple of steps_per_epoch, so veRL skips the
+    # dataloader-state restore at the boundary and the next epoch iterates from scratch.
     export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0
     OVR+=(
       data.train_max_samples=384
       data.val_max_samples=352
-      trainer.total_epochs=10
+      trainer.total_epochs=$_EPOCHS
       trainer.save_freq=6
       trainer.test_freq=6
       trainer.val_before_train=True
@@ -230,7 +252,7 @@ case "$MODE" in
                       trainer.val_before_train trainer.max_actor_ckpt_to_keep; do
       case " ${EXTRA_OVERRIDES:-} " in
         *" $_protected="*|*"+$_protected="*)
-          echo "ERROR: EXTRA_OVERRIDES sets '$_protected', which MODE=frac10ep10 pins." >&2
+          echo "ERROR: EXTRA_OVERRIDES sets '$_protected', which MODE=$MODE pins." >&2
           echo "       EXTRA_OVERRIDES=${EXTRA_OVERRIDES}" >&2
           echo "       Unpinned keys are still allowed; remove this one and resubmit." >&2
           exit 5 ;;

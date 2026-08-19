@@ -1,22 +1,22 @@
-# subset verification, run 9b_frac10_10ep_kl1e4_lr1e4_temp1 (job 15371)
-# generated 2026-08-17T16:06:58Z
+# subset verification over the COMBINED 20-epoch reward dump (jobs 15371 + 18571)
+# generated 2026-08-19T19:12:16Z
+# expectation: 80x per train key (20 epochs x 4 rollouts), 22x per val key.
+# 22 and not 21: a single continuous 20-epoch run validates once before training plus
+# once per epoch boundary (21). Splitting it across two jobs adds a SECOND
+# val_before_train, at step 60, when the resume re-validates the loaded checkpoint.
 
-## 1. WHICH samples -- scripts/build_eval_subsets.py
 [train] 384 rows / 277 users -> /home/lancewicki/projects/turing-rl/results/grpo/rl-generator/9b_frac10_10ep_kl1e4_lr1e4_temp1/train_used384.parquet
         key set matches the reward dump exactly (384 keys)
 [val] 352 rows / 349 users -> /home/lancewicki/projects/turing-rl/results/grpo/rl-generator/9b_frac10_10ep_kl1e4_lr1e4_temp1/val_used352.parquet
         key set matches the reward dump exactly (352 keys)
 
 PASS: both subsets reproduce the prompt sets the run actually used
-exit=0
 
-## 2. HOW OFTEN -- scripts/verify_run_repetition.py
-[train] 384 unique keys, 15360 judged calls
-        384 keys seen 40x
-        OK: every key seen exactly 40x -- no rotation
-[val] 352 unique keys, 3872 judged calls
-        352 keys seen 11x
-        OK: every key seen exactly 11x -- no rotation
+[train] 384 unique keys, 30720 judged calls
+        384 keys seen 80x
+        OK: every key seen exactly 80x -- no rotation
+[val] 352 unique keys, 7744 judged calls
+        352 keys seen 22x
+        OK: every key seen exactly 22x -- no rotation
 
 PASS: sample set is stable across epochs
-exit=0

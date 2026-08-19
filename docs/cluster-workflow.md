@@ -80,9 +80,42 @@ declared profile are compared between submission and job startup:
 | `data` | dataset preparation | train and upstream veRL environments |
 | `all` | unusual mixed/debug workflows | every recorded environment plus the veRL tree |
 
+Pick the profile from the environments a run actually touches, not from its category. A GRPO
+run is not automatically `training`: that profile omits the Gemma environment, so a
+Gemma-judged GRPO run needs `all`, which is the only profile carrying both the veRL tree and a
+non-Qwen judge environment. Enforcement compares only the declared profile, so an
+under-declared run still executes -- it simply stops guarding the environment most likely to
+drift, which for the Gemma judge is a CUDA-13 nightly build.
+
 Canonical datasets are read through `TURING_RL_INPUT_DATA_ROOT`. Dataset artifacts produced by a
 workflow use `TURING_RL_GENERATED_DATA_ROOT`, which points to shared state for retained runs and
 the run root for debug runs. `TURING_RL_DATA_ROOT` remains only as a temporary generated-data alias.
+
+## Constraints a job script must respect
+
+Two properties of the runtime view are load-bearing and fail in ways that do not name their
+cause. Both were found the hard way; see the git history of the scripts named below.
+
+**One runtime view per job.** `turing_rl_prepare_runtime` derives its work directory from
+`SLURM_JOB_ID` and aborts with `FATAL: runtime work directory already exists` if that directory
+is present. It is therefore single-use: a script that sources `cluster_job_bootstrap.sh` must
+not invoke another script that also sources it. `rl_generator_run_9b.sh` prepares the view and
+then `srun`s both a judge and a trainer, so each child guards its bootstrap on
+`[ -z "${TURING_RL_WORK_ROOT:-}" ]` and reuses the parent's view; the parent exports that
+variable, and children inherit it. Standalone invocation still prepares a view, because nothing
+exported it. Roughly forty scripts source the bootstrap, so any new parent/child pairing needs
+the same guard until the helper itself becomes idempotent.
+
+**Secrets are not reachable from the source view.** `.env` lives in the state root and is
+deliberately absent from the snapshot, but `shared/load_env.py` resolves it as
+`Path(__file__).resolve().parents[1]/.env` -- and `.resolve()` follows the runtime view's
+symlinks back into the snapshot, where it does not exist. `~/.env` does not exist on this
+cluster either, so both candidates miss. `get_openai_api_key` compounds this by calling the
+file loader *before* inspecting the process environment, so exporting `OPENAI_API_KEY` does not
+help; only a file satisfies it. Jobs that reach a judge must therefore export
+`ENV_FILE=$REPO/.env`, the runtime view's symlink to the state-root file. Ray workers inherit
+environment variables, so setting it in the driver reaches the reward workers that raise.
+Without it a run starts normally and dies at its first reward call, minutes in.
 
 The Slurm gateway syntax is deliberately unambiguous: options precede a mandatory `--`; the next
 token is the immutable script and remaining tokens are script arguments.

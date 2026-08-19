@@ -5,6 +5,7 @@ inference policy shared by every model inside a comparison. Both launchers previ
 `THINKING_MODE=on`, which silently makes any OFF-trained judge a cross-mode measurement.
 """
 
+import re
 from pathlib import Path
 
 import pytest
@@ -23,9 +24,18 @@ def test_launcher_does_not_pin_thinking_mode(name):
 
 @pytest.mark.parametrize("name", LAUNCHERS)
 def test_launcher_rejects_a_bogus_mode(name):
+    """Form-agnostic: a one-line case and a multi-arm case both validate.
+
+    An earlier version matched the exact string `case "$THINKING_MODE" in on|off)` and failed
+    when a launcher grew a richer multi-line block that additionally gates thinking-off behind
+    a confirmation flag -- stricter validation, reported as missing validation.
+    """
     text = (SCRIPTS / name).read_text()
 
-    assert 'case "$THINKING_MODE" in on|off)' in text, f"{name} must validate the mode"
+    assert 'case "$THINKING_MODE" in' in text, f"{name} must validate the mode"
+    assert re.search(r"THINKING_MODE must be on\|off", text), (
+        f"{name} must reject an unknown mode with a fatal error"
+    )
 
 
 @pytest.mark.parametrize("name", LAUNCHERS)
