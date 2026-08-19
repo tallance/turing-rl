@@ -124,3 +124,15 @@ def test_refuses_stale_output_in_the_selected_mode(tmp_path: Path) -> None:
     assert result.returncode != 0
     assert "refusing stale output" in result.stderr
     assert not _planned(result)
+
+
+def test_refuses_duplicate_submission_before_outputs_exist(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+
+    first = _run(env)
+    second = _run(env)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode != 0
+    assert "already claimed for submission" in second.stderr
+    assert not _planned(second)

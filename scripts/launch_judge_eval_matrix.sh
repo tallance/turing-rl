@@ -69,6 +69,19 @@ while read -r cell _model _tp _replicas _concurrency; do
     exit 2
   fi
 done <<< "$MATRIX"
+
+# Claim the run root atomically before the first sbatch. Reward-file guards cannot detect a
+# duplicate invocation while the first chain is still pending, which would make both chains append
+# to the same JSONL files. A retained retry must use a fresh run root after investigating the claim.
+claim=$EVAL_ROOT/provenance/judge_eval_matrix_submission.claim
+mkdir -p "$EVAL_ROOT/provenance"
+if ! mkdir "$claim" 2>/dev/null; then
+  echo "FATAL: EVAL_ROOT is already claimed for submission: $claim" >&2
+  exit 2
+fi
+printf 'thinking_mode=%s\nsource_sha=%s\nclaimed_at_utc=%s\n' \
+  "$THINKING_MODE" "${TURING_RL_SOURCE_SHA:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$claim/metadata.txt"
 mkdir -p "$SWEEP_ROOT"
 
 echo "=== judge held-out matrix: THINKING_MODE=$THINKING_MODE ==="
