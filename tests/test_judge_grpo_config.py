@@ -116,18 +116,31 @@ def test_rollout_overrides_the_8b_generator_hardware_profile():
 def test_budgets_match_the_measured_prompt_and_completion_distributions():
     """Both budgets come from measurement, not from round numbers.
 
-    Prompt: the largest rendered judge prompt over 1,121 built contexts was 12,743 estimated
-    tokens, so 10,240 dropped 3-4% of rows silently. Completion: the frozen judge's real
-    length distribution over 91,398 thinking-ON calls has p50 5,984 / p90 7,452, so 6,144
-    would have truncated ~44% -- landing on the median and making "be shorter" the dominant
-    gradient rather than "be accurate".
+    Prompt: TOKENIZED, not estimated. Running the Qwen3.5 tokenizer over all 4,738 rows of the
+    iter1 train+val splits gives p50 6,816, p99 9,620, max 10,535, and 11,264 truncates exactly
+    0 rows. The previous floor of 12,743 came from the char-based CHARS_PER_TOKEN_ESTIMATE used
+    when building pairs, which overshoots the real count by ~21%. Conservative is correct for a
+    build-time filter and wrong for sizing this budget, because prompt and response share
+    max_model_len -- the surplus was silently taken out of generation.
+
+    Completion: the old floor came from the frozen judge's p90 length (7,452 over 91,398 calls),
+    a heuristic. Direct measurement of the 9B at step 0, thinking ON, over 200 held-out rows
+    showed 7,680 leaves 12.5% of rollouts with an unclosed <think> -- scoring zero and pulling
+    accuracy below chance before any training. 9,216 drops that to 5% and lifts coverage
+    0.817 -> 0.945. 10,752 is marginally better still but OOMs in update_actor.
+
+    Re-derive both before pointing this config at a new slice; do not port these numbers.
     """
-    data = _load()["data"]
-    assert data["max_prompt_length"] >= 12743, "must clear the largest observed prompt"
-    assert 7452 <= data["max_response_length"] < 8192, (
-        "sit between p90 and the 8192 eval cap: enough truncation pressure to shape length, "
-        "not enough to swamp the accuracy signal"
-    )
+    config = _load()
+    data = config["data"]
+    measured_max_prompt_tokens = 10535
+
+    assert data["max_prompt_length"] > measured_max_prompt_tokens, "would truncate prompts"
+    assert data["max_response_length"] == 9216
+    assert (
+        data["max_prompt_length"] + data["max_response_length"]
+        < config["actor_rollout_ref"]["rollout"]["max_model_len"]
+    ), "saturating the context window exactly is what OOMed at 10752"
 
 
 def test_judge_runs_log_to_their_own_wandb_project():

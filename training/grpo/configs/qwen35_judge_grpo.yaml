@@ -24,16 +24,28 @@ data:
   # Note the observed max ROSE 10% when the sample grew from 416 to 1,121 contexts: sample
   # maxima grow with sample size, so re-read <split>.meta.json's n_over_budget for any new
   # slice before submitting rather than assuming this number still covers it.
-  max_prompt_length: 14336
-  # Deliberately ~p90 of the frozen judge's measured completion length (7,452 over 91,398
-  # real thinking-ON calls, run 14217), NOT the 8,192 eval budget. The cap is a shaping
-  # signal: a truncated rollout scores 0, so GRPO pushes the policy toward concision, and at
-  # p90 only ~6% truncate -- enough pressure to matter, small enough that verdict accuracy
-  # still dominates the gradient. Do NOT drop toward 6,144: that lands on the median (5,984),
-  # truncating ~44% and turning "be shorter" into the primary objective.
-  # WATCH judge_rung_none: rating is the LAST schema field, so a truncated verdict yields no
-  # rating at all. If that metric climbs instead of falling, the cap is fighting the policy.
-  max_response_length: 7680
+  # 11264, not 14336. Measured on the iter1 val split with the Qwen3.5 tokenizer: p50 6774,
+  # p99 9594, max 10535 tokens, so 14336 was ~3800 tokens above any real prompt. That is not
+  # free headroom -- prompt and response share max_model_len, so the surplus was taken straight
+  # out of generation. Re-measure before pointing this at a new slice; 11264 clears the current
+  # corpus by ~700 tokens and nothing is truncated.
+  max_prompt_length: 11264
+  # 9216, chosen by measurement rather than by the p90-of-completions heuristic that produced
+  # the previous 7680. Step-0 validation of the 9B, thinking ON, on 200 held-out rows:
+  #
+  #   budget   unclosed   full-rubric   coverage   exact   accuracy   trains?
+  #    7680      0.125       0.77        0.817     0.76     0.40       yes
+  #    9216      0.050       0.93        0.945     0.93     0.5175     yes
+  #   10752      0.050       0.945       0.950     0.945    0.4975     NO -- OOM
+  #
+  # 7680 was not merely suboptimal: 12.5% of rollouts never closed <think>, scoring zero and
+  # dragging accuracy BELOW chance before any training. 10752 is marginally better but OOMs in
+  # update_actor's log_softmax at micro_batch 1, where nothing smaller is left to trade
+  # (preflight 37). 9216 keeps 1536 tokens of slack under max_model_len 22016.
+  # WATCH judge_rung_unclosed_thinking: with thinking ON, a rollout cut off mid-reasoning has
+  # produced no answer and scores zero on both axes. If it climbs, the cap is fighting the
+  # policy. The 2B sits at 0.985 here at ANY budget, which is why it trains thinking-OFF.
+  max_response_length: 9216
   truncation: left
   filter_overlong_prompts: true
   apply_chat_template_kwargs:
