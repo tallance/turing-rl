@@ -16,36 +16,30 @@ data:
   train_files: data/prism/judge/iter1/train.parquet
   val_files: data/prism/judge/iter1/val.parquet
   train_batch_size: 64
-  # MEASURED, not guessed. Across 1,121 built contexts (416 train + 705 val), the rendered
-  # judge prompt runs p50 ~7,500 / p95 ~10,000 / max 12,743 estimated tokens. The earlier
-  # 10,240 placeholder left 3.1% of train and 3.8% of val rows over budget, and
-  # `filter_overlong_prompts: true` DROPS those silently from train AND val -- biasing every
-  # result toward short-history users. 14,336 clears the largest observed prompt by ~12%.
-  # Note the observed max ROSE 10% when the sample grew from 416 to 1,121 contexts: sample
-  # maxima grow with sample size, so re-read <split>.meta.json's n_over_budget for any new
-  # slice before submitting rather than assuming this number still covers it.
   # 11264, not 14336. Measured on the iter1 val split with the Qwen3.5 tokenizer: p50 6774,
   # p99 9594, max 10535 tokens, so 14336 was ~3800 tokens above any real prompt. That is not
   # free headroom -- prompt and response share max_model_len, so the surplus was taken straight
   # out of generation. Re-measure before pointing this at a new slice; 11264 clears the current
   # corpus by ~700 tokens and nothing is truncated.
   max_prompt_length: 11264
-  # 9216, chosen by measurement rather than by the p90-of-completions heuristic that produced
-  # the previous 7680. Step-0 validation of the 9B, thinking ON, on 200 held-out rows:
+  # 7680. Set by what TRAINS on the real corpus, which is not the same as what generates well.
+  # Step-0 validation of the 9B, thinking ON, 200 held-out rows:
   #
-  #   budget   unclosed   full-rubric   coverage   exact   accuracy   trains?
-  #    7680      0.125       0.77        0.817     0.76     0.40       yes
-  #    9216      0.050       0.93        0.945     0.93     0.5175     yes
-  #   10752      0.050       0.945       0.950     0.945    0.4975     NO -- OOM
+  #   budget   unclosed   coverage   exact   trains on FULL data?
+  #    7680      0.125      0.817     0.76    yes -- 52 steps, retained runs
+  #    9216      0.050      0.945     0.93    NO  -- OOM in log_softmax
+  #   10752      0.050      0.950     0.945   NO  -- OOM in log_softmax
   #
-  # 7680 was not merely suboptimal: 12.5% of rollouts never closed <think>, scoring zero and
-  # dragging accuracy BELOW chance before any training. 10752 is marginally better but OOMs in
-  # update_actor's log_softmax at micro_batch 1, where nothing smaller is left to trade
-  # (preflight 37). 9216 keeps 1536 tokens of slack under max_model_len 22016.
-  # WATCH judge_rung_unclosed_thinking: with thinking ON, a rollout cut off mid-reasoning has
-  # produced no answer and scores zero on both axes. If it climbs, the cap is fighting the
-  # policy. The 2B sits at 0.985 here at ANY budget, which is why it trains thinking-OFF.
-  max_response_length: 9216
+  # 9216 generates markedly better and was briefly the default on the strength of a smoke that
+  # passed. That smoke was built from the FIRST 8 pairs, whose prompts top out at 7,083 tokens
+  # against the corpus maximum of 10,049, so it never exercised the tail. On real data the worst
+  # case is 10,049 + 9,216 = 19,265 tokens through log_softmax at micro_batch 1, and all three
+  # arms OOMed. 7,680 keeps the worst case at 17,729, which the retained runs proved trainable.
+  #
+  # max_prompt_length is a CAP and costs nothing by itself; peak memory tracks ACTUAL sequence
+  # length. Trimming the prompt allowance therefore buys configuration room, not memory -- the
+  # mistake that produced the failed launch.
+  max_response_length: 7680
   truncation: left
   filter_overlong_prompts: true
   apply_chat_template_kwargs:

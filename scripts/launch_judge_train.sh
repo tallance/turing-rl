@@ -74,9 +74,14 @@ if [ "$MODE" = valsmoke ]; then
   # nothing about held-out format or accuracy.
   VALSMOKE_PAIRS=${VALSMOKE_PAIRS:-100}
   VALSMOKE_TRAIN_PAIRS=${VALSMOKE_TRAIN_PAIRS:-8}
-  TRAIN_FILE=$DATA_DIR/train_overfit${VALSMOKE_TRAIN_PAIRS}.parquet
+  # --select longest, NOT the default 'first'. A valsmoke exists to predict a full run, and
+  # peak training memory is set by the LONGEST sequence, not a typical one. The leading pairs
+  # top out ~3000 tokens short of the corpus maximum, which is exactly the margin that decides
+  # whether log_softmax fits: three full arms were launched on a budget a 'first' smoke passed
+  # and all three OOMed at that site.
+  TRAIN_FILE=$DATA_DIR/train_longest${VALSMOKE_TRAIN_PAIRS}.parquet
   $PY scripts/build_judge_overfit.py --src "$DATA_DIR/train.parquet" \
-      --out "$TRAIN_FILE" --n_pairs "$VALSMOKE_TRAIN_PAIRS" || exit 2
+      --out "$TRAIN_FILE" --n_pairs "$VALSMOKE_TRAIN_PAIRS" --select longest || exit 2
   # Same pair-wise, side-balanced slicer, applied to val: taking raw head rows could land an
   # odd number and unbalance which slot holds the human.
   VAL_FILE=$DATA_DIR/val_smoke${VALSMOKE_PAIRS}.parquet

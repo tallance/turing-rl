@@ -136,7 +136,7 @@ def test_budgets_match_the_measured_prompt_and_completion_distributions():
     measured_max_prompt_tokens = 10535
 
     assert data["max_prompt_length"] > measured_max_prompt_tokens, "would truncate prompts"
-    assert data["max_response_length"] == 9216
+    assert data["max_response_length"] == 7680
     assert (
         data["max_prompt_length"] + data["max_response_length"]
         < config["actor_rollout_ref"]["rollout"]["max_model_len"]

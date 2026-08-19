@@ -82,6 +82,30 @@ def test_response_budget_is_the_measured_trainable_value():
     data = config["data"]
     max_model_len = config["actor_rollout_ref"]["rollout"]["max_model_len"]
 
-    assert data["max_response_length"] == 9216
+    assert data["max_response_length"] == 7680
     # Slack under the context window is deliberate: 10752 saturates it exactly and OOMs.
     assert data["max_prompt_length"] + data["max_response_length"] < max_model_len
+
+
+def test_valsmoke_uses_the_longest_prompts_not_the_first():
+    """A smoke that stands in for a full run must carry the corpus length tail.
+
+    Peak training memory is set by the longest sequence, not a typical one. The leading 8 pairs
+    top out at 7,083 prompt tokens against the full train set's 10,049; a 'first' smoke therefore
+    omits ~3,000 tokens of the distribution -- exactly the margin that decides whether
+    log_softmax fits. Three full arms were launched on a budget a 'first' smoke had passed and
+    all three OOMed at that site.
+    """
+    launcher = (Path(__file__).resolve().parents[1] / "scripts" / "launch_judge_train.sh").read_text()
+    valsmoke = launcher.split('if [ "$MODE" = valsmoke ]; then', 1)[1]
+    code = "\n".join(l for l in valsmoke.splitlines() if not l.strip().startswith("#"))
+
+    assert "--select longest" in code, "valsmoke must sample the length tail"
+
+
+def test_overfit_gate_still_uses_deterministic_leading_pairs():
+    """R0 asks only whether the loop learns, so its subset stays stable across runs."""
+    launcher = (Path(__file__).resolve().parents[1] / "scripts" / "launch_judge_train.sh").read_text()
+    overfit = launcher.split('if [ "$MODE" = overfit ]; then', 1)[1].split('if [ "$MODE" = valsmoke ]', 1)[0]
+
+    assert "--select" not in overfit, "the overfit gate should keep the default 'first' selection"
