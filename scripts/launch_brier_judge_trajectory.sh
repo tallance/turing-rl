@@ -18,14 +18,36 @@ GEN_KEY_PREFIX=${GEN_KEY_PREFIX:-9b-full5ep-step}
 PAIRS_TAG=${PAIRS_TAG:-880}
 CELL_NAME=${CELL_NAME:-judge-9b-brier}
 JOB_PREFIX=${JOB_PREFIX:-te_brier}
+THINKING_MODE=${THINKING_MODE:-on}
+CONFIRM_THINKING_OFF=${CONFIRM_THINKING_OFF:-0}
 TP=${TP:-1}
 REPLICAS=${REPLICAS:-8}
 CONCURRENCY=${CONCURRENCY:-32}
 DRY=${DRY:-0}
 
+case "$THINKING_MODE" in
+  on) ;;
+  off)
+    [ "$CONFIRM_THINKING_OFF" = "1" ] || {
+      echo "FATAL: thinking-off evaluation requires CONFIRM_THINKING_OFF=1" >&2
+      exit 2
+    }
+    case "$EVAL_ROOT" in
+      /*thinking-off*) ;;
+      *) echo "FATAL: a thinking-off EVAL_ROOT must contain 'thinking-off': $EVAL_ROOT" >&2; exit 2 ;;
+    esac
+    ;;
+  *) echo "FATAL: THINKING_MODE must be on|off, got '$THINKING_MODE'" >&2; exit 2 ;;
+esac
+
 [ -d "$MODEL" ] || { echo "FATAL: missing trained judge model: $MODEL" >&2; exit 2; }
 [ -d "$BASELINE_CELL_ROOT/reward" ] || {
   echo "FATAL: missing reused step-0 reward dir: $BASELINE_CELL_ROOT/reward" >&2
+  exit 2
+}
+baseline_mode=$(basename "$BASELINE_CELL_ROOT")
+[ "$baseline_mode" = "$THINKING_MODE" ] || {
+  echo "FATAL: cross-mode baseline: BASELINE_CELL_ROOT is '$baseline_mode', THINKING_MODE=$THINKING_MODE" >&2
   exit 2
 }
 
@@ -37,10 +59,23 @@ for step in 0 "${step_values[@]}"; do
   [ -f "$pairs" ] || { echo "FATAL: missing pair set: $pairs" >&2; exit 2; }
 done
 
+# Claim the root before copying the baseline or submitting the first job. This prevents two
+# concurrent invocations from appending duplicate records while both chains are still pending.
+claim=$EVAL_ROOT/provenance/brier_trajectory_submission.claim
+mkdir -p "$EVAL_ROOT/provenance"
+if ! mkdir "$claim" 2>/dev/null; then
+  echo "FATAL: EVAL_ROOT is already claimed for submission: $claim" >&2
+  exit 2
+fi
+printf 'thinking_mode=%s\nsource_sha=%s\nclaimed_at_utc=%s\n' \
+  "$THINKING_MODE" "${TURING_RL_SOURCE_SHA:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  > "$claim/metadata.txt"
+
 # Materialize the already-completed step-0 cell and all six pair sets in this run root. The
 # operation is idempotent only when every existing destination is byte-identical; a mixed or
 # partially copied baseline is rejected rather than silently reused.
 export EVAL_ROOT SOURCE_EVAL_ROOT BASELINE_CELL_ROOT GEN_KEY_PREFIX PAIRS_TAG CELL_NAME STEPS
+export THINKING_MODE
 "$PY" - <<'PY'
 from __future__ import annotations
 
@@ -94,7 +129,7 @@ split_guard = source_eval / "split_guard.json"
 if split_guard.is_file():
     copy_exact(split_guard, eval_root / "split_guard.json")
 
-destination = eval_root / "raw" / f"{prefix}0" / "sweep" / cell / "on"
+destination = eval_root / "raw" / f"{prefix}0" / "sweep" / cell / os.environ["THINKING_MODE"]
 source_files = [baseline / "run_metadata.json", *sorted((baseline / "reward").glob("*.jsonl"))]
 if not source_files[0].is_file() or len(source_files) == 1:
     raise SystemExit(f"FATAL: incomplete reused step-0 cell: {baseline}")
@@ -143,7 +178,7 @@ previous=""
 for step in "${step_values[@]}"; do
   pairs=$EVAL_ROOT/raw/pairs/gen_${GEN_KEY_PREFIX}${step}_${PAIRS_TAG}.parquet
   sweep_root=$EVAL_ROOT/raw/${GEN_KEY_PREFIX}${step}/sweep
-  reward_dir=$sweep_root/$CELL_NAME/on/reward
+  reward_dir=$sweep_root/$CELL_NAME/$THINKING_MODE/reward
   if [ -d "$reward_dir" ] && [ -n "$(find "$reward_dir" -maxdepth 1 -type f -print -quit)" ]; then
     echo "FATAL: refusing stale output in $reward_dir" >&2
     exit 2
@@ -152,7 +187,7 @@ for step in "${step_values[@]}"; do
   dep=""
   [ -n "$previous" ] && dep="afterok:$previous"
   exports="ALL,MODEL=$MODEL,TP=$TP,REPLICAS=$REPLICAS,CONCURRENCY=$CONCURRENCY"
-  exports="$exports,THINKING_MODE=on,CELL_NAME=$CELL_NAME,PAIRS=$pairs,SWEEP_ROOT=$sweep_root"
+  exports="$exports,THINKING_MODE=$THINKING_MODE,CELL_NAME=$CELL_NAME,PAIRS=$pairs,SWEEP_ROOT=$sweep_root"
   jid=$(submit "$dep" --gres=gpu:$((TP * REPLICAS)) --job-name="${JOB_PREFIX}_${step}" \
     --export="$exports" -- scripts/slurm/judge_sweep_cell.sh)
   need_jid "$jid" "Brier judge step$step"
