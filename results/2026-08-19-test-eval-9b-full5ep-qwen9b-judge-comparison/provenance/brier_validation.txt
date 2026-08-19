@@ -1,0 +1,13 @@
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18637']
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18658']
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18659']
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18660']
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18661']
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18662']
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18663']
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18655']
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18664']
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18656']
+[judge-9b-brier-train-off/off] rows=880 unique=880 expected=880 missing=0 extra=0 duplicated=0 job_ids=['18657']
+
+PASS: 11 cell(s) scored the expected pairs, no duplicates or strays.
