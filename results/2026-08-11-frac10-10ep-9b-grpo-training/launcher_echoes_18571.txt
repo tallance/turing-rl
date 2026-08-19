@@ -1,0 +1,12 @@
+[36m(TaskRunner pid=3176602)[0m Load from checkpoint folder: /home/lancewicki/projects/turing-rl/results/runs/frac10ep20-resume-4/work/job-18571-35e1266ad0de/results/grpo/rl-generator/9b_frac10_10ep_kl1e4_lr1e4_temp1/checkpoints/global_step_60
+[36m(TaskRunner pid=3176602)[0m selected 352 random samples out of 705
+[36m(TaskRunner pid=3176602)[0m selected 384 random samples out of 4174
+[36m(TaskRunner pid=3176602)[0m Setting global step to 60
+[36m(TaskRunner pid=3176602)[0m Size of train dataloader: 6, Size of val dataloader: 1
+[36m(TaskRunner pid=3176602)[0m Skipping dataloader state restore: global_steps=60 is at an epoch boundary (steps_per_epoch=6). The saved state marks the dataloader as exhausted. Next epoch will iterate from scratch.
+[36m(WorkerDict pid=3178005)[0m Total steps: 120, num_warmup_steps: 0
+=== judge concurrency pinned: 64 (timeout 1800s) ===
+=== judge secret file pinned: ENV_FILE=/home/lancewicki/projects/turing-rl/results/runs/frac10ep20-resume-4/work/job-18571-35e1266ad0de/.env ===
+=== judge serving pinned: model=Qwen/Qwen3.5-9B tp=1 dp=8 parser=qwen3 ===
+=== trainer exit: 0 ===
+=== trainer step exit: 0 ; tearing down judge step ===

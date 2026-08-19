@@ -1,0 +1,24 @@
+# tensor-level verification that job 18571 continued job 15371 rather than restarting
+# generated 2026-08-19T19:12:37Z
+# Only LoRA trains (r=64, alpha=32); the base is frozen, so base weights must be
+# identical across checkpoints and all drift must appear in the LoRA tensors.
+# A run that silently restarted from the SFT init would carry a FRESHLY initialised
+# adapter (B=0), so its norm would be far below the established curve.
+
+=== LoRA weight norm per checkpoint (base is frozen; only LoRA trains) ===
+  step 6    ||lora|| = 18.4978
+  step 48   ||lora|| = 18.7575
+  step 54   ||lora|| = 18.7904
+  step 60   ||lora|| = 18.8259
+  step 66   ||lora|| = 18.8574
+
+=== BASE weights identical across checkpoints? (must be ~0) ===
+  d_base(60,66) = 0.000000e+00
+
+=== LoRA distance over 6-step intervals ===
+  d_lora(48,54) = 0.6532   relative = 0.0348   [old run]
+  d_lora(54,60) = 0.6428   relative = 0.0342   [old run]
+  d_lora(60,66) = 0.6241   relative = 0.0332   [NEW run, across the resume]
+
+=== scale reference: 54 steps apart ===
+  d_lora( 6,60) = 3.3575   relative = 0.1815
