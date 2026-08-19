@@ -1,0 +1,7 @@
+Mechanical validation performed 2026-08-19.
+
+All jobs 18637-18645: COMPLETED, exit 0:0.
+Every cell: 880 JSONL rows, 880 unique (user_id, post_id, target_idx) keys,
+880 ratings in [1, 7], zero unparsed records, zero length-truncated records.
+Every cell output path is mode-scoped under <cell>/off/.
+Every client shard reported err=0 and the parent job reported clients exit 0.

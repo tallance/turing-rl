@@ -1,0 +1,10 @@
+model,kind,n,scored,unparsed,truncated,tie_rate,accuracy,se
+judge-9b-graded-step52,rl-trained,880,880,0,0,0.0898,0.7551,0.0145
+judge-4b-graded-step52,rl-trained,880,880,0,0,0.0807,0.6869,0.0156
+gemma4-31b,zero-shot,880,880,0,0,0.1318,0.5818,0.0166
+judge-4b-directional-step52,rl-trained,880,880,0,0,0.2636,0.5648,0.0167
+gemma4-12b,zero-shot,880,880,0,0,0.3807,0.5256,0.0168
+qwen35-27b,zero-shot,880,880,0,0,0.1693,0.5233,0.0168
+judge-9b-directional-step52,rl-trained,880,880,0,0,1.0000,0.5000,0.0169
+qwen35-4b,zero-shot,880,880,0,0,0.1239,0.4562,0.0168
+qwen35-9b,zero-shot,880,880,0,0,0.1500,0.4477,0.0168
