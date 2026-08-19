@@ -21,6 +21,10 @@ data:
   # free headroom -- prompt and response share max_model_len, so the surplus was taken straight
   # out of generation. Re-measure before pointing this at a new slice; 11264 clears the current
   # corpus by ~700 tokens and nothing is truncated.
+  # Re-measure for any new slice rather than porting this number: sample maxima grow with sample
+  # size (the observed max rose 10% when the sample grew from 416 to 1,121 contexts), and
+  # `filter_overlong_prompts: true` DROPS over-budget rows silently from train AND val, biasing
+  # results toward short-history users. Check <split>.meta.json's n_over_budget before submitting.
   max_prompt_length: 11264
   # 7680. Set by what TRAINS on the real corpus, which is not the same as what generates well.
   # Step-0 validation of the 9B, thinking ON, 200 held-out rows:
