@@ -371,3 +371,18 @@ def test_unknown_mode_is_rejected_rather_than_treated_as_full():
     """A typo'd MODE previously fell through to `full`, starting a ~9h run instead of a check."""
     code = "\n".join(_code_lines(TRAIN_LAUNCH))
     assert "full|overfit|valsmoke)" in code
+
+
+def test_tmpdir_is_per_job_so_concurrent_runs_do_not_collide():
+    """Concurrent jobs sharing TMPDIR collide when removing multiprocessing scratch dirs.
+
+    The resulting `OSError: [Errno 16] Device or resource busy: .../pymp-XXXX` is harmless to
+    training but exits nonzero, so Slurm records FAILED -- and any `afterok` arm chained behind
+    it is stranded on DependencyNeverSatisfied. Job 18701 trained all 52 steps and wrote both
+    checkpoints, then died in cleanup and took its directional arm down with it.
+    """
+    text = _text(TRAIN)
+
+    assert "TMPDIR=/home/lancewicki/tmp/build/job-${SLURM_JOB_ID" in text, (
+        "TMPDIR must be keyed on the job id, not shared across concurrent runs"
+    )

@@ -17,7 +17,15 @@ source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
-export TMPDIR=/home/lancewicki/tmp/build PIP_CACHE_DIR=/home/lancewicki/tmp/pip-cache
+# TMPDIR is PER JOB. Sharing /home/lancewicki/tmp/build across concurrent jobs makes their
+# Python multiprocessing scratch dirs collide at teardown:
+#   OSError: [Errno 16] Device or resource busy: '/home/lancewicki/tmp/build/pymp-XXXX'
+# That is harmless to training but exits the job nonzero, so Slurm marks it FAILED -- and an
+# `afterok` chain behind it never runs. Job 18701 trained all 52 steps and wrote both
+# checkpoints, then died in cleanup and stranded its directional arm (18702) on
+# DependencyNeverSatisfied. Keying on SLURM_JOB_ID removes the collision.
+export TMPDIR=/home/lancewicki/tmp/build/job-${SLURM_JOB_ID:-$$}
+export PIP_CACHE_DIR=/home/lancewicki/tmp/pip-cache
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
 
 REPO=${TURING_RL_WORK_ROOT:?}
