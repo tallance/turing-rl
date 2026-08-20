@@ -83,4 +83,3 @@
 5. Launch through `scripts/cluster_launch.sh --dependency-profile eval` into:
    `/home/lancewicki/projects/turing-rl/results/2026-08-20-test-eval-9b-train10pct-through12ep-gemma12b-reward-test50pct-full-schema`.
 6. Confirm the step-0 reuse manifest, first merge jobs, and continuation are present and healthy. Report job IDs and the historical 5.5–6 hour active-time estimate separately from queue delay.
-

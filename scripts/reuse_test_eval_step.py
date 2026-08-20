@@ -24,9 +24,9 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def sha256_tree(path: Path) -> str:
+def sha256_paths(path: Path, files: Iterable[Path]) -> str:
     digest = hashlib.sha256()
-    files = sorted(item for item in path.rglob("*") if item.is_file())
+    files = sorted(files)
     if not files:
         raise ValueError(f"source tree contains no files: {path}")
     for item in files:
@@ -38,6 +38,15 @@ def sha256_tree(path: Path) -> str:
                 digest.update(chunk)
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def sha256_tree(path: Path) -> str:
+    return sha256_paths(path, (item for item in path.rglob("*") if item.is_file()))
+
+
+def sha256_cell_artifacts(path: Path) -> str:
+    files = [path / "run_metadata.json", *sorted((path / "reward").glob("reward-*.jsonl"))]
+    return sha256_paths(path, files)
 
 
 def copy_cell_artifacts(source: Path, destination: Path) -> None:
@@ -145,6 +154,7 @@ def reuse_step(
         elif keys != reference_keys:
             raise ValueError(f"key set differs for {cell}")
         cell_sources[cell] = cell_source
+        cell_hashes[cell] = sha256_cell_artifacts(cell_source)
         source_job_ids[cell] = job_id
 
     destination_root.mkdir(parents=True, exist_ok=True)
@@ -158,10 +168,9 @@ def reuse_step(
         for cell, cell_source in cell_sources.items():
             staged_cell = staged_step / "sweep" / cell / mode
             copy_cell_artifacts(cell_source, staged_cell)
-            cell_hashes[cell] = sha256_tree(staged_cell)
 
         destination_cell_hashes = {
-            cell: sha256_tree(staged_step / "sweep" / cell / mode) for cell in cells
+            cell: sha256_cell_artifacts(staged_step / "sweep" / cell / mode) for cell in cells
         }
         pair_hash = sha256_file(pair_source)
         destination_pair_hash = sha256_file(staged_pair)
