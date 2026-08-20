@@ -20,10 +20,17 @@ export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
 # TMPDIR is PER JOB. Sharing /home/lancewicki/tmp/build across concurrent jobs makes their
 # Python multiprocessing scratch dirs collide at teardown:
 #   OSError: [Errno 16] Device or resource busy: '/home/lancewicki/tmp/build/pymp-XXXX'
-# That is harmless to training but exits the job nonzero, so Slurm marks it FAILED -- and an
-# `afterok` chain behind it never runs. Job 18701 trained all 52 steps and wrote both
-# checkpoints, then died in cleanup and stranded its directional arm (18702) on
-# DependencyNeverSatisfied. Keying on SLURM_JOB_ID removes the collision.
+# Keying on SLURM_JOB_ID removes the collision.
+#
+# Scope note: job 18701 raised this twice, but at STARTUP (immediately before the dataset-filtering
+# pass) and then trained for 17h regardless. So the collision is real but was not fatal there, and
+# it does NOT explain that job's truncated step-52 checkpoint -- an earlier version of this comment
+# claimed it did. What actually broke 18701 is still unexplained: its step-26 save was clean (32
+# files), its step-52 save began at 12:59 and the process exited 1 at 13:15 leaving 8 files, with no
+# traceback, no ENOSPC (34T free), no GPU OOM, no Ray actor death, and host RSS 141G of 512G. The
+# only distinguishing property of step 52 is that it was the FINAL save, concurrent with trainer and
+# vLLM teardown. Until that is understood, prefer a save_freq that puts at least one save before the
+# last step so a repeat failure still leaves a usable checkpoint.
 export TMPDIR=/home/lancewicki/tmp/build/job-${SLURM_JOB_ID:-$$}
 export PIP_CACHE_DIR=/home/lancewicki/tmp/pip-cache
 mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
