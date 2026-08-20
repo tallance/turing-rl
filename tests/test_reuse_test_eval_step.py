@@ -55,6 +55,8 @@ class ReuseTestEvalStepTest(unittest.TestCase):
                     }
                 )
             )
+            (mode / "http").mkdir()
+            (mode / "http/diagnostic.jsonl").write_text("not required for reuse\n")
 
     def reuse(self) -> dict[str, object]:
         return reuse_step(
@@ -78,6 +80,7 @@ class ReuseTestEvalStepTest(unittest.TestCase):
         for cell in CELLS:
             copied = self.destination / "raw" / self.destination_key / "sweep" / cell / "on"
             self.assertTrue((copied / "run_metadata.json").is_file())
+            self.assertFalse((copied / "http").exists())
             self.assertEqual(manifest["cell_tree_sha256"][cell], manifest["destination_cell_tree_sha256"][cell])
         stored = json.loads(
             (self.destination / "provenance/step0_reuse.json").read_text()

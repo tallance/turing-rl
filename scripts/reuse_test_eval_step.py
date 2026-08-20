@@ -40,6 +40,12 @@ def sha256_tree(path: Path) -> str:
     return digest.hexdigest()
 
 
+def copy_cell_artifacts(source: Path, destination: Path) -> None:
+    destination.mkdir(parents=True)
+    shutil.copy2(source / "run_metadata.json", destination / "run_metadata.json")
+    shutil.copytree(source / "reward", destination / "reward")
+
+
 def reward_keys(reward_dir: Path, *, expect_pairs: int, cell: str) -> set[PairKey]:
     files = sorted(reward_dir.glob("reward-*.jsonl"))
     if not files:
@@ -139,7 +145,6 @@ def reuse_step(
         elif keys != reference_keys:
             raise ValueError(f"key set differs for {cell}")
         cell_sources[cell] = cell_source
-        cell_hashes[cell] = sha256_tree(cell_source)
         source_job_ids[cell] = job_id
 
     destination_root.mkdir(parents=True, exist_ok=True)
@@ -151,7 +156,9 @@ def reuse_step(
         shutil.copy2(pair_source, staged_pair)
         staged_step = stage / "step"
         for cell, cell_source in cell_sources.items():
-            shutil.copytree(cell_source, staged_step / "sweep" / cell / mode)
+            staged_cell = staged_step / "sweep" / cell / mode
+            copy_cell_artifacts(cell_source, staged_cell)
+            cell_hashes[cell] = sha256_tree(staged_cell)
 
         destination_cell_hashes = {
             cell: sha256_tree(staged_step / "sweep" / cell / mode) for cell in cells

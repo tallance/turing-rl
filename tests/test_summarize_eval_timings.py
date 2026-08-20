@@ -117,6 +117,7 @@ class SummarizeEvalTimingsTest(unittest.TestCase):
         self.assertEqual(summary["completed_job_count"], 3)
         self.assertEqual(summary["critical_path_active_seconds"], 2460.0)
         self.assertEqual(summary["stages"]["generation"]["median_active_seconds"], 480.0)
+        self.assertEqual(summary["stages"]["generation"]["median_queue_wait_seconds"], 60.0)
         self.assertEqual(summary["judges"]["gemma4-12b"]["total_model_startup_seconds"], 120.0)
         self.assertEqual(summary["judges"]["gemma4-12b"]["total_scoring_seconds"], 1680.0)
         self.assertEqual(json.loads(summary_out.read_text()), summary)

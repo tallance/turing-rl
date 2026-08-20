@@ -70,8 +70,16 @@ def load_judge_timings(eval_root: Path) -> dict[str, dict[str, object]]:
     return timings
 
 
-def numeric_stats(values: Iterable[float]) -> dict[str, float]:
+def numeric_stats(values: Iterable[float]) -> dict[str, float | int | None]:
     items = list(values)
+    if not items:
+        return {
+            "count": 0,
+            "total_seconds": 0.0,
+            "minimum_seconds": None,
+            "median_seconds": None,
+            "maximum_seconds": None,
+        }
     return {
         "count": len(items),
         "total_seconds": round(sum(items), 3),
@@ -81,7 +89,7 @@ def numeric_stats(values: Iterable[float]) -> dict[str, float]:
     }
 
 
-def active_stats(values: Iterable[float]) -> dict[str, float]:
+def active_stats(values: Iterable[float]) -> dict[str, float | int | None]:
     stats = numeric_stats(values)
     return {
         "count": stats["count"],
@@ -166,17 +174,31 @@ def summarize_timings(
             writer.writerows(rows)
 
     stage_values: dict[str, list[float]] = defaultdict(list)
+    stage_queue_waits: dict[str, list[float]] = defaultdict(list)
     judge_startup: dict[str, list[float]] = defaultdict(list)
     judge_scoring: dict[str, list[float]] = defaultdict(list)
     for row in rows:
         if row["state"] == "COMPLETED" and row["active_seconds"] not in (None, ""):
             stage_values[str(row["stage"])].append(float(row["active_seconds"]))
+        if row["queue_wait_seconds"] not in (None, ""):
+            stage_queue_waits[str(row["stage"])].append(float(row["queue_wait_seconds"]))
         if row["judge"] and row["model_startup_seconds"] != "":
             judge_startup[str(row["judge"])].append(float(row["model_startup_seconds"]))
         if row["judge"] and row["scoring_seconds"] != "":
             judge_scoring[str(row["judge"])].append(float(row["scoring_seconds"]))
 
-    stages = {stage: active_stats(values) for stage, values in sorted(stage_values.items())}
+    stages = {}
+    for stage in sorted(stage_values):
+        stage_summary = active_stats(stage_values[stage])
+        queue_summary = numeric_stats(stage_queue_waits[stage])
+        stage_summary.update(
+            {
+                "total_queue_wait_seconds": queue_summary["total_seconds"],
+                "median_queue_wait_seconds": queue_summary["median_seconds"],
+                "maximum_queue_wait_seconds": queue_summary["maximum_seconds"],
+            }
+        )
+        stages[stage] = stage_summary
     judges: dict[str, dict[str, float | int]] = {}
     for judge in sorted(set(judge_startup) | set(judge_scoring)):
         startup = numeric_stats(judge_startup[judge])
