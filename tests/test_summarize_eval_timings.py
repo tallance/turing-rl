@@ -92,6 +92,18 @@ class SummarizeEvalTimingsTest(unittest.TestCase):
                 }
             )
         )
+        provenance = self.root / "provenance"
+        provenance.mkdir()
+        (provenance / "step0_reuse.json").write_text(
+            json.dumps(
+                {
+                    "source_job_ids": {
+                        "gemma4-12b": "101",
+                        "qwen35-9b": "102",
+                    }
+                }
+            )
+        )
 
     def test_generates_job_table_and_stage_summary(self) -> None:
         jobs_out = self.root / "pipeline_jobs.csv"
@@ -105,7 +117,10 @@ class SummarizeEvalTimingsTest(unittest.TestCase):
 
         with jobs_out.open(newline="") as handle:
             jobs = list(csv.DictReader(handle))
-        self.assertEqual([row["stage"] for row in jobs], ["merge", "generation", "judge"])
+        self.assertEqual(
+            [row["stage"] for row in jobs],
+            ["merge", "generation", "judge", "reuse", "reuse"],
+        )
         self.assertEqual(jobs[1]["checkpoint"], "12")
         self.assertEqual(jobs[1]["gpus"], "1")
         self.assertEqual(jobs[1]["queue_wait_seconds"], "60.0")
@@ -113,9 +128,14 @@ class SummarizeEvalTimingsTest(unittest.TestCase):
         self.assertEqual(jobs[2]["model_startup_seconds"], "120.0")
         self.assertEqual(jobs[2]["scoring_seconds"], "1680.0")
 
-        self.assertEqual(summary["job_count"], 3)
+        self.assertEqual(jobs[3]["source_job_id"], "101")
+        self.assertEqual(jobs[3]["active_seconds"], "0.0")
+
+        self.assertEqual(summary["job_count"], 5)
         self.assertEqual(summary["completed_job_count"], 3)
-        self.assertEqual(summary["critical_path_active_seconds"], 2460.0)
+        self.assertEqual(summary["reused_cell_count"], 2)
+        self.assertEqual(summary["observed_active_interval_union_seconds"], 2460.0)
+        self.assertEqual(summary["stage_topology_active_estimate_seconds"], 2460.0)
         self.assertEqual(summary["stages"]["generation"]["median_active_seconds"], 480.0)
         self.assertEqual(summary["stages"]["generation"]["median_queue_wait_seconds"], 60.0)
         self.assertEqual(summary["judges"]["gemma4-12b"]["total_model_startup_seconds"], 120.0)

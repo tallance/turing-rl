@@ -28,16 +28,25 @@ GEN_BATCH_SIZE=1
 JUDGE_BATCH_SIZE=1
 PHASE=merge
 OFFSET=0
+REUSE_STEP0=${REUSE_STEP0:-1}
 
-"$PY" scripts/reuse_test_eval_step.py \
-  --source-root "$STEP0_SOURCE_ROOT" \
-  --destination-root "$EVAL_ROOT" \
-  --source-gen-key "$SOURCE_STEP0_KEY" \
-  --destination-gen-key "$DESTINATION_STEP0_KEY" \
-  --pairs-tag "$PAIRS_TAG" \
-  --expect-pairs "$EVAL_ROWS" \
-  --mode on \
-  --cells gemma4-12b qwen35-9b
+if [ "$REUSE_STEP0" = "1" ]; then
+  "$PY" scripts/reuse_test_eval_step.py \
+    --source-root "$STEP0_SOURCE_ROOT" \
+    --destination-root "$EVAL_ROOT" \
+    --source-gen-key "$SOURCE_STEP0_KEY" \
+    --destination-gen-key "$DESTINATION_STEP0_KEY" \
+    --pairs-tag "$PAIRS_TAG" \
+    --expect-pairs "$EVAL_ROWS" \
+    --expected-eval-parquet "$EVAL_PARQUET" \
+    --mode on \
+    --cells gemma4-12b qwen35-9b
+elif [ "$REUSE_STEP0" = "0" ] && [ "${DRY:-0}" = "1" ]; then
+  echo "[DRY] reuse verified step 0 from $STEP0_SOURCE_ROOT" >&2
+else
+  echo "FATAL: REUSE_STEP0 must be 1; setting it to 0 is allowed only with DRY=1" >&2
+  exit 2
+fi
 
 export EVAL_ROOT RUN_TAG SOURCE_EVAL_PARQUET EVAL_PARQUET EVAL_ROWS
 export STEPS MERGE_STEPS JUDGES GEN_KEY_PREFIX PAIRS_TAG JOB_PREFIX

@@ -9,6 +9,8 @@ from scripts.reuse_test_eval_step import reuse_step
 
 
 CELLS = ("gemma4-12b", "qwen35-9b")
+MODELS = {"gemma4-12b": "google/gemma-4-12B-it", "qwen35-9b": "Qwen/Qwen3.5-9B"}
+CONCURRENCY = {"gemma4-12b": 4, "qwen35-9b": 32}
 
 
 class ReuseTestEvalStepTest(unittest.TestCase):
@@ -24,13 +26,33 @@ class ReuseTestEvalStepTest(unittest.TestCase):
         pair_dir.mkdir(parents=True)
         self.pair_path = pair_dir / f"gen_{self.source_key}_2.parquet"
         self.pair_path.write_bytes(b"canonical parquet bytes\n")
-        keys = [("u1", "p1", 0), ("u2", "p2", 1)]
+        self.keys = {("u1", "p1", 0), ("u2", "p2", 1)}
+        self.eval_parquet = root / "test_seed42_n2.parquet"
+        self.eval_parquet.write_bytes(b"eval parquet bytes\n")
+        generator = self.source / "raw/generator" / self.source_key
+        generator.mkdir(parents=True)
+        (generator / "gen_metadata.json").write_text(
+            json.dumps(
+                {
+                    "gen_key": self.source_key,
+                    "model_id": "/runtime/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3",
+                    "checkpoint_dir": "",
+                    "base_model": True,
+                    "test_parquet": str(self.eval_parquet),
+                    "eval_expect": "heldout",
+                    "gen_num": 1,
+                    "backend": "vllm",
+                    "sampling_overrides": "--temperature 0.7 --top_p 0.8 --top_k 20 --max_tokens 1024 --vllm_truncate_prompt_tokens 12500 --vllm_max_model_len 13524",
+                    "slurm_job_id": "12344",
+                }
+            )
+        )
         for cell in CELLS:
             mode = self.source / "raw" / self.source_key / "sweep" / cell / "on"
             reward = mode / "reward"
             reward.mkdir(parents=True)
             with (reward / f"reward-{cell}.jsonl").open("w") as handle:
-                for user_id, post_id, target_idx in keys:
+                for user_id, post_id, target_idx in sorted(self.keys):
                     handle.write(
                         json.dumps(
                             {
@@ -46,12 +68,18 @@ class ReuseTestEvalStepTest(unittest.TestCase):
                 json.dumps(
                     {
                         "cell_name": cell,
+                        "model": MODELS[cell],
                         "thinking_mode": "on",
+                        "num_endpoints": 8,
+                        "concurrency_per_endpoint": CONCURRENCY[cell],
+                        "sampling": '{"repetition_penalty":1.1,"temperature":0.6}',
                         "slurm_job_id": "12345" if cell == CELLS[0] else "12346",
                         "pair_source": str(self.pair_path),
                         "n_pairs_total": 2,
                         "json_schema": "1",
                         "enable_thinking": "1",
+                        "max_completion_tokens": "8192",
+                        "disable_openrouter_extras": "1",
                     }
                 )
             )
@@ -67,6 +95,8 @@ class ReuseTestEvalStepTest(unittest.TestCase):
             pairs_tag=2,
             cells=CELLS,
             expect_pairs=2,
+            expected_eval_parquet=self.eval_parquet,
+            pair_key_reader=lambda _path, _expect: self.keys,
         )
 
     def test_copies_requested_cells_and_records_verified_hashes(self) -> None:
@@ -92,7 +122,14 @@ class ReuseTestEvalStepTest(unittest.TestCase):
         pair_dir.mkdir(parents=True)
         (pair_dir / f"gen_{self.destination_key}_2.parquet").write_bytes(b"stale")
 
-        with self.assertRaisesRegex(ValueError, "destination already exists"):
+        with self.assertRaisesRegex(ValueError, "existing evaluation payload"):
+            self.reuse()
+
+    def test_refuses_other_existing_evaluation_payload(self) -> None:
+        stale = self.destination / "models/step12"
+        stale.mkdir(parents=True)
+
+        with self.assertRaisesRegex(ValueError, "existing evaluation payload"):
             self.reuse()
 
     def test_refuses_incomplete_reward_keys(self) -> None:
@@ -145,6 +182,39 @@ class ReuseTestEvalStepTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "slurm_job_id"):
             self.reuse()
+
+    def test_refuses_wrong_judge_configuration(self) -> None:
+        metadata = (
+            self.source
+            / "raw"
+            / self.source_key
+            / "sweep"
+            / CELLS[0]
+            / "on/run_metadata.json"
+        )
+        data = json.loads(metadata.read_text())
+        data["json_schema"] = "0"
+        metadata.write_text(json.dumps(data))
+
+        with self.assertRaisesRegex(ValueError, "json_schema"):
+            self.reuse()
+
+    def test_refuses_reward_keys_that_do_not_match_pair_parquet(self) -> None:
+        with self.assertRaisesRegex(ValueError, "pair parquet key set differs"):
+            reuse_step(
+                source_root=self.source,
+                destination_root=self.destination,
+                source_gen_key=self.source_key,
+                destination_gen_key=self.destination_key,
+                pairs_tag=2,
+                cells=CELLS,
+                expect_pairs=2,
+                expected_eval_parquet=self.eval_parquet,
+                pair_key_reader=lambda _path, _expect: {
+                    ("other", "pair", 9),
+                    ("u2", "p2", 1),
+                },
+            )
 
 
 if __name__ == "__main__":

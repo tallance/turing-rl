@@ -70,6 +70,42 @@ def load_judge_timings(eval_root: Path) -> dict[str, dict[str, object]]:
     return timings
 
 
+def load_reuse_rows(eval_root: Path) -> list[dict[str, object]]:
+    manifest_path = eval_root / "provenance/step0_reuse.json"
+    if not manifest_path.is_file():
+        return []
+    manifest = json.loads(manifest_path.read_text())
+    source_job_ids = manifest.get("source_job_ids")
+    if not isinstance(source_job_ids, dict):
+        raise ValueError(f"missing source_job_ids in {manifest_path}")
+    rows = []
+    for judge, source_job_id in sorted(source_job_ids.items()):
+        rows.append(
+            {
+                "job_id": f"reuse:{source_job_id}",
+                "job_name": f"reused_step0_{judge}",
+                "stage": "reuse",
+                "checkpoint": "0",
+                "judge": str(judge),
+                "state": "REUSED",
+                "exit_code": "0:0",
+                "gpus": 0,
+                "submit": "",
+                "eligible": "",
+                "start": "",
+                "end": "",
+                "queue_wait_seconds": 0.0,
+                "submit_to_start_seconds": 0.0,
+                "active_seconds": 0.0,
+                "model_startup_seconds": "",
+                "scoring_seconds": "",
+                "instrumented_total_seconds": "",
+                "source_job_id": str(source_job_id),
+            }
+        )
+    return rows
+
+
 def numeric_stats(values: Iterable[float]) -> dict[str, float | int | None]:
     items = list(values)
     if not items:
@@ -116,6 +152,18 @@ def interval_union_seconds(intervals: Iterable[tuple[datetime, datetime]]) -> fl
     return round(total, 3)
 
 
+def stage_topology_active_estimate(stage_values: dict[str, list[float]]) -> float:
+    total = 0.0
+    for stage, values in stage_values.items():
+        if not values or stage == "continuation":
+            continue
+        if stage == "merge":
+            total += max(values)
+        else:
+            total += sum(values)
+    return round(total, 3)
+
+
 def summarize_timings(
     *,
     sacct_path: Path,
@@ -158,6 +206,7 @@ def summarize_timings(
             "model_startup_seconds": timing.get("model_startup_seconds", ""),
             "scoring_seconds": timing.get("scoring_seconds", ""),
             "instrumented_total_seconds": timing.get("instrumented_total_seconds", ""),
+            "source_job_id": "",
         }
         rows.append(row)
         start = parse_time(source.get("Start", ""))
@@ -165,6 +214,7 @@ def summarize_timings(
         if source.get("State") == "COMPLETED" and start is not None and end is not None:
             intervals.append((start, end))
 
+    rows.extend(load_reuse_rows(eval_root))
     jobs_out.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = list(rows[0]) if rows else []
     with jobs_out.open("w", newline="") as handle:
@@ -215,7 +265,9 @@ def summarize_timings(
         "format_version": 1,
         "job_count": len(rows),
         "completed_job_count": sum(row["state"] == "COMPLETED" for row in rows),
-        "critical_path_active_seconds": interval_union_seconds(intervals),
+        "reused_cell_count": sum(row["state"] == "REUSED" for row in rows),
+        "observed_active_interval_union_seconds": interval_union_seconds(intervals),
+        "stage_topology_active_estimate_seconds": stage_topology_active_estimate(stage_values),
         "stages": stages,
         "judges": judges,
     }

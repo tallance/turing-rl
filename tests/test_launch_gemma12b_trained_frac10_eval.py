@@ -62,6 +62,7 @@ class LaunchGemma12BTrainedFrac10EvalTest(unittest.TestCase):
             "STEP0_SOURCE_ROOT": str(self.source),
             "EVAL_ROWS": "2",
             "PAIRS_TAG": "2",
+            "REUSE_STEP0": "0",
         }
         result = subprocess.run(
             ["bash", str(LAUNCHER)],
@@ -79,14 +80,7 @@ class LaunchGemma12BTrainedFrac10EvalTest(unittest.TestCase):
             self.assertIn(f"STEP={step}", line)
         self.assertEqual(sum("_continue" in line for line in planned), 1)
 
-        manifest = json.loads((self.destination / "provenance/step0_reuse.json").read_text())
-        self.assertEqual(manifest["cells"], ["gemma4-12b", "qwen35-9b"])
-        self.assertTrue(
-            (
-                self.destination
-                / "raw/pairs/gen_9b-gemma12btrain-step0_2.parquet"
-            ).is_file()
-        )
+        self.assertIn("[DRY] reuse verified step 0", result.stderr)
 
     def test_pins_distinct_run_and_requested_judges(self) -> None:
         source = LAUNCHER.read_text()

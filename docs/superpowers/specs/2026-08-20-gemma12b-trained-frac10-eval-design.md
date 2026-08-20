@@ -71,9 +71,12 @@ without conflating queue delay with compute time:
   from scoring time. Per-shard scoring durations are retained to expose replica
   imbalance.
 - A generated timing summary reports total, median, minimum, and maximum active
-  time by stage, plus the serialized critical-path total. Queue wait is reported
-  separately. Reused step 0 is labeled as zero new compute and retains its
-  original source-job timing only as provenance.
+  time by stage, plus a topology-based compute estimate: concurrent merge jobs
+  contribute their maximum duration, while serialized generation/build/judge
+  stages contribute their sums. The observed union of active job intervals is
+  recorded separately and is not labeled as a dependency-graph critical path.
+  Queue wait is reported separately. Reused step 0 is labeled as zero new
+  compute and retains its original source job IDs as provenance.
 
 Historical 440-pair cells give this pre-run active-time estimate:
 

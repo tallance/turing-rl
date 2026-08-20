@@ -48,7 +48,7 @@
 **Steps:**
 
 1. Write fixtures containing Slurm pipe-delimited accounting rows and judge `timing.json` files.
-2. Test computation of queue wait, active elapsed time, GPU allocation, per-stage totals/minimum/median/maximum, model-startup and scoring durations, and serialized critical-path time.
+2. Test computation of queue wait, active elapsed time, GPU allocation, per-stage totals/minimum/median/maximum, model-startup and scoring durations, the topology-based active estimate, and the observed active-interval union.
 3. Run the test and confirm it fails because the summarizer is absent.
 4. Implement a CLI producing `pipeline_jobs.csv` and `timing_summary.json` without querying Slurm itself.
 5. Run the unit test and compile check.
