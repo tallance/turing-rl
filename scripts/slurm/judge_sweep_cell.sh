@@ -107,6 +107,8 @@ PAIRS=${PAIRS:-$REPO/results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.
 SWEEP_ROOT=${SWEEP_ROOT:-$REPO/results/2026-07-08-judge-sweep/raw/sweep}
 MODE_DIR=$SWEEP_ROOT/$CELL_NAME/$THINKING_MODE
 mkdir -p "$MODE_DIR/vllm_server" "$MODE_DIR/reward" "$MODE_DIR/http"
+TIMING_JOB_STARTED_EPOCH=$(date +%s.%N)
+TIMING_JOB_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
 
 echo "============================================"
 echo "sweep cell: MODEL=$MODEL CELL_NAME=$CELL_NAME MODE=$THINKING_MODE TP=$TP REPLICAS=$REPLICAS"
@@ -204,6 +206,8 @@ for i in $(seq 0 $((REPLICAS-1))); do
   [ $ok -eq 1 ] || { echo "TIMEOUT waiting on replica $i (port $port) serving $MODEL" >&2; exit 3; }
   echo "replica $i ready (port $port, model $MODEL)"
 done
+TIMING_SERVERS_READY_EPOCH=$(date +%s.%N)
+TIMING_SERVERS_READY_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
 
 ENDPOINTS=$(IFS=,; echo "${URLS[*]}")
 EXTRA=(); [ -n "$MAX_PAIRS" ] && EXTRA=(--max_pairs "$MAX_PAIRS")
@@ -222,5 +226,44 @@ done
 
 RC=0
 for p in "${CLIENT_PIDS[@]}"; do wait $p || RC=1; done
+TIMING_CLIENTS_FINISHED_EPOCH=$(date +%s.%N)
+TIMING_CLIENTS_FINISHED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
+TIMING_PATH=$MODE_DIR/timing.json
+TIMING_TMP=$TIMING_PATH.tmp.$$
+"$PY_CLIENT" - "$TIMING_TMP" <<PY
+import json
+import os
+import sys
+
+started = float("$TIMING_JOB_STARTED_EPOCH")
+ready = float("$TIMING_SERVERS_READY_EPOCH")
+finished = float("$TIMING_CLIENTS_FINISHED_EPOCH")
+record = {
+    "format_version": 1,
+    "slurm_job_id": os.environ.get("SLURM_JOB_ID"),
+    "model": "$MODEL",
+    "cell_name": "$CELL_NAME",
+    "thinking_mode": "$THINKING_MODE",
+    "tp": int("$TP"),
+    "replicas": int("$REPLICAS"),
+    "concurrency_per_endpoint": int("$CONCURRENCY"),
+    "pairs": "$PAIRS",
+    "max_pairs": "$MAX_PAIRS" or None,
+    "job_started_utc": "$TIMING_JOB_STARTED_UTC",
+    "servers_ready_utc": "$TIMING_SERVERS_READY_UTC",
+    "clients_finished_utc": "$TIMING_CLIENTS_FINISHED_UTC",
+    "model_startup_seconds": round(ready - started, 3),
+    "scoring_seconds": round(finished - ready, 3),
+    "instrumented_total_seconds": round(finished - started, 3),
+    "client_exit_code": int("$RC"),
+}
+with open(sys.argv[1], "w") as handle:
+    json.dump(record, handle, indent=2, sort_keys=True)
+    handle.write("\\n")
+PY
+TIMING_RC=$?
+[ "$TIMING_RC" -eq 0 ] || { echo "ERROR: failed to write timing record" >&2; exit 4; }
+mv "$TIMING_TMP" "$TIMING_PATH" || { echo "ERROR: failed to publish timing record" >&2; exit 4; }
+echo "timing=$TIMING_PATH startup_s=$("$PY_CLIENT" -c "print(round(float('$TIMING_SERVERS_READY_EPOCH')-float('$TIMING_JOB_STARTED_EPOCH'),3))") scoring_s=$("$PY_CLIENT" -c "print(round(float('$TIMING_CLIENTS_FINISHED_EPOCH')-float('$TIMING_SERVERS_READY_EPOCH'),3))")"
 echo "=== clients exit: $RC ==="
 exit $RC
