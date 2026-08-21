@@ -1,0 +1,23 @@
+{
+  "code_root": "/home/lancewicki/projects/turing-rl-sources/35e1266ad0dec1cea8ca5ddd4a6cf0c99f3e73b1",
+  "debug_label": null,
+  "dependency_profile": "training",
+  "environment_keys": [
+    "JUDGE",
+    "MODE",
+    "RUN_TAG"
+  ],
+  "format_version": 1,
+  "launched_at_utc": "2026-08-18T17:54:54.538329+00:00",
+  "launcher": "scripts/submit_snapshot_job.sh",
+  "launcher_args": [
+    "--export=ALL",
+    "--",
+    "scripts/slurm/rl_generator_run_9b.sh"
+  ],
+  "main_sha": "434a883fa310efb1fff373be8f9e7812eec5953f",
+  "run_class": "retained",
+  "run_root": "/home/lancewicki/projects/turing-rl/results/runs/frac10ep20-resume-4",
+  "source_sha": "35e1266ad0dec1cea8ca5ddd4a6cf0c99f3e73b1",
+  "state_root": "/home/lancewicki/projects/turing-rl"
+}
