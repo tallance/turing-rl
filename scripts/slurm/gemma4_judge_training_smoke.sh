@@ -38,16 +38,19 @@ unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 REPO=${TURING_RL_WORK_ROOT:?}
 cd "$REPO"
 
-MODEL=google/gemma-4-12B-it
-TP=1
-DP=8
-REASONING_PARSER=gemma4
+# Defaults are gemma's, because that is what this was written for. Overriding SMOKE_MODEL and
+# SMOKE_PARSER points the same battery at any judge the serve script can bring up -- gate 3
+# self-skips when that model has no eval reference dump, which is the usual case.
+MODEL=${SMOKE_MODEL:-google/gemma-4-12B-it}
+TP=${SMOKE_TP:-1}
+DP=${SMOKE_DP:-8}
+REASONING_PARSER=${SMOKE_PARSER:-gemma4}
 SMOKE_N=${SMOKE_N:-200}
 SMOKE_CONC=${SMOKE_CONC:-32}
 REF_STEP=${REF_STEP:-step60}
 
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-OUT=$REPO/results/gemma4-judge-smoke/${SLURM_JOB_ID:-manual}
+OUT=$REPO/results/judge-smoke/$(echo "$MODEL" | tr '/' '-')/${SLURM_JOB_ID:-manual}
 mkdir -p "$OUT"
 ENDPOINT_FILE=$OUT/judge_endpoint.txt
 SERVE_LOG=$OUT/judge_server.log
@@ -60,7 +63,7 @@ TRAIN_DUMP="$REPO/results/grpo/rl-generator/9b_frac10_10ep_kl1e4_lr1e4_temp1/rew
 EVAL_DUMP="$REPO/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/raw/9b-train10pct-${REF_STEP}/sweep/gemma4-12b/on/reward/reward-*.jsonl"
 
 echo "============================================"
-echo "gemma-4-12B training-judge smoke  job=${SLURM_JOB_ID:-manual}"
+echo "$MODEL training-judge smoke  job=${SLURM_JOB_ID:-manual}"
 echo "date=$(date) host=$(hostname)  out=$OUT"
 echo "gate2 prompts: $SMOKE_N @ concurrency $SMOKE_CONC   gate3 reference: $REF_STEP"
 echo "============================================"
@@ -95,8 +98,11 @@ echo ">> endpoint: $ENDPOINT"
   else
     echo "FAIL: /v1/models does not advertise $MODEL"
   fi
-  echo "-- pinned snapshot actually served --"
-  grep -m1 "gemma_snapshot=" "$SERVE_LOG" || echo "FAIL: no gemma_snapshot line in the server log"
+  # Only the gemma branch serves an offline snapshot by path, so only it has a pin to check.
+  if [ "$REASONING_PARSER" = gemma4 ]; then
+    echo "-- pinned snapshot actually served --"
+    grep -m1 "gemma_snapshot=" "$SERVE_LOG" || echo "FAIL: no gemma_snapshot line in the server log"
+  fi
   echo "-- DP engines that reported ready --"
   grep -oE "Engine [0-9]+" "$SERVE_LOG" | sort -u | tr '\n' ' '; echo
 } | tee "$OUT/gate1_identity.txt"

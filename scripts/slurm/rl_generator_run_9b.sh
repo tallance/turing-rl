@@ -68,9 +68,9 @@ mkdir -p "$WANDB_DIR"
 # Arm-B trainer env (same one rl_generator_train_9b.sh runs in), used for the exit-time sync.
 WANDB_BIN=${WANDB_BIN:-/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/wandb}
 
-JUDGE=${JUDGE:?set JUDGE=9b|397b|gemma4-12b}
+JUDGE=${JUDGE:?set JUDGE=0.8b|9b|397b|gemma4-12b}
 MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep10|frac10ep20}
-case "$JUDGE" in 9b|397b|gemma4-12b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
+case "$JUDGE" in 0.8b|9b|397b|gemma4-12b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
 case "$MODE" in overfit|full|epoch1|full5|frac10ep10|frac10ep20) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
 # Serving shape per judge. TP x DP is always 8 (one node): a model whose bf16 footprint fits
 # one 40GB A100 with KV/CUDA-graph headroom runs TP=1 across 8 replicas for throughput,
@@ -80,6 +80,7 @@ case "$MODE" in overfit|full|epoch1|full5|frac10ep10|frac10ep20) ;; *) echo "bad
 # specific (qwen3 vs gemma4) and a wrong one silently mis-splits thinking text out of
 # .content, which the reward path would then fail to parse with nothing in the log saying why.
 case "$JUDGE" in
+  0.8b)      JUDGE_MODEL=Qwen/Qwen3.5-0.8B;                TP=1; DP=8; REASONING_PARSER=qwen3  ;;
   9b)        JUDGE_MODEL=Qwen/Qwen3.5-9B;                  TP=1; DP=8; REASONING_PARSER=qwen3  ;;
   397b)      JUDGE_MODEL=Qwen/Qwen3.5-397B-A17B-GPTQ-Int4; TP=8; DP=1; REASONING_PARSER=qwen3  ;;
   gemma4-12b) JUDGE_MODEL=google/gemma-4-12B-it;           TP=1; DP=8; REASONING_PARSER=gemma4 ;;
