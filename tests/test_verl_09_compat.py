@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import types
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -10,6 +11,96 @@ import numpy as np
 from training.grpo import b0_rollout_sync_hook
 from training.grpo import hf_compat_patches
 from training.grpo import verl_runtime_patch
+
+
+def test_qwen35_fused_backends_move_reconstructed_vocab_weight_to_hidden_device():
+    source = """
+def forward_with_torch_backend(self, hidden_states):
+    vocab_weights = self.lm_head.weight
+    if isinstance(vocab_weights, DTensor):
+        vocab_weights = vocab_weights.full_tensor()
+    return hidden_states @ vocab_weights.t()
+
+def forward_with_triton_backend(self, hidden_states):
+    vocab_weights = self.lm_head.weight
+    hidden_states = hidden_states.to(vocab_weights.dtype)
+    if isinstance(vocab_weights, DTensor):
+        vocab_weights = vocab_weights.full_tensor()
+    return linear_cross_entropy(hidden_states, vocab_weights)
+"""
+
+    patched = verl_runtime_patch._insert_qwen35_fused_vocab_weight_device_transfer(source)
+
+    assert patched.count("vocab_weights.full_tensor().to(hidden_states.device)") == 2
+
+
+def test_qwen35_fused_vocab_weight_device_transfer_is_idempotent():
+    source = "vocab_weights = vocab_weights.full_tensor().to(hidden_states.device)\n"
+
+    assert verl_runtime_patch._insert_qwen35_fused_vocab_weight_device_transfer(source) == source
+
+
+def test_qwen35_fused_vocab_weight_device_transfer_rejects_unknown_source():
+    source = "vocab_weights = materialize_vocab_weight()\n"
+
+    with np.testing.assert_raises_regex(RuntimeError, "Qwen3.5 fused vocab-weight source"):
+        verl_runtime_patch._insert_qwen35_fused_vocab_weight_device_transfer(source)
+
+
+def test_qwen35_fused_device_patch_installs_once_per_process():
+    torch_source = """
+def forward_with_torch_backend(self, hidden_states):
+    vocab_weights = self.lm_head.weight
+    if isinstance(vocab_weights, DTensor):
+        vocab_weights = vocab_weights.full_tensor()
+    return hidden_states @ vocab_weights.t()
+"""
+    triton_source = torch_source.replace("forward_with_torch_backend", "forward_with_triton_backend")
+    module = types.ModuleType("verl.models.transformers.qwen3_5")
+    exec(torch_source, module.__dict__)
+    exec(triton_source, module.__dict__)
+    originals = (module.forward_with_torch_backend, module.forward_with_triton_backend)
+
+    with (
+        patch.object(verl_runtime_patch, "_find_optional_module_spec", return_value=SimpleNamespace()),
+        patch.object(verl_runtime_patch.importlib, "import_module", return_value=module),
+        patch.object(
+            verl_runtime_patch.inspect,
+            "getsource",
+            side_effect=lambda function: torch_source if function is originals[0] else triton_source,
+        ),
+    ):
+        assert verl_runtime_patch._patch_qwen35_fused_vocab_weight_device()
+        patched = (module.forward_with_torch_backend, module.forward_with_triton_backend)
+        assert patched[0] is not originals[0]
+        assert patched[1] is not originals[1]
+        assert not verl_runtime_patch._patch_qwen35_fused_vocab_weight_device()
+
+
+def test_qwen35_fused_device_patch_is_optional_when_model_module_cannot_import():
+    with (
+        patch.object(verl_runtime_patch, "_find_optional_module_spec", return_value=SimpleNamespace()),
+        patch.object(
+            verl_runtime_patch.importlib,
+            "import_module",
+            side_effect=ImportError("transformers has no Qwen3.5 support"),
+        ),
+    ):
+        assert not verl_runtime_patch._patch_qwen35_fused_vocab_weight_device()
+
+
+def test_tensor_transfer_used_by_qwen35_patch_preserves_weight_gradient():
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    weight = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    hidden_states = torch.tensor([[5.0, 6.0]], dtype=torch.float64)
+
+    transferred_weight = weight.to(device=hidden_states.device, dtype=hidden_states.dtype)
+    (hidden_states @ transferred_weight.t()).sum().backward()
+
+    assert weight.grad is not None
+    torch.testing.assert_close(weight.grad, torch.tensor([[5.0, 6.0], [5.0, 6.0]]))
 
 
 def test_optional_legacy_actor_module_can_be_absent():

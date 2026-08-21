@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import importlib.util
+import inspect
 import json
 import logging
 import os
 from pathlib import Path
+import textwrap
 from collections.abc import Mapping
 from functools import lru_cache
 from typing import Any
@@ -141,6 +144,46 @@ def _patch_verl_attention_utils_without_flash_attn() -> bool:
     attention_utils._rearrange = rearrange
     attention_utils._unpad_input = _unpad_input
     return True
+
+
+def _insert_qwen35_fused_vocab_weight_device_transfer(source: str) -> str:
+    """Move a reconstructed FSDP2 DTensor lm-head weight onto the hidden-state device."""
+    unsafe = "vocab_weights = vocab_weights.full_tensor()"
+    safe = "vocab_weights = vocab_weights.full_tensor().to(hidden_states.device)"
+    if safe in source:
+        return source
+    if unsafe not in source:
+        raise RuntimeError("Unrecognized Qwen3.5 fused vocab-weight source; refusing an unsafe compatibility rewrite")
+    return source.replace(unsafe, safe)
+
+
+def _patch_qwen35_fused_vocab_weight_device() -> bool:
+    """Patch veRL's Qwen3.5 fused PPO forwards in this process before model construction."""
+    spec = _find_optional_module_spec("verl.models.transformers.qwen3_5")
+    if spec is None:
+        return False
+    try:
+        module = importlib.import_module("verl.models.transformers.qwen3_5")
+    except ImportError:
+        return False
+    marker = "_persona_fused_offload_device_patch_applied"
+    if getattr(module, marker, False):
+        return False
+    changed = False
+    for function_name in ("forward_with_torch_backend", "forward_with_triton_backend"):
+        original = getattr(module, function_name)
+        source = textwrap.dedent(inspect.getsource(original))
+        patched = _insert_qwen35_fused_vocab_weight_device_transfer(source)
+        if patched == source:
+            continue
+        namespace = dict(vars(module))
+        exec(patched, namespace)
+        setattr(module, function_name, namespace[function_name])
+        changed = True
+    if changed:
+        setattr(module, marker, True)
+        print("PERSONA_QWEN35_FUSED_OFFLOAD_PATCH: installed=1", flush=True)
+    return changed
 
 
 def _insert_pre_resume_cache_clear(text: str) -> str:
@@ -1875,6 +1918,7 @@ def _should_route_grouped_sim_rewards(config: Any, num_workers: int) -> bool:
 def apply_verl_runtime_patch() -> bool:
     _patch_ray_loopback_advertise()
     _patch_verl_attention_utils_without_flash_attn()
+    _patch_qwen35_fused_vocab_weight_device()
     _patch_engine_worker_pre_resume_cache_clear_source()
     _patch_peft_meta_adapter_load_source()
     _patch_fsdp1_lora_checkpointing()
