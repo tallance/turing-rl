@@ -1,0 +1,22 @@
+step,epoch,val_reward_mean,segment,source
+0,0,0.4269491755773991,job 18669 (epochs 1-12),wandb w7lc0rhg
+6,1,0.4400436929693321,job 18669 (epochs 1-12),wandb w7lc0rhg
+12,2,0.47107672035186127,job 18669 (epochs 1-12),wandb w7lc0rhg
+18,3,0.49450634427326307,job 18669 (epochs 1-12),wandb w7lc0rhg
+24,4,0.48914729041809385,job 18669 (epochs 1-12),wandb w7lc0rhg
+30,5,0.506295953531993,job 18669 (epochs 1-12),wandb w7lc0rhg
+36,6,0.5218691010324453,job 18669 (epochs 1-12),wandb w7lc0rhg
+42,7,0.5212772730050016,job 18669 (epochs 1-12),wandb w7lc0rhg
+48,8,0.5064312628925439,job 18669 (epochs 1-12),wandb w7lc0rhg
+54,9,0.5209353213537146,job 18669 (epochs 1-12),wandb w7lc0rhg
+60,10,0.5181427316486158,job 18669 (epochs 1-12),wandb w7lc0rhg
+66,11,0.5350075212349608,job 18669 (epochs 1-12),wandb w7lc0rhg
+72,12,0.5232942648091755,job 18771 (epochs 13-20),wandb tsuj3tr0 -- val_before_train: SAME weights as the row above
+78,13,0.5286507848861881,job 18771 (epochs 13-20),wandb tsuj3tr0
+84,14,0.5361028317975897,job 18771 (epochs 13-20),wandb tsuj3tr0
+90,15,0.5061744121511847,job 18771 (epochs 13-20),wandb tsuj3tr0
+96,16,0.5426094784634188,job 18771 (epochs 13-20),wandb tsuj3tr0
+102,17,0.5475848439276557,job 18771 (epochs 13-20),wandb tsuj3tr0
+108,18,0.5519181496036419,job 18771 (epochs 13-20),wandb tsuj3tr0
+114,19,0.5708249950019474,job 18771 (epochs 13-20),wandb tsuj3tr0
+120,20,0.5580055630257861,job 18771 (epochs 13-20),training log (Final validation metrics); wandb lost this point
