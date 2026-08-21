@@ -121,7 +121,14 @@ def test_fsdp2_accumulated_grad_guard_skips_parameters_never_unsharded():
     ):
         assert verl_runtime_patch._patch_fsdp2_missing_unsharded_param_guard()
         missing = FakeFSDPParam()
+        missing.sharded_param = SimpleNamespace(requires_grad=False)
         assert missing.to_accumulated_grad_if_needed() is None
+        assert FakeFSDPParam.calls == 0
+
+        trainable_missing = FakeFSDPParam()
+        trainable_missing.sharded_param = SimpleNamespace(requires_grad=True)
+        with np.testing.assert_raises_regex(RuntimeError, "trainable FSDP parameter"):
+            trainable_missing.to_accumulated_grad_if_needed()
         assert FakeFSDPParam.calls == 0
 
         present = FakeFSDPParam()

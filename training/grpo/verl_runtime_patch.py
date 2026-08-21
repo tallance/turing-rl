@@ -207,6 +207,11 @@ def _patch_fsdp2_missing_unsharded_param_guard() -> bool:
     def guarded_to_accumulated_grad_if_needed(self):
         nonlocal reported
         if not hasattr(self, "_unsharded_param"):
+            if getattr(self.sharded_param, "requires_grad", False):
+                raise RuntimeError(
+                    "FSDP2 is missing _unsharded_param for a trainable FSDP parameter; "
+                    "refusing to discard a possible gradient"
+                )
             if not reported:
                 print(
                     "PERSONA_FSDP2_UNUSED_PARAM_GUARD: "
