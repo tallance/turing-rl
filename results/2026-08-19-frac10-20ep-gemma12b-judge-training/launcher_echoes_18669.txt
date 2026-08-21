@@ -1,0 +1,9 @@
+[36m(TaskRunner pid=1518369)[0m selected 352 random samples out of 705
+[36m(TaskRunner pid=1518369)[0m selected 384 random samples out of 4174
+[36m(TaskRunner pid=1518369)[0m Size of train dataloader: 6, Size of val dataloader: 1
+[36m(TaskRunner pid=1518369)[0m Training from scratch
+[36m(WorkerDict pid=1519885)[0m Total steps: 120, num_warmup_steps: 0
+gemma_snapshot=707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7 path=/home/lancewicki/data/hf_cache/hub/models--google--gemma-4-12B-it/snapshots/707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7
+=== judge concurrency pinned: 64 (timeout 1800s) ===
+=== judge secret file pinned: ENV_FILE=/home/lancewicki/projects/turing-rl/results/runs/frac10ep20-gemma12b/work/job-18669-dd2e628e68c1/.env ===
+=== judge serving pinned: model=google/gemma-4-12B-it tp=1 dp=8 parser=gemma4 ===

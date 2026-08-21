@@ -1,0 +1,18 @@
+# tensor-level verification that job 18771 continued job 18669 rather than restarting
+# generated 2026-08-21T21:34:18Z
+# LoRA B is zero-initialised, so a restart from the SFT init would leave the adapter
+# norm far below the established curve.
+
+=== LoRA norm per checkpoint (base frozen; only LoRA trains) ===
+  step 60   ||lora|| = 18.7891
+  step 66   ||lora|| = 18.8144
+  step 72   ||lora|| = 18.8358
+  step 78   ||lora|| = 18.8600
+
+=== BASE weights identical across the resume? (must be 0) ===
+  d_base(72,78) = 0.000000e+00
+
+=== LoRA distance over 6-step intervals ===
+  d_lora(60,66) = 0.5679  relative = 0.0302  [within job 18669]
+  d_lora(66,72) = 0.5609  relative = 0.0298  [within job 18669]
+  d_lora(72,78) = 0.5580  relative = 0.0296  [ACROSS the resume into 18771]

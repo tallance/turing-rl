@@ -1,0 +1,154 @@
+{
+  "metric": "val-core/prism_alignment_user_sim/reward/mean@1",
+  "judge": "google/gemma-4-12B-it",
+  "n_points": 21,
+  "points": [
+    {
+      "step": 0,
+      "epoch": 0,
+      "val_reward_mean": 0.4269491755773991,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 6,
+      "epoch": 1,
+      "val_reward_mean": 0.4400436929693321,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 12,
+      "epoch": 2,
+      "val_reward_mean": 0.47107672035186127,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 18,
+      "epoch": 3,
+      "val_reward_mean": 0.49450634427326307,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 24,
+      "epoch": 4,
+      "val_reward_mean": 0.48914729041809385,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 30,
+      "epoch": 5,
+      "val_reward_mean": 0.506295953531993,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 36,
+      "epoch": 6,
+      "val_reward_mean": 0.5218691010324453,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 42,
+      "epoch": 7,
+      "val_reward_mean": 0.5212772730050016,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 48,
+      "epoch": 8,
+      "val_reward_mean": 0.5064312628925439,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 54,
+      "epoch": 9,
+      "val_reward_mean": 0.5209353213537146,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 60,
+      "epoch": 10,
+      "val_reward_mean": 0.5181427316486158,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 66,
+      "epoch": 11,
+      "val_reward_mean": 0.5350075212349608,
+      "segment": "job 18669 (epochs 1-12)",
+      "source": "wandb w7lc0rhg"
+    },
+    {
+      "step": 72,
+      "epoch": 12,
+      "val_reward_mean": 0.5232942648091755,
+      "segment": "job 18771 (epochs 13-20)",
+      "source": "wandb tsuj3tr0 -- val_before_train: SAME weights as the row above"
+    },
+    {
+      "step": 78,
+      "epoch": 13,
+      "val_reward_mean": 0.5286507848861881,
+      "segment": "job 18771 (epochs 13-20)",
+      "source": "wandb tsuj3tr0"
+    },
+    {
+      "step": 84,
+      "epoch": 14,
+      "val_reward_mean": 0.5361028317975897,
+      "segment": "job 18771 (epochs 13-20)",
+      "source": "wandb tsuj3tr0"
+    },
+    {
+      "step": 90,
+      "epoch": 15,
+      "val_reward_mean": 0.5061744121511847,
+      "segment": "job 18771 (epochs 13-20)",
+      "source": "wandb tsuj3tr0"
+    },
+    {
+      "step": 96,
+      "epoch": 16,
+      "val_reward_mean": 0.5426094784634188,
+      "segment": "job 18771 (epochs 13-20)",
+      "source": "wandb tsuj3tr0"
+    },
+    {
+      "step": 102,
+      "epoch": 17,
+      "val_reward_mean": 0.5475848439276557,
+      "segment": "job 18771 (epochs 13-20)",
+      "source": "wandb tsuj3tr0"
+    },
+    {
+      "step": 108,
+      "epoch": 18,
+      "val_reward_mean": 0.5519181496036419,
+      "segment": "job 18771 (epochs 13-20)",
+      "source": "wandb tsuj3tr0"
+    },
+    {
+      "step": 114,
+      "epoch": 19,
+      "val_reward_mean": 0.5708249950019474,
+      "segment": "job 18771 (epochs 13-20)",
+      "source": "wandb tsuj3tr0"
+    },
+    {
+      "step": 120,
+      "epoch": 20,
+      "val_reward_mean": 0.5580055630257861,
+      "segment": "job 18771 (epochs 13-20)",
+      "source": "training log (Final validation metrics); wandb lost this point"
+    }
+  ]
+}
