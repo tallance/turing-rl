@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import textwrap
 from collections.abc import Mapping
-from functools import lru_cache
+from functools import lru_cache, wraps
 from typing import Any
 from uuid import uuid4
 
@@ -184,6 +184,43 @@ def _patch_qwen35_fused_vocab_weight_device() -> bool:
         setattr(module, marker, True)
         print("PERSONA_QWEN35_FUSED_OFFLOAD_PATCH: installed=1", flush=True)
     return changed
+
+
+def _patch_fsdp2_missing_unsharded_param_guard() -> bool:
+    """Make FSDP2's no-sync post-backward path safe for parameters unused in forward."""
+    module_name = "torch.distributed.fsdp._fully_shard._fsdp_param"
+    if _find_optional_module_spec(module_name) is None:
+        return False
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError:
+        return False
+    fsdp_param_cls = module.FSDPParam
+    marker = "_persona_missing_unsharded_param_guard_applied"
+    if getattr(fsdp_param_cls, marker, False):
+        return False
+
+    original = fsdp_param_cls.to_accumulated_grad_if_needed
+    reported = False
+
+    @wraps(original)
+    def guarded_to_accumulated_grad_if_needed(self):
+        nonlocal reported
+        if not hasattr(self, "_unsharded_param"):
+            if not reported:
+                print(
+                    "PERSONA_FSDP2_UNUSED_PARAM_GUARD: "
+                    f"skipped_missing_unsharded_param=1 fqn={getattr(self, '_param_fqn', None)!r}",
+                    flush=True,
+                )
+                reported = True
+            return None
+        return original(self)
+
+    fsdp_param_cls.to_accumulated_grad_if_needed = guarded_to_accumulated_grad_if_needed
+    setattr(fsdp_param_cls, marker, True)
+    print("PERSONA_FSDP2_UNUSED_PARAM_GUARD: installed=1", flush=True)
+    return True
 
 
 def _insert_pre_resume_cache_clear(text: str) -> str:
@@ -1919,6 +1956,7 @@ def apply_verl_runtime_patch() -> bool:
     _patch_ray_loopback_advertise()
     _patch_verl_attention_utils_without_flash_attn()
     _patch_qwen35_fused_vocab_weight_device()
+    _patch_fsdp2_missing_unsharded_param_guard()
     _patch_engine_worker_pre_resume_cache_clear_source()
     _patch_peft_meta_adapter_load_source()
     _patch_fsdp1_lora_checkpointing()

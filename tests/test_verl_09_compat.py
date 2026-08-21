@@ -103,6 +103,39 @@ def test_tensor_transfer_used_by_qwen35_patch_preserves_weight_gradient():
     torch.testing.assert_close(weight.grad, torch.tensor([[5.0, 6.0], [5.0, 6.0]]))
 
 
+def test_fsdp2_accumulated_grad_guard_skips_parameters_never_unsharded():
+    module = types.ModuleType("torch.distributed.fsdp._fully_shard._fsdp_param")
+
+    class FakeFSDPParam:
+        calls = 0
+
+        def to_accumulated_grad_if_needed(self):
+            type(self).calls += 1
+            return "original"
+
+    module.FSDPParam = FakeFSDPParam
+
+    with (
+        patch.object(verl_runtime_patch, "_find_optional_module_spec", return_value=SimpleNamespace()),
+        patch.object(verl_runtime_patch.importlib, "import_module", return_value=module),
+    ):
+        assert verl_runtime_patch._patch_fsdp2_missing_unsharded_param_guard()
+        missing = FakeFSDPParam()
+        assert missing.to_accumulated_grad_if_needed() is None
+        assert FakeFSDPParam.calls == 0
+
+        present = FakeFSDPParam()
+        present._unsharded_param = SimpleNamespace(grad=None)
+        assert present.to_accumulated_grad_if_needed() == "original"
+        assert FakeFSDPParam.calls == 1
+        assert not verl_runtime_patch._patch_fsdp2_missing_unsharded_param_guard()
+
+
+def test_fsdp2_accumulated_grad_guard_is_optional_when_torch_internal_is_absent():
+    with patch.object(verl_runtime_patch, "_find_optional_module_spec", return_value=None):
+        assert not verl_runtime_patch._patch_fsdp2_missing_unsharded_param_guard()
+
+
 def test_optional_legacy_actor_module_can_be_absent():
     with patch.object(
         verl_runtime_patch.importlib.util,
