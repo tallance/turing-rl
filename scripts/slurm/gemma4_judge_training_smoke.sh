@@ -164,7 +164,12 @@ PYEOF
 # --- gate 3: equivalence with the proven 8-replica path -------------------------------------
 # Matched conditions: the reference was produced WITH the ordered schema, so replay with it
 # enabled. Two passes give the judge's own noise floor, which is the only honest tolerance.
-echo "=== GATE 3: DP-8 vs the eval's 8-replica path, same prompts, matched schema ==="
+# NOTE for non-gemma judges: EVAL_DUMP names gemma's sweep output, so this always runs and
+# is NOT an equivalence test for them -- the reference ratings came from a different model.
+# What it still measures, usefully, is the served model's parse rate under the ordered
+# schema, which is the mitigation one would reach for if gate 2 fails. The smoke labels the
+# rating comparison "CROSS-JUDGE (not a gate)" in that case.
+echo "=== GATE 3: schema-mode parse rate; vs the eval's 8-replica path when same-model ==="
 if compgen -G "$EVAL_DUMP" > /dev/null; then
   PYTHONPATH=. $PY scripts/gemma4_judge_training_smoke.py \
     --endpoint "$ENDPOINT" --model "$MODEL" \

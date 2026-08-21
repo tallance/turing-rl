@@ -372,8 +372,10 @@ def test_judge_smoke_battery_is_model_agnostic():
     assert "MODEL=${SMOKE_MODEL:-google/gemma-4-12B-it}" in smoke
     assert "REASONING_PARSER=${SMOKE_PARSER:-gemma4}" in smoke
     assert 'if [ "$REASONING_PARSER" = gemma4 ]; then' in smoke
-    # gate 3 compares against an eval reference dump that exists only for gemma; it already
-    # guards on the glob, so a model without one skips rather than failing
+    # gate 3 guards on its reference dump existing. Note that dump's path names gemma's sweep
+    # output regardless of the model under test, so for any other judge the gate still RUNS
+    # and measures schema-mode parse rate -- it just is not an equivalence test, which is why
+    # the summary labels the rating comparison CROSS-JUDGE rather than passing or failing it.
     assert 'if compgen -G "$EVAL_DUMP" > /dev/null; then' in smoke
     # output must not land in gemma's directory for a non-gemma judge
     assert "results/gemma4-judge-smoke/" not in smoke
