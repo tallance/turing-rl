@@ -451,7 +451,14 @@ def _extract_json(text: str | None) -> dict | None:
             text = text[brace_start:brace_end + 1]
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
+    except ValueError:
+        # ValueError, not JSONDecodeError: json.loads also raises a PLAIN ValueError when a
+        # numeric literal exceeds Python 3.11's 4300-digit int/str conversion limit, and that
+        # is not a JSONDecodeError, so it escaped this handler and killed the run. Job 18916
+        # died at step 7 when the Qwen3.5-0.8B judge emitted a 7726-digit number: one bad
+        # verdict took down the whole rollout batch. This is a trust boundary -- the text is
+        # model output -- so it must degrade to "unparseable" rather than raise.
+        # JSONDecodeError subclasses ValueError, so the original case is still covered.
         return None
 
 
