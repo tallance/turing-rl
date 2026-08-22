@@ -39,9 +39,27 @@ Throughput fails too, in the opposite direction from intuition: 0.636 req/s at p
 because nearly every request runs to the cap. A 0.8B judge is *slower* than the 9B, not
 cheaper.
 
-The untested lever is `PERSONA_JUDGE_ENABLE_THINKING=0`, since the runaway is in the
-thinking block. That changes the judge protocol relative to every existing arm, so it is a
-different experiment rather than a fix.
+Disabling thinking (`PERSONA_JUDGE_ENABLE_THINKING=0`, Slurm 18913) confirms where the
+runaway lives, and recovers most but not all of it:
+
+| thinking | mode | usable | hard fail | throughput |
+|---|---|---|---|---|
+| on | `json_object` | 0.175 | 0.825 | 0.64 req/s, p50 199 s |
+| off | `json_object` | 0.840 | 0.160 | 2.42 req/s, p50 32 s |
+| off | `json_schema` | 0.886 / 0.855 | 0.114 / 0.145 | |
+
+The concurrency sweep holds the same band -- 0.109 at 8, 0.125 at 16 and 32 -- so ~11-16%
+is a floor, not a load artefact. Every remaining failure is still the 8192 cap: the verdict
+alone, with no thinking block, can exhaust it.
+
+So thinking-off is not a fix. It leaves roughly one judge call in seven unscored against
+the 9B's zero, and those failures are not random -- they concentrate on the longest inputs,
+which biases the reward rather than merely thinning it. It also changes the judge protocol
+relative to every completed arm, so a run using it answers a different question.
+
+For a deliberately small judge, `Qwen3.5-4B` is the better candidate: it is the smallest
+model the eval sweep ever used, it is already cached, and it has existing thinking-on
+sweep data, so it can be compared with the protocol left alone.
 
 Thinking text returned by local vLLM is in `choices[0].message.reasoning`; the field
 `reasoning_content` may be absent. Full HTTP dumps retain the complete response. This is
