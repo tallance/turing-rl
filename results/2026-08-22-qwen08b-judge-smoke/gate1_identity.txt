@@ -1,0 +1,26 @@
+=== GATE 1: server identity ===
+-- /v1/models --
+{
+    "object": "list",
+    "data": [
+        {
+            "id": "Qwen/Qwen3.5-0.8B",
+            "object": "model",
+            "created": 1787350703,
+            "owned_by": "vllm",
+            "root": "Qwen/Qwen3.5-0.8B",
+            "parent": null,
+            "max_model_len": 32768,
+            "permission": [
+                {
+                    "id": "modelperm-b9184c06f680abf5",
+                    "object": "model_permission",
+                    "created": 1787350703,
+                    "allow_create_engine": false,
+                    "allow_sampling": true,
+                    "allow_logprobs": true,
+                    "allow_search_indices": false,
+-- advertised id matches the canonical name? --
+PASS: /v1/models advertises Qwen/Qwen3.5-0.8B
+-- DP engines that reported ready --
+

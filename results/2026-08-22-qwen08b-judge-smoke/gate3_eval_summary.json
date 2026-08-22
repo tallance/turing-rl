@@ -1,0 +1,97 @@
+{
+  "mode": "eval",
+  "endpoint": "http://10.137.92.152:8401/v1",
+  "model": "Qwen/Qwen3.5-0.8B",
+  "response_format": "json_schema",
+  "passes": [
+    {
+      "tag": "eval-pass0",
+      "n": 440,
+      "concurrency": 32,
+      "clean": 88,
+      "recovered": 0,
+      "failed": 328,
+      "error": 24,
+      "usable_rate": 0.2,
+      "hard_fail_rate": 0.8,
+      "finish_length_rate": 0.8,
+      "finish_reasons": {
+        "length": 352,
+        "stop": 88
+      },
+      "wall_s": 536.7,
+      "req_per_s": 0.82,
+      "p50_s": 273.95,
+      "p95_s": 510.77,
+      "rating_mean": 4.4659,
+      "rating_hist": {
+        "1": 1,
+        "2": 3,
+        "3": 21,
+        "4": 22,
+        "5": 22,
+        "6": 8,
+        "7": 11
+      },
+      "vs_reference": {
+        "comparison": "same-judge serving paths",
+        "n_compared": 88,
+        "ref_mean": 3.8068,
+        "new_mean": 4.4659,
+        "mean_delta": 0.6591,
+        "se_of_delta": 0.2006,
+        "exact_agreement": 0.1818,
+        "within_1": 0.5341,
+        "mean_abs_diff": 1.5909
+      }
+    },
+    {
+      "tag": "eval-pass1",
+      "n": 440,
+      "concurrency": 32,
+      "clean": 85,
+      "recovered": 0,
+      "failed": 333,
+      "error": 22,
+      "usable_rate": 0.1932,
+      "hard_fail_rate": 0.8068,
+      "finish_length_rate": 0.8068,
+      "finish_reasons": {
+        "length": 355,
+        "stop": 85
+      },
+      "wall_s": 513.8,
+      "req_per_s": 0.856,
+      "p50_s": 246.27,
+      "p95_s": 492.83,
+      "rating_mean": 4.6235,
+      "rating_hist": {
+        "1": 3,
+        "2": 5,
+        "3": 10,
+        "4": 20,
+        "5": 26,
+        "6": 7,
+        "7": 14
+      },
+      "vs_reference": {
+        "comparison": "same-judge serving paths",
+        "n_compared": 85,
+        "ref_mean": 3.6118,
+        "new_mean": 4.6235,
+        "mean_delta": 1.0118,
+        "se_of_delta": 0.2021,
+        "exact_agreement": 0.1765,
+        "within_1": 0.5294,
+        "mean_abs_diff": 1.6706
+      }
+    }
+  ],
+  "self_noise": {
+    "n_keys": 16,
+    "self_exact_agreement": 0.125,
+    "self_within_1": 0.375,
+    "self_mean_abs_diff": 1.875,
+    "pass_mean_spread": 0.1576
+  }
+}
