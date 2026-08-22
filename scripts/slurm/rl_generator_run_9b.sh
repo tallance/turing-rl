@@ -140,7 +140,11 @@ export JUDGE_MODEL
 export OPENAI_API_BASE="$ENDPOINT"
 export TURING_JUDGE_SCORE_CLIP_MAX=7
 export PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'
-export PERSONA_JUDGE_ENABLE_THINKING=1
+# Default 1, which is what both completed arms (9B and gemma-4-12B) ran. Overridable because
+# a judge small enough to never stop thinking is unusable with it on -- Qwen3.5-0.8B scored
+# 0.175 usable with thinking, 0.840 without (Slurm 18901/18913, docs/judge-response-schema.md).
+# A run that sets 0 is NOT protocol-comparable with the two arms above.
+export PERSONA_JUDGE_ENABLE_THINKING="${PERSONA_JUDGE_ENABLE_THINKING:-1}"
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 export PERSONA_JUDGE_DUMP_RATE=1.0
 export PERSONA_REWARD_DUMP_DIR="$REWARD_DUMP_DIR"

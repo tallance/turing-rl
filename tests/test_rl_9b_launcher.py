@@ -259,6 +259,9 @@ def test_single_node_judge_does_not_overlap_ray_trainer_gpu_ordinals():
 
 def test_single_node_judge_cost_controls_keep_defaults_but_allow_debug_overrides():
     assert 'PERSONA_JUDGE_ENABLE_THINKING="${PERSONA_JUDGE_ENABLE_THINKING:-1}"' in SINGLE_NODE
+    # Same default on the two-node driver. It must stay 1: both completed arms ran with
+    # thinking on, so a silent flip would make every future run incomparable to them.
+    assert 'PERSONA_JUDGE_ENABLE_THINKING="${PERSONA_JUDGE_ENABLE_THINKING:-1}"' in RUN_2NODE
     assert 'PERSONA_JUDGE_MAX_COMPLETION_TOKENS="${PERSONA_JUDGE_MAX_COMPLETION_TOKENS:-8192}"' in SINGLE_NODE
 
 
