@@ -1,0 +1,15 @@
+# split: PASS expect=heldout rows=440 users=123 parquet=/storage/home/lancewicki/projects/turing-rl/data/prism/full_s42_history_sft40_grpo60_test10/eval_subsets/test_seed42_n440.parquet
+
+| checkpoint | n_scored | n_unique_pairs | n_likert | likert_mean | win_rate_ge5 | pct_7 | judge_accuracy | gen_win_rate | n_nontie | n_tie | n_parse_error |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 9b-gemma12btrain-step0 | 440 | 440 | 440 | 3.8341 | 0.3591 | 0.0 | 0.573 | 0.427 | 370 | 70 | 0 |
+| 9b-gemma12btrain-step12 | 440 | 440 | 440 | 4.025 | 0.4182 | 0.23 | 0.4846 | 0.5154 | 357 | 83 | 0 |
+| 9b-gemma12btrain-step24 | 440 | 440 | 440 | 4.25 | 0.5341 | 0.45 | 0.3733 | 0.6267 | 375 | 65 | 0 |
+| 9b-gemma12btrain-step36 | 440 | 440 | 440 | 4.2932 | 0.5568 | 0.45 | 0.3288 | 0.6712 | 365 | 75 | 0 |
+| 9b-gemma12btrain-step48 | 440 | 440 | 440 | 4.3386 | 0.5795 | 0.68 | 0.2936 | 0.7064 | 361 | 79 | 0 |
+| 9b-gemma12btrain-step60 | 440 | 440 | 440 | 4.4818 | 0.6545 | 0.23 | 0.2421 | 0.7579 | 380 | 60 | 0 |
+| 9b-gemma12btrain-step72 | 440 | 440 | 440 | 4.375 | 0.6114 | 0.23 | 0.3085 | 0.6915 | 389 | 51 | 0 |
+| 9b-gemma12btrain-step84 | 440 | 440 | 440 | 4.4795 | 0.675 | 0.45 | 0.2306 | 0.7694 | 386 | 54 | 0 |
+| 9b-gemma12btrain-step96 | 440 | 440 | 440 | 4.45 | 0.6545 | 0.68 | 0.2361 | 0.7639 | 377 | 63 | 0 |
+| 9b-gemma12btrain-step108 | 440 | 440 | 440 | 4.4591 | 0.6205 | 0.23 | 0.2438 | 0.7562 | 361 | 79 | 0 |
+| 9b-gemma12btrain-step120 | 440 | 440 | 440 | 4.7091 | 0.7705 | 0.68 | 0.1461 | 0.8539 | 397 | 43 | 0 |

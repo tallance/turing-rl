@@ -1,0 +1,22 @@
+# subset verification, gemma-4-12B judge arm (jobs 18669 + 18771)
+# generated 2026-08-21T21:08:35Z
+# expect 80x per train key and 22x per val key
+
+[train] 384 rows / 277 users -> /home/lancewicki/projects/turing-rl/results/grpo/rl-generator/9b_frac10_20ep_gemma12b_kl1e4_lr1e4_temp1/train_used384.parquet
+        key set matches the reward dump exactly (384 keys)
+[val] 352 rows / 349 users -> /home/lancewicki/projects/turing-rl/results/grpo/rl-generator/9b_frac10_20ep_gemma12b_kl1e4_lr1e4_temp1/val_used352.parquet
+        key set matches the reward dump exactly (352 keys)
+
+PASS: both subsets reproduce the prompt sets the run actually used
+
+[train] 384 unique keys, 30973 judged calls
+        1 keys seen 79x
+        319 keys seen 80x
+        2 keys seen 83x
+        62 keys seen 84x
+        UNEVEN: counts range 79..84. At an epoch boundary this means the per-epoch sample set is rotating (drop_last on a non-multiple subset). Mid-epoch, it is expected.
+[val] 352 unique keys, 7744 judged calls
+        352 keys seen 22x
+        OK: every key seen exactly 22x -- no rotation
+
+PROBLEM: see above

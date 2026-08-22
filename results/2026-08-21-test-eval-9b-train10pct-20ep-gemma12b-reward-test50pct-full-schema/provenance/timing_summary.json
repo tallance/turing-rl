@@ -1,0 +1,76 @@
+{
+  "completed_job_count": 80,
+  "format_version": 1,
+  "job_count": 82,
+  "judges": {
+    "gemma4-12b": {
+      "median_model_startup_seconds": 91.952,
+      "median_scoring_seconds": 1571.389,
+      "timed_cell_count": 10,
+      "total_model_startup_seconds": 949.26,
+      "total_scoring_seconds": 15938.773
+    },
+    "qwen35-9b": {
+      "median_model_startup_seconds": 103.031,
+      "median_scoring_seconds": 942.604,
+      "timed_cell_count": 10,
+      "total_model_startup_seconds": 1039.516,
+      "total_scoring_seconds": 9506.277
+    }
+  },
+  "observed_active_interval_union_seconds": 32721.0,
+  "reused_cell_count": 2,
+  "stage_topology_active_estimate_seconds": 34064.0,
+  "stages": {
+    "continuation": {
+      "count": 30,
+      "maximum_active_seconds": 10.0,
+      "maximum_queue_wait_seconds": 0.0,
+      "median_active_seconds": 8.0,
+      "median_queue_wait_seconds": 0.0,
+      "minimum_active_seconds": 5.0,
+      "total_active_seconds": 218.0,
+      "total_queue_wait_seconds": 0.0
+    },
+    "generation": {
+      "count": 10,
+      "maximum_active_seconds": 729.0,
+      "maximum_queue_wait_seconds": 5473.0,
+      "median_active_seconds": 578.0,
+      "median_queue_wait_seconds": 1512.0,
+      "minimum_active_seconds": 514.0,
+      "total_active_seconds": 6047.0,
+      "total_queue_wait_seconds": 22827.0
+    },
+    "judge": {
+      "count": 20,
+      "maximum_active_seconds": 1788.0,
+      "maximum_queue_wait_seconds": 1504.0,
+      "median_active_seconds": 1371.5,
+      "median_queue_wait_seconds": 0.0,
+      "minimum_active_seconds": 1026.0,
+      "total_active_seconds": 27726.0,
+      "total_queue_wait_seconds": 1970.0
+    },
+    "merge": {
+      "count": 10,
+      "maximum_active_seconds": 212.0,
+      "maximum_queue_wait_seconds": 3.0,
+      "median_active_seconds": 206.0,
+      "median_queue_wait_seconds": 0.5,
+      "minimum_active_seconds": 143.0,
+      "total_active_seconds": 1892.0,
+      "total_queue_wait_seconds": 11.0
+    },
+    "pair_build": {
+      "count": 10,
+      "maximum_active_seconds": 10.0,
+      "maximum_queue_wait_seconds": 0.0,
+      "median_active_seconds": 7.5,
+      "median_queue_wait_seconds": 0.0,
+      "minimum_active_seconds": 7.0,
+      "total_active_seconds": 79.0,
+      "total_queue_wait_seconds": 0.0
+    }
+  }
+}

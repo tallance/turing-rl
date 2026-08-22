@@ -1,0 +1,12 @@
+[36m(TaskRunner pid=184176)[0m Load from checkpoint folder: /home/lancewicki/projects/turing-rl/results/runs/frac10ep20-gemma12b-resume/work/job-18771-924345eec142/results/grpo/rl-generator/9b_frac10_20ep_gemma12b_kl1e4_lr1e4_temp1/checkpoints/global_step_72
+[36m(TaskRunner pid=184176)[0m selected 352 random samples out of 705
+[36m(TaskRunner pid=184176)[0m selected 384 random samples out of 4174
+[36m(TaskRunner pid=184176)[0m Setting global step to 72
+[36m(TaskRunner pid=184176)[0m Size of train dataloader: 6, Size of val dataloader: 1
+[36m(WorkerDict pid=185579)[0m Total steps: 120, num_warmup_steps: 0
+gemma_snapshot=707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7 path=/home/lancewicki/data/hf_cache/hub/models--google--gemma-4-12B-it/snapshots/707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7
+=== judge concurrency pinned: 64 (timeout 1800s) ===
+=== judge secret file pinned: ENV_FILE=/home/lancewicki/projects/turing-rl/results/runs/frac10ep20-gemma12b-resume/work/job-18771-924345eec142/.env ===
+=== judge serving pinned: model=google/gemma-4-12B-it tp=1 dp=8 parser=gemma4 ===
+=== trainer exit: 0 ===
+=== trainer step exit: 0 ; tearing down judge step ===

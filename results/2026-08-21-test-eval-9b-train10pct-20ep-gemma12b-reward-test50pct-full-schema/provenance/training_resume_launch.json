@@ -1,0 +1,23 @@
+{
+  "code_root": "/home/lancewicki/projects/turing-rl-sources/924345eec142e759b25c4ace23f4d3b44aed6157",
+  "debug_label": null,
+  "dependency_profile": "all",
+  "environment_keys": [
+    "JUDGE",
+    "MODE",
+    "RUN_TAG"
+  ],
+  "format_version": 1,
+  "launched_at_utc": "2026-08-20T18:51:02.158889+00:00",
+  "launcher": "scripts/submit_snapshot_job.sh",
+  "launcher_args": [
+    "--export=ALL",
+    "--",
+    "scripts/slurm/rl_generator_run_9b.sh"
+  ],
+  "main_sha": "924345eec142e759b25c4ace23f4d3b44aed6157",
+  "run_class": "retained",
+  "run_root": "/home/lancewicki/projects/turing-rl/results/runs/frac10ep20-gemma12b-resume",
+  "source_sha": "924345eec142e759b25c4ace23f4d3b44aed6157",
+  "state_root": "/home/lancewicki/projects/turing-rl"
+}

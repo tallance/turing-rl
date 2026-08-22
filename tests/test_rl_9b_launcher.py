@@ -341,12 +341,44 @@ def test_gemma_judge_resolves_the_shape_the_eval_registry_assigns():
     # configs/judge_sweep_cells.py:tp_for_size, so it gets TP=1 across 8 replicas rather
     # than spanning the node. Getting this backwards would cost ~8x judge throughput on a
     # judge-bound run without failing anything.
-    assert "JUDGE=${JUDGE:?set JUDGE=9b|397b|gemma4-12b}" in RUN_2NODE
-    assert 'case "$JUDGE" in 9b|397b|gemma4-12b) ;;' in RUN_2NODE
+    assert "JUDGE=${JUDGE:?set JUDGE=0.8b|9b|397b|gemma4-12b}" in RUN_2NODE
+    assert 'case "$JUDGE" in 0.8b|9b|397b|gemma4-12b) ;;' in RUN_2NODE
     arm = judge_arm("gemma4-12b")
     assert "JUDGE_MODEL=google/gemma-4-12B-it" in arm
     assert "TP=1" in arm and "DP=8" in arm
     assert "REASONING_PARSER=gemma4" in arm
+
+
+def test_smallest_judge_reuses_the_qwen_serving_path_unchanged():
+    # 0.8B is the first judge below 4B anyone has run here, but it needs no new serving code:
+    # same family, same parser, same TP=1/DP=8 shape as the 9B. The risk it carries is
+    # whether a model this small can emit the 37-field verdict under training's
+    # {"type": "json_object"} mode at all, which is a runtime question the smoke answers --
+    # nothing static can. What this test pins is only that we did not accidentally give it
+    # the gemma treatment or a whole-node TP.
+    arm = judge_arm("0.8b")
+    assert "JUDGE_MODEL=Qwen/Qwen3.5-0.8B" in arm
+    assert "TP=1" in arm and "DP=8" in arm
+    assert "REASONING_PARSER=qwen3" in arm
+    assert "gemma" not in arm
+
+
+def test_judge_smoke_battery_is_model_agnostic():
+    # The battery was written for gemma and is reused verbatim for any other judge, so the
+    # model must come from the environment rather than being baked in, and the one
+    # gemma-only assertion (the offline snapshot pin, which only the gemma serve branch
+    # produces) must not fire for models that have no such pin.
+    smoke = pathlib.Path("scripts/slurm/gemma4_judge_training_smoke.sh").read_text()
+    assert "MODEL=${SMOKE_MODEL:-google/gemma-4-12B-it}" in smoke
+    assert "REASONING_PARSER=${SMOKE_PARSER:-gemma4}" in smoke
+    assert 'if [ "$REASONING_PARSER" = gemma4 ]; then' in smoke
+    # gate 3 guards on its reference dump existing. Note that dump's path names gemma's sweep
+    # output regardless of the model under test, so for any other judge the gate still RUNS
+    # and measures schema-mode parse rate -- it just is not an equivalence test, which is why
+    # the summary labels the rating comparison CROSS-JUDGE rather than passing or failing it.
+    assert 'if compgen -G "$EVAL_DUMP" > /dev/null; then' in smoke
+    # output must not land in gemma's directory for a non-gemma judge
+    assert "results/gemma4-judge-smoke/" not in smoke
 
 
 def test_reasoning_parser_is_pinned_per_family_and_forwarded_to_the_judge_step():
@@ -354,6 +386,7 @@ def test_reasoning_parser_is_pinned_per_family_and_forwarded_to_the_judge_step()
     # error -- it mis-splits thinking text out of .content, and the reward path then fails to
     # parse with nothing in the log naming the cause. So it must be resolved from JUDGE and
     # passed explicitly into the judge srun, never inherited from the submitting shell.
+    assert "REASONING_PARSER=qwen3" in judge_arm("0.8b")
     assert "REASONING_PARSER=qwen3" in judge_arm("9b")
     assert "REASONING_PARSER=qwen3" in judge_arm("397b")
     assert "REASONING_PARSER=gemma4" in judge_arm("gemma4-12b")
@@ -367,10 +400,13 @@ def test_reasoning_parser_is_pinned_per_family_and_forwarded_to_the_judge_step()
 
 def test_judge_case_arms_resolve_correctly_when_executed():
     # Functional counterpart: run the real `case` block rather than trusting substrings.
-    start = RUN_2NODE.index('case "$JUDGE" in\n  9b)')
+    start = RUN_2NODE.index('case "$JUDGE" in\n  0.8b)')
     block = RUN_2NODE[start : RUN_2NODE.index("esac", start) + len("esac")]
     script = 'JUDGE="$1"\n' + block + '\necho "$JUDGE_MODEL|$TP|$DP|$REASONING_PARSER"'
     for judge, expected in (
+        # 0.8b carries a dot, which is a literal in a `case` pattern but not in a glob --
+        # worth executing rather than eyeballing.
+        ("0.8b", "Qwen/Qwen3.5-0.8B|1|8|qwen3"),
         ("9b", "Qwen/Qwen3.5-9B|1|8|qwen3"),
         ("397b", "Qwen/Qwen3.5-397B-A17B-GPTQ-Int4|8|1|qwen3"),
         ("gemma4-12b", "google/gemma-4-12B-it|1|8|gemma4"),
