@@ -114,7 +114,12 @@ echo "=== GATE 2: judge validity under the training reward config ==="
 export JUDGE_MODEL=$MODEL
 export TURING_JUDGE_SCORE_CLIP_MAX=7
 export PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'
-export PERSONA_JUDGE_ENABLE_THINKING=1
+# 1 is what rl_generator_run_9b.sh exports, so 1 is what "the training config" means and is
+# the default here. SMOKE_THINKING=0 probes the one lever left for a model that fails gate 2
+# by never stopping: the runaway lives in the thinking block. Note that answering with it off
+# describes a DIFFERENT judge protocol than either completed arm uses, so a pass under 0 is
+# not licence to compare the resulting run against them.
+export PERSONA_JUDGE_ENABLE_THINKING=${SMOKE_THINKING:-1}
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 export PERSONA_OPENAI_TIMEOUT_SECONDS=1800
 export PERSONA_OPENAI_MAX_RETRIES=3
