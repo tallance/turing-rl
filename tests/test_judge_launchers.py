@@ -373,16 +373,16 @@ def test_unknown_mode_is_rejected_rather_than_treated_as_full():
     assert "full|overfit|valsmoke)" in code
 
 
-def test_tmpdir_is_per_job_so_concurrent_runs_do_not_collide():
-    """Concurrent jobs sharing TMPDIR collide when removing multiprocessing scratch dirs.
+def test_tmpdir_is_shared_so_the_compiler_cache_stays_warm():
+    """TMPDIR must stay shared: TorchInductor caches under tempfile.gettempdir().
 
-    The resulting `OSError: [Errno 16] Device or resource busy: .../pymp-XXXX` is harmless to
-    training but exits nonzero, so Slurm records FAILED -- and any `afterok` arm chained behind
-    it is stranded on DependencyNeverSatisfied. Job 18701 trained all 52 steps and wrote both
-    checkpoints, then died in cleanup and took its directional arm down with it.
+    A per-job TMPDIR (6bb1b18) was meant to dodge an Errno 16 pymp teardown collision. It did not
+    -- 18915 hit the same collision inside its own per-job dir -- and it relocated the compiler
+    cache, making every run a cold compile: +0.80 GB on the step-1 memory baseline against ~0.05 GB
+    of margin. 18858 OOMed on step 2 as a result.
     """
     text = _text(TRAIN)
 
-    assert "TMPDIR=/home/lancewicki/tmp/build/job-${SLURM_JOB_ID" in text, (
-        "TMPDIR must be keyed on the job id, not shared across concurrent runs"
+    assert "TMPDIR=/home/lancewicki/tmp/build\n" in text, (
+        "TMPDIR must stay shared so TorchInductor reuses the warm compiler cache"
     )

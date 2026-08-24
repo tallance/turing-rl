@@ -17,34 +17,14 @@ source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
-# TMPDIR is PER JOB. Sharing /home/lancewicki/tmp/build across concurrent jobs makes their
-# Python multiprocessing scratch dirs collide at teardown:
-#   OSError: [Errno 16] Device or resource busy: '/home/lancewicki/tmp/build/pymp-XXXX'
-# Keying on SLURM_JOB_ID removes the collision.
-#
-# Scope note: job 18701 raised this twice, but at STARTUP (immediately before the dataset-filtering
-# pass) and then trained for 17h regardless. So the collision is real but was not fatal there, and
-# it does NOT explain that job's truncated step-52 checkpoint -- an earlier version of this comment
-# claimed it did. What actually broke 18701 is still unexplained: its step-26 save was clean (32
-# files), its step-52 save began at 12:59 and the process exited 1 at 13:15 leaving 8 files, with no
-# traceback, no ENOSPC (34T free), no GPU OOM, no Ray actor death, and host RSS 141G of 512G. The
-# only distinguishing property of step 52 is that it was the FINAL save, concurrent with trainer and
-# vLLM teardown. Until that is understood, prefer a save_freq that puts at least one save before the
-# last step so a repeat failure still leaves a usable checkpoint.
-export TMPDIR=/home/lancewicki/tmp/build/job-${SLURM_JOB_ID:-$$}
+# TMPDIR is shared on purpose -- this is what job 18701 ran. A per-job TMPDIR was tried (6bb1b18)
+# to dodge an Errno 16 pymp teardown collision; it dodged nothing (18915 hit the same collision
+# inside its own per-job dir) and it moved TorchInductor's cache, which defaults to
+# tempfile.gettempdir(). That turned every run into a cold compile: +0.80 GB on the step-1 memory
+# baseline against ~0.05 GB of margin, and 18858 OOMed on step 2. Keep the cache warm here.
+export TMPDIR=/home/lancewicki/tmp/build
 export PIP_CACHE_DIR=/home/lancewicki/tmp/pip-cache
-# The compiler cache must NOT follow TMPDIR. TorchInductor defaults its cache to
-# tempfile.gettempdir(), so making TMPDIR per-job silently turned every run into a cold
-# compilation. Measured on the 4B graded arm: 18701 (shared TMPDIR) wrote 0 compiler files over
-# 17h and peaked at 33.17 GB allocated on step 1; 18858 (per-job TMPDIR, identical config) wrote
-# 6839 compiler files, ran step 1 23% slower, and peaked at 33.98 GB -- +0.80 GB of baseline.
-# That config's ceiling is ~35.4 GB and 18701's lifetime peak was 35.33 GB, so the margin is
-# ~0.05 GB and the cold-compile surcharge is ~16x it. 18858 OOMed on step 2.
-# Pin the cache to the historical shared path so runs stay warm. Inductor's cache is
-# content-addressed and safe to share across concurrent jobs; the pymp collision that motivated
-# the per-job TMPDIR is a different directory, so the two concerns separate cleanly.
-export TORCHINDUCTOR_CACHE_DIR=${TORCHINDUCTOR_CACHE_DIR:-/home/lancewicki/tmp/build/torchinductor_lancewicki}
-mkdir -p "$TMPDIR" "$PIP_CACHE_DIR" "$TORCHINDUCTOR_CACHE_DIR"
+mkdir -p "$TMPDIR" "$PIP_CACHE_DIR"
 
 REPO=${TURING_RL_WORK_ROOT:?}
 cd "$REPO" || exit 2
