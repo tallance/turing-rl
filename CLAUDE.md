@@ -37,18 +37,17 @@ The Mac agent reaches the cluster directly; the old Mac↔cluster relay-agent ro
 - **A100s are 40GB, not 80GB.** bf16 8B + long-seq/LoRA can OOM — shard (FSDP) or quantize (QLoRA), and launch multi-GPU via `torch.distributed.run --nproc_per_node=8`, not plain `python` (plain python = single-GPU → wastes 7 GPUs and OOMs).
 - **`/tmp` is a 1GB tmpfs** — for pip/heavy builds set `TMPDIR=~/tmp/build` and `PIP_CACHE_DIR=~/tmp/pip-cache`.
 - **Slurm buffers stdout** — logs may lag; don't infer failure from an empty/short log.
-- **There is a per-user disk quota and `df -h` cannot see it.** `df` shows the shared 47T filesystem
-  with tens of T free while your own writes are already refused; `quota` isn't installed and `lfs`
-  reports "not a mounted Lustre filesystem". Probe it instead:
-  `cd ~/projects/turing-rl/results && fallocate -l 20G .qp && echo OK; rm -f .qp`. A training job
-  that hits it dies at a checkpoint step with **no traceback and no `trainer exit` marker** — it
-  reads as a mysterious late crash (jobs 18701, 18915, both first misdiagnosed as OOM). Freeing
-  many-small-file dirs (`~/tmp/build/ray`, pip/uv caches, per-job scratch) recovers more than
-  deleting a few large files. Keep `~/tmp/build/torchinductor_lancewicki` — see below.
+- **There is a per-user disk quota and `df -h` cannot see it** (it showed 34T free while writes were
+  refused; `quota` absent, `lfs` reports "not a mounted Lustre filesystem"). Check with a real write
+  — `fallocate` is sparse here, so it only detects an already-full quota:
+  `cd ~/projects/turing-rl/results && dd if=/dev/zero of=.qp bs=1M count=10240 status=none && echo OK; rm -f .qp`.
+  A job that hits it dies at a checkpoint step with **no traceback and no `trainer exit` marker**,
+  reading as a mysterious late crash (jobs 18701, 18915, both first misdiagnosed as OOM).
 - **Never point `TMPDIR` somewhere per-job.** TorchInductor caches under `tempfile.gettempdir()`, so
   moving `TMPDIR` moves the compiler cache and makes every run a cold compile: +0.80 GB on the
   step-1 memory baseline against ~0.05 GB of margin on the 4B judge config (job 18858 OOMed at
-  step 2). Shared `TMPDIR=~/tmp/build` keeps it warm.
+  step 2). Shared `TMPDIR=~/tmp/build` keeps it warm; don't delete
+  `~/tmp/build/torchinductor_lancewicki` when freeing space.
 - Prefer direct binary paths over `conda activate` in one-off commands (e.g. `/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python`).
 
 ## Fallback: agent comms (only if the tunnel is down)
