@@ -1,0 +1,55 @@
+[smoke] mode=training response_format=json_object openrouter_extras=True prompts=200 concurrency=32 repeat=1
+[smoke] prompts drawn from dumps judged by: ['Qwen/Qwen3.5-9B']
+[smoke] pass 0: {
+  "tag": "training-pass0",
+  "n": 200,
+  "concurrency": 32,
+  "clean": 35,
+  "recovered": 0,
+  "failed": 162,
+  "error": 3,
+  "usable_rate": 0.175,
+  "hard_fail_rate": 0.825,
+  "finish_length_rate": 0.825,
+  "finish_reasons": {
+    "stop": 35,
+    "length": 165
+  },
+  "wall_s": 314.6,
+  "req_per_s": 0.636,
+  "p50_s": 199.16,
+  "p95_s": 297.61,
+  "rating_mean": 4.5862,
+  "rating_hist": {
+    "1": 2,
+    "3": 2,
+    "4": 9,
+    "5": 10,
+    "6": 3,
+    "7": 3
+  },
+  "vs_reference": {
+    "comparison": "CROSS-JUDGE (not a gate)",
+    "n_compared": 29,
+    "ref_mean": 3.9655,
+    "new_mean": 4.5862,
+    "mean_delta": 0.6207,
+    "se_of_delta": 0.3974,
+    "exact_agreement": 0.069,
+    "within_1": 0.5172,
+    "mean_abs_diff": 1.8621
+  }
+}
+[smoke] wrote /home/lancewicki/projects/turing-rl/results/runs/judge-smoke-qwen08b/work/job-18901-8756c7170696/results/judge-smoke/Qwen-Qwen3.5-0.8B/18901/gate2_training_calls.jsonl and /home/lancewicki/projects/turing-rl/results/runs/judge-smoke-qwen08b/work/job-18901-8756c7170696/results/judge-smoke/Qwen-Qwen3.5-0.8B/18901/gate2_training_summary.json
+[smoke] FAIL: hard-failure rate 82.50% -- endpoint is not usable
+[baseline] qwen on the same val prompts: {
+  "judge": "qwen3.5-9b (recorded in job 15371)",
+  "n_unique_val_prompts": 352,
+  "scored_rate": 1.0,
+  "hard_fail_rate": 0.0,
+  "finish_length_rate": 0.0,
+  "finish_reasons": {
+    "stop": 345,
+    "null": 7
+  }
+}

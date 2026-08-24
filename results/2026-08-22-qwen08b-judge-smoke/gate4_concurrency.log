@@ -1,0 +1,5 @@
+  conc=8   "usable_rate": 0.1875,
+  conc=8   "hard_fail_rate": 0.8125,
+  conc=8   "req_per_s": 0.312,
+  conc=8   "p50_s": 106.17,
+  conc=8   "p95_s": 198.87,
