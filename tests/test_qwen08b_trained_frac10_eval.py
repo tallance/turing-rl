@@ -53,6 +53,7 @@ class Qwen08BTrainedFrac10EvalTest(unittest.TestCase):
             'JUDGES="qwen35-0.8b gemma4-12b gemma4-31b qwen35-9b"',
             'JUDGE_MODES="off on on on"',
             'REUSED_STEP0_CELLS="gemma4-12b gemma4-31b qwen35-9b"',
+            "PERSONA_OPENAI_MAX_RETRIES=3",
             "9b-qwen08btrain-step",
         ):
             with self.subTest(fragment=fragment):
