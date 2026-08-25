@@ -73,17 +73,19 @@ def test_prompt_allowance_covers_the_measured_corpus():
 
 
 def test_response_budget_is_the_measured_trainable_value():
-    """9216, not 7680 and not 10752.
+    """8192: the eval's completion budget, and still under what OOMs.
 
-    Measured on the 9B, thinking ON, step-0 validation over 200 held-out rows: 7680 leaves 12.5%
-    of rollouts unclosed and accuracy below chance; 10752 is marginally better than 9216 but OOMs
-    in update_actor's log_softmax at micro_batch 1. 9216 trains and reaches 0.945 coverage.
+    Measured on the 9B, thinking ON, step-0 validation over 200 held-out rows: 10752 OOMs in
+    update_actor's log_softmax at micro_batch 1, so the budget has a hard ceiling well below the
+    context window. 7680 trained on the 4B but is not what the 880-pair eval serves; 8192 matches
+    PERSONA_JUDGE_MAX_COMPLETION_TOKENS (docs/default-params.md) so a checkpoint is validated
+    under the budget it is scored with. Worst case through log_softmax: 10,049 + 8,192 = 18,241.
     """
     config = _loaded(JUDGE_CONFIG)
     data = config["data"]
     max_model_len = config["actor_rollout_ref"]["rollout"]["max_model_len"]
 
-    assert data["max_response_length"] == 7680
+    assert data["max_response_length"] == 8192
     # Slack under the context window is deliberate: 10752 saturates it exactly and OOMs.
     assert data["max_prompt_length"] + data["max_response_length"] < max_model_len
 

@@ -73,7 +73,8 @@ Shared serving/sampling defaults (all judges):
 | Thinking mode | `PERSONA_JUDGE_ENABLE_THINKING=1`; parser `qwen3` for Qwen, `gemma4` for Gemma | off = no reasoning parser |
 | **Sampling** | **`repetition_penalty=1.1`, `temperature=0.6`** (pin explicitly) | inject via `PERSONA_JUDGE_SAMPLING='{"repetition_penalty":1.1,"temperature":0.6}'`. Pin temp so it's **uniform across judges** regardless of each model's `generation_config.json` (see Flags) |
 | Output schema | `PERSONA_JUDGE_JSON_SCHEMA=1` (ordered 37-field schema; all fields required, no extras, `rating` last) | See `docs/judge-response-schema.md` |
-| Max completion tokens | `PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192` | |
+| Max completion tokens | `PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192` | GRPO judge training matches this via `data.max_response_length: 8192` |
+| **In-training validation sampling** | **`temperature=0.6`, `top_p=0.8`, `top_k=20`, `n=1`** | SSOT `training/grpo/configs/qwen35_judge_grpo.yaml` → `rollout.val_kwargs`. This is a **separate mechanism** from `PERSONA_JUDGE_SAMPLING` above, which only reaches the judge served over HTTP — it does not reach the trainer's own validation rollouts. Keep the temperatures equal so a checkpoint is validated the way it is scored. No `repetition_penalty` here yet (2026-08-25) |
 | Client timeout | `PERSONA_OPENAI_TIMEOUT_SECONDS=1800` (thinking-on 397B) | reward.py fallback is 400 |
 | Retries | `PERSONA_OPENAI_MAX_RETRIES=3` | |
 | Concurrency | full eval: Qwen 32 per endpoint, Gemma 4 per endpoint; GRPO **`TURING_JUDGE_MAX_CONCURRENCY=64`** on DP-8 | **Corrected 2026-08-04** — see the correction note above. The old GRPO value starved the server; pair 64 with `PERSONA_OPENAI_TIMEOUT_SECONDS=1800` |
@@ -85,7 +86,7 @@ SSOT: `training/sft/configs/qwen3_8b_lora.yaml` (base), `bash_scripts/grpo/train
 | Param | Default | Notes |
 |---|---|---|
 | Base model | `qwen3-8b` (SFT LoRA adapter → GRPO actor) | |
-| **GRPO rollout temperature** | **1.0 (verl default, not overridden)** | training uses high temp for exploration; validation/eval rollout = 0 (greedy). verl `trainer/config/rollout/rollout.yaml` |
+| **GRPO rollout temperature** | **1.0 (verl default, not overridden)** | training uses high temp for exploration. verl `trainer/config/rollout/rollout.yaml` |
 | Heldout-inference sampling | **T=0.6, 1 sample/pair** | eval only (not training); per judge-sweep `derived/README.txt` |
 
 > **GRPO training hyperparameters (batch, `rollout.n`, lengths, epochs) follow upstream

@@ -43,7 +43,11 @@ data:
   # max_prompt_length is a CAP and costs nothing by itself; peak memory tracks ACTUAL sequence
   # length. Trimming the prompt allowance therefore buys configuration room, not memory -- the
   # mistake that produced the failed launch.
-  max_response_length: 7680
+  # 2026-08-25: raised 7680 -> 8192 to match the eval's PERSONA_JUDGE_MAX_COMPLETION_TOKENS, so a
+  # checkpoint is validated under the same completion budget it is scored with. This is the tight
+  # one: worst case goes 17,729 -> 18,241 tokens through log_softmax, and 18701's lifetime peak was
+  # 35.33 GB against a ~35.4 GB ceiling. Watch perf/max_memory_allocated_gb on the first run.
+  max_response_length: 8192
   truncation: left
   filter_overlong_prompts: true
   apply_chat_template_kwargs:
@@ -127,7 +131,11 @@ actor_rollout_ref:
       # Same value the proven 9B recipe pins. Key exists in the composed parent.
       update_weights_bucket_megabytes: 3072
     val_kwargs:
-      temperature: 0.7
+      # 0.6 matches the judge serving default in docs/default-params.md, so in-training validation
+      # and the 880-pair eval decode the same checkpoint the same way. At 0.7 they did not: step 52
+      # of job 18919 showed 19.3% unclosed thinking here and 0% under the eval policy.
+      # Repetition penalty is deliberately NOT set here yet.
+      temperature: 0.6
       top_p: 0.8
       top_k: 20
       do_sample: true

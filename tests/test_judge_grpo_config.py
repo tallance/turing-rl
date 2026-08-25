@@ -70,7 +70,9 @@ def test_optimiser_follows_the_9b_recipe():
 
 def test_validation_sampling_is_narrower_than_training():
     val = _load()["actor_rollout_ref"]["rollout"]["val_kwargs"]
-    assert float(val["temperature"]) == 0.7
+    # 0.6 matches the judge serving default (docs/default-params.md), so a checkpoint is
+    # validated under the same decode policy it is scored with.
+    assert float(val["temperature"]) == 0.6
     assert float(val["top_p"]) == 0.8
     assert val["top_k"] == 20
     assert val["n"] == 1
@@ -136,7 +138,9 @@ def test_budgets_match_the_measured_prompt_and_completion_distributions():
     measured_max_prompt_tokens = 10535
 
     assert data["max_prompt_length"] > measured_max_prompt_tokens, "would truncate prompts"
-    assert data["max_response_length"] == 7680
+    # 8192 as of 2026-08-25, matching PERSONA_JUDGE_MAX_COMPLETION_TOKENS so a checkpoint is
+    # validated under the same completion budget the 880-pair eval scores it with.
+    assert data["max_response_length"] == 8192
     assert (
         data["max_prompt_length"] + data["max_response_length"]
         < config["actor_rollout_ref"]["rollout"]["max_model_len"]
