@@ -204,21 +204,27 @@ def test_b0_fixed_teacher_forced_batch_matches_actor_dp_size():
 
 def test_runtime_env_wrapper_forwards_verl_09_config_argument():
     calls = []
+    config = SimpleNamespace(
+        data=SimpleNamespace(apply_chat_template_kwargs={"enable_thinking": True})
+    )
 
     def get_runtime_env(*args, **kwargs):
         calls.append((args, kwargs))
         return {"env_vars": {"UPSTREAM": "1"}}
 
     constants = SimpleNamespace(get_ppo_ray_runtime_env=get_runtime_env)
-    with patch.object(
-        verl_runtime_patch,
-        "_merge_propagated_runtime_env_vars",
-        side_effect=lambda runtime_env: runtime_env,
+    with (
+        patch.dict(os.environ, {"PERSONA_ENABLE_THINKING": ""}, clear=False),
+        patch.object(
+            verl_runtime_patch,
+            "_merge_propagated_runtime_env_vars",
+            side_effect=lambda runtime_env: runtime_env,
+        ),
     ):
         verl_runtime_patch._patch_ppo_ray_runtime_env(constants)
-        result = constants.get_ppo_ray_runtime_env("config", mode="sync")
+        result = constants.get_ppo_ray_runtime_env(config, mode="sync")
 
-    assert calls == [(("config",), {"mode": "sync"})]
+    assert calls == [((config,), {"mode": "sync"})]
     assert result == {"env_vars": {"UPSTREAM": "1"}}
 
 
