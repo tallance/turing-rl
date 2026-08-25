@@ -1,0 +1,178 @@
+"""Unit tests for the zero-shot judge format probe.
+
+Network calls are out of scope here; these lock the regime mapping and the summary
+arithmetic, which are the parts that decide the Phase 0 gate.
+"""
+
+import json
+
+import pytest
+
+from shared.judge_prompts import TURING_RESPONSE_PROPERTIES
+from scripts.probe_judge_format import (
+    REGIMES,
+    dump_row,
+    even_limit,
+    probe_record,
+    response_format_for_regime,
+    summarize_probe,
+)
+
+
+def _full_verdict(rating: int = 7) -> str:
+    data = {}
+    for name, schema in TURING_RESPONSE_PROPERTIES.items():
+        data[name] = "text" if schema["type"] == "string" else 0.0
+    data["immediate_target_score_b"] = 1.0
+    data["human_goal_score_b"] = 1.0
+    data["communication_style_score_b"] = 1.0
+    data["base_score_a"] = 0.0
+    data["base_score_b"] = 3.0
+    data["penalty_a"] = 0.0
+    data["penalty_b"] = 0.0
+    data["response_a_score"] = 0.0
+    data["response_b_score"] = 3.0
+    data["score_gap"] = 3.0
+    data["rating"] = rating
+    return json.dumps(data)
+
+
+def test_regimes_are_the_three_documented_ones():
+    assert REGIMES == ("json_schema", "json_object", "freeform")
+
+
+def test_freeform_sends_no_response_format():
+    assert response_format_for_regime("freeform") is None
+
+
+def test_json_object_sends_the_loose_constraint():
+    assert response_format_for_regime("json_object") == {"type": "json_object"}
+
+
+def test_json_schema_sends_the_full_ordered_schema():
+    fmt = response_format_for_regime("json_schema")
+    assert fmt["type"] == "json_schema"
+    assert fmt["json_schema"]["schema"]["required"] == list(TURING_RESPONSE_PROPERTIES)
+
+
+def test_unknown_regime_raises():
+    with pytest.raises(ValueError):
+        response_format_for_regime("nonsense")
+
+
+def test_probe_record_scores_a_well_formed_verdict():
+    record = probe_record(_full_verdict(7), "stop", human_is_b=True)
+    assert record["fmt_all_fields"] == 1.0
+    assert record["recovered"] == 1.0
+    assert record["correct"] == 1.0
+    assert record["truncated"] == 0.0
+    assert record["rung"] == "dimensions"
+
+
+def test_probe_record_marks_a_length_stop_as_truncated():
+    assert probe_record(_full_verdict(), "length", human_is_b=True)["truncated"] == 1.0
+
+
+def test_probe_record_handles_an_unusable_completion():
+    record = probe_record("nothing useful", "stop", human_is_b=True)
+    assert record["recovered"] == 0.0
+    assert record["fmt_all_fields"] == 0.0
+    assert record["correct"] == 0.0
+
+
+def test_summary_averages_the_gate_metrics():
+    records = [
+        probe_record(_full_verdict(7), "stop", human_is_b=True),
+        probe_record("nothing useful", "stop", human_is_b=True),
+    ]
+    summary = summarize_probe(records)
+    assert summary["n"] == 2
+    assert summary["fmt_all_fields_rate"] == 0.5
+    assert summary["recovered_rate"] == 0.5
+    assert summary["accuracy"] == 0.5
+    assert summary["truncation_rate"] == 0.0
+    assert summary["rung_counts"]["dimensions"] == 1
+    assert summary["rung_counts"]["none"] == 1
+
+
+def test_summary_of_no_records_is_empty_not_a_crash():
+    assert summarize_probe([])["n"] == 0
+
+
+def test_dump_row_emits_the_canonical_analysis_columns():
+    row = {
+        "prompt": [{"role": "user", "content": "x"}],
+        "extra_info": {"pair_id": "p1::g0", "order": "human_b", "human_is_b": True},
+    }
+    record = probe_record(_full_verdict(7), "stop", human_is_b=True)
+    assert dump_row("qwen35-4b", row, record, regime="json_schema") == {
+        "model": "qwen35-4b",
+        "regime": "json_schema",
+        "pair_id": "p1::g0",
+        "order": "human_b",
+        "rating": 7,
+        "human_is_b": True,
+    }
+
+
+def test_dump_row_records_which_regime_produced_the_verdict():
+    """A freeform verdict and a forced-schema verdict are not the same measurement."""
+    row = {
+        "prompt": [{"role": "user", "content": "x"}],
+        "extra_info": {"pair_id": "p1::g0", "order": "human_a", "human_is_b": False},
+    }
+    record = probe_record(_full_verdict(1), "stop", human_is_b=False)
+    assert dump_row("m", row, record, regime="freeform")["regime"] == "freeform"
+
+
+def test_dump_row_carries_a_null_rating_when_nothing_was_recovered():
+    row = {
+        "prompt": [{"role": "user", "content": "x"}],
+        "extra_info": {"pair_id": "p1::g0", "order": "human_a", "human_is_b": False},
+    }
+    record = probe_record("garbage", "stop", human_is_b=False)
+    assert dump_row("m", row, record, regime="json_schema")["rating"] is None
+
+
+def test_an_odd_limit_is_rounded_down_to_keep_ab_orders_paired():
+    assert even_limit(201) == 200
+    assert even_limit(200) == 200
+    assert even_limit(1) == 0
+    assert even_limit(0) == 0
+
+
+def test_local_endpoints_do_not_require_a_secret(monkeypatch):
+    """Preflight check 33: an immutable snapshot has no .env, so a local unauthenticated
+    server must not be scored through the remote-secret loader. Killed jobs 14096/14097 and
+    then 16059/16061/16063, each time AFTER the server came up healthy."""
+    from scripts.probe_judge_format import resolve_probe_api_key
+    for base in (
+        "http://127.0.0.1:8000/v1",
+        "http://localhost:8332/v1",
+        "http://10.137.73.36:8358/v1",   # the actual endpoint that failed
+        "http://192.168.1.5:8000/v1",
+        "http://172.16.0.9:8000/v1",
+    ):
+        assert resolve_probe_api_key(base) == "EMPTY", base
+
+
+def test_remote_endpoints_keep_the_strict_key_lookup(monkeypatch):
+    """Only local bases skip the loader; a real endpoint must still demand a real key."""
+    import scripts.probe_judge_format as probe
+    called = {}
+
+    def _fake_loader() -> str:
+        called["hit"] = True
+        return "real"
+
+    monkeypatch.setattr(probe, "resolve_judge_api_key", _fake_loader)
+    assert probe.resolve_probe_api_key("https://openrouter.ai/api/v1") == "real"
+    assert called.get("hit") is True
+
+
+def test_a_public_ip_is_not_mistaken_for_local():
+    """10.x is private but 100.x / 11.x are not; the guard must not over-match."""
+    import scripts.probe_judge_format as probe
+    import pytest as _pytest
+    for base in ("http://100.64.0.1:8000/v1", "http://11.0.0.1:8000/v1", "http://172.32.0.1:8000/v1"):
+        assert probe._LOCAL_ENDPOINT_RE.match(base) is None, base

@@ -159,6 +159,39 @@ def get_chat_template_kwargs_for_prompt_mode(prompt_mode: str | None) -> dict[st
     }
 
 
+def has_hidden_thinking_close(text: str | None) -> bool:
+    """True when the completion closed its Qwen thinking block at least once.
+
+    Distinguishes "reasoned, then answered" from "was still reasoning when the response cap cut
+    it off". Under thinking-ON those mean opposite things, and ``split_after_hidden_thinking``
+    alone cannot tell them apart because it returns the input unchanged in both the marker-absent
+    and thinking-disabled cases.
+    """
+    if not isinstance(text, str):
+        return False
+    return _HIDDEN_THINKING_CLOSE_TAG_RE.search(text) is not None
+
+
+def split_after_hidden_thinking(text: str | None) -> str:
+    """Return the answer portion following the final Qwen ``</think>`` marker.
+
+    ``</think>`` is an ordinary vocabulary token rather than a special token, so it survives
+    ``skip_special_tokens=True`` and reaches reward functions verbatim. With thinking enabled a
+    completion looks like ``reasoning...</think>\\n\\n{json}``, so anything scoring the ANSWER
+    (strict JSON parse, schema conformance) must not be shown the reasoning block: prose would
+    fail a whole-string ``json.loads``, and field names merely *discussed* while reasoning would
+    otherwise count as emitted.
+
+    Returns the whole string when the marker is absent, which is the thinking-disabled case.
+    """
+    if not isinstance(text, str):
+        return ""
+    matches = list(_HIDDEN_THINKING_CLOSE_TAG_RE.finditer(text))
+    if not matches:
+        return text
+    return text[matches[-1].end() :]
+
+
 def tokenize_with_prefix_boundary(
     tokenizer: Any,
     prefix_text: str,

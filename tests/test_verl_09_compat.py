@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import types
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -10,6 +11,136 @@ import numpy as np
 from training.grpo import b0_rollout_sync_hook
 from training.grpo import hf_compat_patches
 from training.grpo import verl_runtime_patch
+
+
+def test_qwen35_fused_backends_move_reconstructed_vocab_weight_to_hidden_device():
+    source = """
+def forward_with_torch_backend(self, hidden_states):
+    vocab_weights = self.lm_head.weight
+    if isinstance(vocab_weights, DTensor):
+        vocab_weights = vocab_weights.full_tensor()
+    return hidden_states @ vocab_weights.t()
+
+def forward_with_triton_backend(self, hidden_states):
+    vocab_weights = self.lm_head.weight
+    hidden_states = hidden_states.to(vocab_weights.dtype)
+    if isinstance(vocab_weights, DTensor):
+        vocab_weights = vocab_weights.full_tensor()
+    return linear_cross_entropy(hidden_states, vocab_weights)
+"""
+
+    patched = verl_runtime_patch._insert_qwen35_fused_vocab_weight_device_transfer(source)
+
+    assert patched.count("vocab_weights.full_tensor().to(hidden_states.device)") == 2
+
+
+def test_qwen35_fused_vocab_weight_device_transfer_is_idempotent():
+    source = "vocab_weights = vocab_weights.full_tensor().to(hidden_states.device)\n"
+
+    assert verl_runtime_patch._insert_qwen35_fused_vocab_weight_device_transfer(source) == source
+
+
+def test_qwen35_fused_vocab_weight_device_transfer_rejects_unknown_source():
+    source = "vocab_weights = materialize_vocab_weight()\n"
+
+    with np.testing.assert_raises_regex(RuntimeError, "Qwen3.5 fused vocab-weight source"):
+        verl_runtime_patch._insert_qwen35_fused_vocab_weight_device_transfer(source)
+
+
+def test_qwen35_fused_device_patch_installs_once_per_process():
+    torch_source = """
+def forward_with_torch_backend(self, hidden_states):
+    vocab_weights = self.lm_head.weight
+    if isinstance(vocab_weights, DTensor):
+        vocab_weights = vocab_weights.full_tensor()
+    return hidden_states @ vocab_weights.t()
+"""
+    triton_source = torch_source.replace("forward_with_torch_backend", "forward_with_triton_backend")
+    module = types.ModuleType("verl.models.transformers.qwen3_5")
+    exec(torch_source, module.__dict__)
+    exec(triton_source, module.__dict__)
+    originals = (module.forward_with_torch_backend, module.forward_with_triton_backend)
+
+    with (
+        patch.object(verl_runtime_patch, "_find_optional_module_spec", return_value=SimpleNamespace()),
+        patch.object(verl_runtime_patch.importlib, "import_module", return_value=module),
+        patch.object(
+            verl_runtime_patch.inspect,
+            "getsource",
+            side_effect=lambda function: torch_source if function is originals[0] else triton_source,
+        ),
+    ):
+        assert verl_runtime_patch._patch_qwen35_fused_vocab_weight_device()
+        patched = (module.forward_with_torch_backend, module.forward_with_triton_backend)
+        assert patched[0] is not originals[0]
+        assert patched[1] is not originals[1]
+        assert not verl_runtime_patch._patch_qwen35_fused_vocab_weight_device()
+
+
+def test_qwen35_fused_device_patch_is_optional_when_model_module_cannot_import():
+    with (
+        patch.object(verl_runtime_patch, "_find_optional_module_spec", return_value=SimpleNamespace()),
+        patch.object(
+            verl_runtime_patch.importlib,
+            "import_module",
+            side_effect=ImportError("transformers has no Qwen3.5 support"),
+        ),
+    ):
+        assert not verl_runtime_patch._patch_qwen35_fused_vocab_weight_device()
+
+
+def test_tensor_transfer_used_by_qwen35_patch_preserves_weight_gradient():
+    import pytest
+
+    torch = pytest.importorskip("torch")
+    weight = torch.tensor([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    hidden_states = torch.tensor([[5.0, 6.0]], dtype=torch.float64)
+
+    transferred_weight = weight.to(device=hidden_states.device, dtype=hidden_states.dtype)
+    (hidden_states @ transferred_weight.t()).sum().backward()
+
+    assert weight.grad is not None
+    torch.testing.assert_close(weight.grad, torch.tensor([[5.0, 6.0], [5.0, 6.0]]))
+
+
+def test_fsdp2_accumulated_grad_guard_skips_parameters_never_unsharded():
+    module = types.ModuleType("torch.distributed.fsdp._fully_shard._fsdp_param")
+
+    class FakeFSDPParam:
+        calls = 0
+
+        def to_accumulated_grad_if_needed(self):
+            type(self).calls += 1
+            return "original"
+
+    module.FSDPParam = FakeFSDPParam
+
+    with (
+        patch.object(verl_runtime_patch, "_find_optional_module_spec", return_value=SimpleNamespace()),
+        patch.object(verl_runtime_patch.importlib, "import_module", return_value=module),
+    ):
+        assert verl_runtime_patch._patch_fsdp2_missing_unsharded_param_guard()
+        missing = FakeFSDPParam()
+        missing.sharded_param = SimpleNamespace(requires_grad=False)
+        assert missing.to_accumulated_grad_if_needed() is None
+        assert FakeFSDPParam.calls == 0
+
+        trainable_missing = FakeFSDPParam()
+        trainable_missing.sharded_param = SimpleNamespace(requires_grad=True)
+        with np.testing.assert_raises_regex(RuntimeError, "trainable FSDP parameter"):
+            trainable_missing.to_accumulated_grad_if_needed()
+        assert FakeFSDPParam.calls == 0
+
+        present = FakeFSDPParam()
+        present._unsharded_param = SimpleNamespace(grad=None)
+        assert present.to_accumulated_grad_if_needed() == "original"
+        assert FakeFSDPParam.calls == 1
+        assert not verl_runtime_patch._patch_fsdp2_missing_unsharded_param_guard()
+
+
+def test_fsdp2_accumulated_grad_guard_is_optional_when_torch_internal_is_absent():
+    with patch.object(verl_runtime_patch, "_find_optional_module_spec", return_value=None):
+        assert not verl_runtime_patch._patch_fsdp2_missing_unsharded_param_guard()
 
 
 def test_optional_legacy_actor_module_can_be_absent():
@@ -73,21 +204,27 @@ def test_b0_fixed_teacher_forced_batch_matches_actor_dp_size():
 
 def test_runtime_env_wrapper_forwards_verl_09_config_argument():
     calls = []
+    config = SimpleNamespace(
+        data=SimpleNamespace(apply_chat_template_kwargs={"enable_thinking": True})
+    )
 
     def get_runtime_env(*args, **kwargs):
         calls.append((args, kwargs))
         return {"env_vars": {"UPSTREAM": "1"}}
 
     constants = SimpleNamespace(get_ppo_ray_runtime_env=get_runtime_env)
-    with patch.object(
-        verl_runtime_patch,
-        "_merge_propagated_runtime_env_vars",
-        side_effect=lambda runtime_env: runtime_env,
+    with (
+        patch.dict(os.environ, {"PERSONA_ENABLE_THINKING": ""}, clear=False),
+        patch.object(
+            verl_runtime_patch,
+            "_merge_propagated_runtime_env_vars",
+            side_effect=lambda runtime_env: runtime_env,
+        ),
     ):
         verl_runtime_patch._patch_ppo_ray_runtime_env(constants)
-        result = constants.get_ppo_ray_runtime_env("config", mode="sync")
+        result = constants.get_ppo_ray_runtime_env(config, mode="sync")
 
-    assert calls == [(("config",), {"mode": "sync"})]
+    assert calls == [((config,), {"mode": "sync"})]
     assert result == {"env_vars": {"UPSTREAM": "1"}}
 
 
