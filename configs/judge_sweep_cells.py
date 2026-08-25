@@ -23,6 +23,16 @@ ANCHOR = {
 # Opt-in judges used by dedicated evaluations, not appended to the default
 # Qwen family sweeps. ``concurrency`` is the per-endpoint client setting.
 _EXTRA_CELLS = {
+    "qwen35-0.8b": {
+        "cell_name": "qwen35-0.8b",
+        "model_id": "Qwen/Qwen3.5-0.8B",
+        "tp": 1,
+        "replicas": 8,
+        "size_b": 0.8,
+        "is_moe": False,
+        "quantized": False,
+        "concurrency": 32,
+    },
     "gemma4-12b": {
         "cell_name": "gemma4-12b",
         "model_id": "google/gemma-4-12B-it",
@@ -141,6 +151,7 @@ SIZE_MAP = {
     "qwen3-14b": 14,
     "qwen3-32b": 32,
     "qwen35-4b": 4,
+    "qwen35-0.8b": 0.8,
     "qwen35-9b": 9,
     "qwen35-27b": 27,
     "qwen35-35b-a3b": 3,

@@ -25,12 +25,27 @@ SKIP_SPLIT_GUARD=${SKIP_SPLIT_GUARD:-0}
 
 STEPS=${STEPS:-"0 32 64 96 128 160 192 224 256 288 320"}
 JUDGES=${JUDGES:-"qwen35-9b gemma4-12b gemma4-31b qwen35-4b qwen35-27b"}
+JUDGE_MODES=${JUDGE_MODES:-}
+REUSED_STEP0_CELLS=${REUSED_STEP0_CELLS:-}
 read -r -a STEP_VALUES <<< "$STEPS"
 read -r -a JUDGE_VALUES <<< "$JUDGES"
 [ "${#STEP_VALUES[@]}" -gt 0 ] && [ "${#JUDGE_VALUES[@]}" -gt 0 ] || {
   echo "FATAL: STEPS and JUDGES must each contain at least one value" >&2
   exit 2
 }
+if [ -n "$JUDGE_MODES" ]; then
+  read -r -a JUDGE_MODE_VALUES <<< "$JUDGE_MODES"
+  [ "${#JUDGE_MODE_VALUES[@]}" -eq "${#JUDGE_VALUES[@]}" ] || {
+    echo "FATAL: JUDGE_MODES must contain one mode per JUDGES entry" >&2
+    exit 2
+  }
+else
+  JUDGE_MODE_VALUES=()
+  for _judge in "${JUDGE_VALUES[@]}"; do JUDGE_MODE_VALUES+=(on); done
+fi
+for mode in "${JUDGE_MODE_VALUES[@]}"; do
+  case "$mode" in on|off) ;; *) echo "FATAL: judge modes must be on|off (got '$mode')" >&2; exit 2 ;; esac
+done
 TOTAL=$((${#STEP_VALUES[@]} * ${#JUDGE_VALUES[@]}))
 
 case "$OFFSET:$BATCH_SIZE" in
@@ -58,7 +73,7 @@ export TURING_JUDGE_SCORE_CLIP_MAX=7
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 export PERSONA_OPENAI_TIMEOUT_SECONDS=1800
 export REPO EVAL_ROOT EVAL_PARQUET SLURM_SCRIPT CONTINUE_SCRIPT GEN_KEY_PREFIX PAIRS_TAG
-export BATCH_SIZE STEPS JUDGES JOB_PREFIX
+export BATCH_SIZE STEPS JUDGES JUDGE_MODES REUSED_STEP0_CELLS JOB_PREFIX
 
 submit() {
   local dep="$1"; shift
@@ -88,10 +103,34 @@ for ((idx=OFFSET; idx<END; idx++)); do
   judge_index=$((idx / ${#STEP_VALUES[@]}))
   step_index=$((idx % ${#STEP_VALUES[@]}))
   judge=${JUDGE_VALUES[$judge_index]}
+  mode=${JUDGE_MODE_VALUES[$judge_index]}
   step=${STEP_VALUES[$step_index]}
   gen_key=${GEN_KEY_PREFIX}${step}
   pairs=$EVAL_ROOT/raw/pairs/gen_${gen_key}_${PAIRS_TAG}.parquet
   [ -f "$pairs" ] || { echo "FATAL: missing pair set: $pairs" >&2; exit 2; }
+
+  sweep_root=$EVAL_ROOT/raw/$gen_key/sweep
+  reward_dir=$sweep_root/$judge/$mode/reward
+  if [ -d "$reward_dir" ] && [ -n "$(ls -A "$reward_dir" 2>/dev/null)" ]; then
+    reuse=0
+    if [ "$step" = "0" ]; then
+      for reused_cell in $REUSED_STEP0_CELLS; do
+        [ "$judge" = "$reused_cell" ] && reuse=1
+      done
+    fi
+    if [ "$reuse" = "1" ]; then
+      manifest=$EVAL_ROOT/provenance/step0_reuse.json
+      [ -f "$manifest" ] || { echo "FATAL: missing step-0 reuse manifest: $manifest" >&2; exit 2; }
+      if [ "$DRY" != "1" ]; then
+        "$PY" scripts/verify_judge_completeness.py \
+          --reward_dir "$reward_dir" --pairs "$pairs" --expect_pairs "$PAIRS_TAG" || exit 2
+      fi
+      echo "reusing verified step-0 cell $judge/$mode -> $reward_dir" >&2
+      continue
+    fi
+    echo "FATAL: refusing stale output in $reward_dir" >&2
+    exit 2
+  fi
 
   read -r model tp replicas concurrency <<EOF
 $($PY -c "from configs.judge_sweep_cells import resolve_cell; c=resolve_cell('$judge'); print(c['model_id'], c['tp'], c['replicas'], c.get('concurrency', 32))")
@@ -101,18 +140,11 @@ EOF
     exit 2
   }
 
-  sweep_root=$EVAL_ROOT/raw/$gen_key/sweep
-  reward_dir=$sweep_root/$judge/on/reward
-  if [ -d "$reward_dir" ] && [ -n "$(ls -A "$reward_dir" 2>/dev/null)" ]; then
-    echo "FATAL: refusing stale output in $reward_dir" >&2
-    exit 2
-  fi
-
   dep=""
   [ -n "$PREV" ] && dep="afterok:$PREV"
   gpus=$((tp * replicas))
   jid=$(submit "$dep" --gres=gpu:$gpus --job-name="${JOB_PREFIX}_${judge}_${step}" \
-    --export=ALL,MODEL=$model,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=on,CELL_NAME=$judge,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
+    --export=ALL,MODEL=$model,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=$mode,CELL_NAME=$judge,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
     -- \
     "$SLURM_SCRIPT")
   need_jid "$jid" "$judge/step$step"
