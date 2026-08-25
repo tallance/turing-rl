@@ -3873,4 +3873,3 @@ trained models and baselines alike.
 **Not verified here, and worth checking on first use:** the `#SBATCH` resource shapes in
 Task 8 are estimates, not measurements — particularly the 8-GPU allocation and 3-day walltime
 for judge GRPO, and the 300-second serve warmup in the probe launcher.
-
