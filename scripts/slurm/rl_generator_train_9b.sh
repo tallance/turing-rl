@@ -269,4 +269,23 @@ $PY -m training.grpo.run_verl_main_ppo \
   "${OVR[@]}" ${EXTRA_OVERRIDES:-}
 RC=$?
 echo "=== trainer exit: $RC ==="
+
+# Ray keeps its per-worker logs under /tmp/ray on THIS node, and they vanish when the
+# allocation is released. When a trainer dies without printing a traceback, the exception is
+# in those files and nowhere else: job 18917 exited 1 mid-checkpoint with nothing in either
+# Slurm stream, and this is what would have named the cause. It has to live here rather than
+# in the driver's trap, because the driver runs on the judge node and Ray runs on this one.
+# Best-effort and time-capped: a diagnostic must never be why a job fails, and it must not
+# disturb $RC.
+if [ "$RC" -ne 0 ]; then
+  _raydest="$REPO/logs/ray-${SLURM_JOB_ID:-$$}"
+  if mkdir -p "$_raydest" 2>/dev/null; then
+    for _s in /tmp/ray/session_*/logs; do
+      [ -d "$_s" ] || continue
+      timeout 180 cp -r "$_s" "$_raydest/$(basename "$(dirname "$_s")")" 2>/dev/null || true
+    done
+    echo "=== ray logs saved to $_raydest ==="
+  fi
+fi
+
 exit $RC
