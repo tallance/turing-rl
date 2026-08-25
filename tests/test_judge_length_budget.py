@@ -72,22 +72,21 @@ def test_prompt_allowance_covers_the_measured_corpus():
     )
 
 
-def test_response_budget_is_the_measured_trainable_value():
-    """8192: the eval's completion budget, and still under what OOMs.
+def test_response_budget_uses_the_measured_fused_recipe():
+    """The long response budget is safe only with the fused token-loss path.
 
-    Measured on the 9B, thinking ON, step-0 validation over 200 held-out rows: 10752 OOMs in
-    update_actor's log_softmax at micro_batch 1, so the budget has a hard ceiling well below the
-    context window. 7680 trained on the 4B but is not what the 880-pair eval serves; 8192 matches
-    PERSONA_JUDGE_MAX_COMPLETION_TOKENS (docs/default-params.md) so a checkpoint is validated
-    under the budget it is scored with. Worst case through log_softmax: 10,049 + 8,192 = 18,241.
+    Job 18920 completed actor updates on the full 9B corpus with a 10,752-token response cap
+    after enabling fused kernels. Earlier unfused attempts at shorter caps OOMed in
+    update_actor's vocabulary-sized log_softmax, so the budget and fused path are one recipe.
     """
     config = _loaded(JUDGE_CONFIG)
     data = config["data"]
+    model = config["actor_rollout_ref"]["model"]
     max_model_len = config["actor_rollout_ref"]["rollout"]["max_model_len"]
 
-    assert data["max_response_length"] == 8192
-    # Slack under the context window is deliberate: 10752 saturates it exactly and OOMs.
-    assert data["max_prompt_length"] + data["max_response_length"] < max_model_len
+    assert data["max_response_length"] == 10752
+    assert model["use_fused_kernels"] is True
+    assert data["max_prompt_length"] + data["max_response_length"] == max_model_len
 
 
 def test_valsmoke_uses_the_longest_prompts_not_the_first():

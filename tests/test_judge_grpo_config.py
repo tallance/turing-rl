@@ -128,8 +128,8 @@ def test_budgets_match_the_measured_prompt_and_completion_distributions():
     Completion: the old floor came from the frozen judge's p90 length (7,452 over 91,398 calls),
     a heuristic. Direct measurement of the 9B at step 0, thinking ON, over 200 held-out rows
     showed 7,680 leaves 12.5% of rollouts with an unclosed <think> -- scoring zero and pulling
-    accuracy below chance before any training. 9,216 drops that to 5% and lifts coverage
-    0.817 -> 0.945. 10,752 is marginally better still but OOMs in update_actor.
+    accuracy below chance before any training. The fused token-loss path makes the measured
+    10,752-token response budget trainable without material clipping.
 
     Re-derive both before pointing this config at a new slice; do not port these numbers.
     """
@@ -138,13 +138,12 @@ def test_budgets_match_the_measured_prompt_and_completion_distributions():
     measured_max_prompt_tokens = 10535
 
     assert data["max_prompt_length"] > measured_max_prompt_tokens, "would truncate prompts"
-    # 8192 as of 2026-08-25, matching PERSONA_JUDGE_MAX_COMPLETION_TOKENS so a checkpoint is
-    # validated under the same completion budget the 880-pair eval scores it with.
-    assert data["max_response_length"] == 8192
+    assert data["max_response_length"] == 10752
     assert (
         data["max_prompt_length"] + data["max_response_length"]
-        < config["actor_rollout_ref"]["rollout"]["max_model_len"]
-    ), "saturating the context window exactly is what OOMed at 10752"
+        == config["actor_rollout_ref"]["rollout"]["max_model_len"]
+    )
+    assert config["actor_rollout_ref"]["model"]["use_fused_kernels"] is True
 
 
 def test_judge_runs_log_to_their_own_wandb_project():

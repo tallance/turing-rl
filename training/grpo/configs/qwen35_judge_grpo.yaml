@@ -26,28 +26,29 @@ data:
   # `filter_overlong_prompts: true` DROPS over-budget rows silently from train AND val, biasing
   # results toward short-history users. Check <split>.meta.json's n_over_budget before submitting.
   max_prompt_length: 11264
-  # 7680. Set by what TRAINS on the real corpus, which is not the same as what generates well.
-  # Step-0 validation of the 9B, thinking ON, 200 held-out rows:
+  # Set by what TRAINS on the real corpus, which is not the same as what generates well.
+  # Step-0 validation of the 9B, thinking ON, 200 held-out rows before the fused token-loss fix:
   #
   #   budget   unclosed   coverage   exact   trains on FULL data?
-  #    7680      0.125      0.817     0.76    yes -- 52 steps, retained runs
-  #    9216      0.050      0.945     0.93    NO  -- OOM in log_softmax
-  #   10752      0.050      0.950     0.945   NO  -- OOM in log_softmax
+  #    7680      0.125      0.817     0.76    yes -- unfused, 52 steps
+  #    9216      0.050      0.945     0.93    no  -- unfused log_softmax OOM
+  #   10752      0.050      0.950     0.945   no  -- unfused log_softmax OOM
   #
   # 9216 generates markedly better and was briefly the default on the strength of a smoke that
   # passed. That smoke was built from the FIRST 8 pairs, whose prompts top out at 7,083 tokens
   # against the corpus maximum of 10,049, so it never exercised the tail. On real data the worst
   # case is 10,049 + 9,216 = 19,265 tokens through log_softmax at micro_batch 1, and all three
-  # arms OOMed. 7,680 keeps the worst case at 17,729, which the retained runs proved trainable.
+  # arms OOMed. Those failures established the limit of the unfused vocabulary-sized
+  # log_softmax, not the limit of the model or the response budget.
   #
   # max_prompt_length is a CAP and costs nothing by itself; peak memory tracks ACTUAL sequence
   # length. Trimming the prompt allowance therefore buys configuration room, not memory -- the
   # mistake that produced the failed launch.
-  # 2026-08-25: raised 7680 -> 8192 to match the eval's PERSONA_JUDGE_MAX_COMPLETION_TOKENS, so a
-  # checkpoint is validated under the same completion budget it is scored with. This is the tight
-  # one: worst case goes 17,729 -> 18,241 tokens through log_softmax, and 18701's lifetime peak was
-  # 35.33 GB against a ~35.4 GB ceiling. Watch perf/max_memory_allocated_gb on the first run.
-  max_response_length: 8192
+  # 2026-08-25: the fused token-loss path removed that vocabulary-logit allocation. Job 18920
+  # completed 42 full-data 9B actor updates at 10,752 without an OOM before this default was
+  # promoted; step 42 clipped 0.39% of rollouts. The configured caps exactly fill max_model_len,
+  # while the measured 10,535-token prompt maximum leaves 729 tokens of real context slack.
+  max_response_length: 10752
   truncation: left
   filter_overlong_prompts: true
   apply_chat_template_kwargs:
@@ -63,6 +64,10 @@ actor_rollout_ref:
     lora_alpha: 32
     lora_adapter_path: null
     enable_gradient_checkpointing: true
+    # Paired with the 10,752-token response budget above. Without this path, update_actor
+    # materializes logits over the full ~152k vocabulary for every token and OOMs even at shorter
+    # response caps. The Qwen3.5 + FSDP2 offload device fix lives in verl_runtime_patch.py.
+    use_fused_kernels: true
     lora:
       # MANDATORY for a Qwen3.5 hybrid. This is the merged-dense rollout weight sync the one
       # proven 9B recipe pins (scripts/slurm/rl_generator_train_9b.sh, "merged dense sync").
