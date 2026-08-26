@@ -15,6 +15,11 @@
 # flags — the committed qwen3_8b_lora.yaml stays read-only (no concurrent-sed race).
 #   Pass VARIANT=bf16_fsdp through scripts/cluster_launch.sh and submit_snapshot_job.sh.
 # SMOKE=1 does a fast config check (--exit_after_trainer_build --max_train_examples 64).
+#
+# Also trains the judge discriminator's cross-entropy run: MODEL=qwen35-4b-judge or
+# qwen35-9b-judge, with DATA pointed at the judge CE jsonl and OUT at a judge checkpoint
+# dir. Both judge aliases force NOPACK=1 (see the MODEL case) — the CE target is a single
+# A/B token and packing would let an example read its neighbour's answer.
 
 set -uo pipefail
 source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
@@ -40,8 +45,11 @@ export WANDB_PROJECT=turing-rl-sft
 export WANDB_RUN_GROUP=sft-variants
 export TRANSFORMERS_NO_ADVISORY_WARNINGS=1
 
+# >>> resolve-config: pure resolution, no cluster calls. tests/test_sft_variant_launcher.py
+# extracts this block verbatim and executes it, so keep side effects out of it. >>>
 PY=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-DATA=$TURING_RL_GENERATED_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl
+# DATA override: the judge CE run trains on a different jsonl. Unset = the generator default.
+DATA=${DATA:-$TURING_RL_GENERATED_DATA_ROOT/sft/prism_full_s42_sft_cot.jsonl}
 
 VARIANT=${VARIANT:?set VARIANT=qlora_r64|bf16_fsdp|bf16_fa2}
 SMOKE=${SMOKE:-0}
@@ -52,10 +60,12 @@ SMOKE=${SMOKE:-0}
 # upstream (which packs) — documented in our_patches.md.
 NOPACK=${NOPACK:-0}
 
-MODEL=${MODEL:-qwen3-8b}   # qwen3-8b | qwen35-9b
+MODEL=${MODEL:-qwen3-8b}   # qwen3-8b | qwen35-9b | qwen35-4b-judge | qwen35-9b-judge
 # Per-model: output stem, python env, and the FSDP auto-wrap decoder class.
 # qwen3.5 needs its own transformers-5.x env (model_type=qwen3_5 unsupported by the 4.57.6
 # in turing-rl-train) and a different decoder class (both verified via probe_qwen35.py).
+# The judge aliases are Qwen3.5 too, so they take the same env and decoder class; their
+# stems carry a judge_ prefix so a judge checkpoint can never land on a generator path.
 case "$MODEL" in
   qwen3-8b)
     STEM=qwen3_8b
@@ -65,25 +75,45 @@ case "$MODEL" in
     STEM=qwen35_9b
     PY=/home/lancewicki/miniconda3/envs/turing-rl-sft-qwen35/bin/python
     FSDP_LAYER_CLS=Qwen3_5DecoderLayer ;;
+  # Judge discriminator CE. NOPACK is FORCED, not defaulted: the supervised target is a
+  # single A/B token at the end of each example, and under sdpa trl's packing=True leaks
+  # attention across packed conversations — an example would read its neighbour's answer
+  # letter. Leaving that to the caller is one forgotten env var away from a run that
+  # measures nothing, so the alias decides it.
+  qwen35-4b-judge)
+    STEM=judge_qwen35_4b
+    PY=/home/lancewicki/miniconda3/envs/turing-rl-sft-qwen35/bin/python
+    FSDP_LAYER_CLS=Qwen3_5DecoderLayer
+    NOPACK=1 ;;
+  qwen35-9b-judge)
+    STEM=judge_qwen35_9b
+    PY=/home/lancewicki/miniconda3/envs/turing-rl-sft-qwen35/bin/python
+    FSDP_LAYER_CLS=Qwen3_5DecoderLayer
+    NOPACK=1 ;;
   *) echo "bad MODEL=$MODEL"; exit 2 ;;
 esac
 
 case "$VARIANT" in
   qlora_r64)
-    OUT=$REPO/checkpoints/sft/${STEM}_prism_full_s42_qlora_r64
+    DEFAULT_OUT=$REPO/checkpoints/sft/${STEM}_prism_full_s42_qlora_r64
     export WANDB_NAME=sft-qlora-r64
     ;;
   bf16_fsdp)
-    OUT=$REPO/checkpoints/sft/${STEM}_prism_full_s42_bf16_fsdp
+    DEFAULT_OUT=$REPO/checkpoints/sft/${STEM}_prism_full_s42_bf16_fsdp
     export WANDB_NAME=sft-bf16-fsdp
     ;;
   bf16_fa2)
-    OUT=$REPO/checkpoints/sft/${STEM}_prism_full_s42_bf16_fa2
+    DEFAULT_OUT=$REPO/checkpoints/sft/${STEM}_prism_full_s42_bf16_fa2
     export WANDB_NAME=sft-bf16-fa2
     ;;
   *)
     echo "bad VARIANT=$VARIANT (expected qlora_r64|bf16_fsdp|bf16_fa2)"; exit 2 ;;
 esac
+
+# OUT override: the per-VARIANT default bakes the generator's prism_full_s42 dataset name,
+# which is wrong for a judge run. Unset OUT keeps today's exact path. The _nopack / RUN_TAG
+# suffixes below still apply on top, to an overridden OUT as much as to the default.
+OUT=${OUT:-$DEFAULT_OUT}
 
 if [ "$NOPACK" = "1" ]; then
   OUT="${OUT}_nopack"
@@ -113,6 +143,7 @@ esac
 
 [ "$SMOKE" = "1" ] && ARGS+=(--exit_after_trainer_build --max_train_examples 64)
 [ "$NOPACK" = "1" ] && ARGS+=(--no_packing)
+# <<< resolve-config <<<
 
 mkdir -p "$OUT"
 [ -f "$DATA" ] || { echo "ERROR: missing $DATA"; exit 2; }
@@ -123,6 +154,8 @@ echo "SFT variant (torchrun, 8-GPU)"
 echo "Date:    $(date)"
 echo "Host:    $(hostname)"
 echo "VARIANT: $VARIANT"
+echo "MODEL:   $MODEL"
+echo "Data:    $DATA"
 echo "Output:  $OUT"
 echo "Smoke:   $SMOKE"
 echo "NoPack:  $NOPACK"

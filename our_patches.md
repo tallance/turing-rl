@@ -156,3 +156,28 @@ duration of the repro, mark it `PERSISTENT`.
   `Qwen/Qwen3.5-397B-A17B`) and their aliases are unchanged, and
   `normalize_model_id`/`load_tokenizer` are untouched. Existing runs unaffected.
 - **Reverted**: no. Persistent.
+
+## PERSISTENT: scripts/slurm/sft_variant.sh — judge CE aliases, DATA/OUT overrides
+- **What**: Three additive changes to the SFT launcher so it also trains the
+  judge discriminator's cross-entropy run. `DATA` and `OUT` became
+  `${VAR:-<previous literal>}` overrides, and the `MODEL` case gained
+  `qwen35-4b-judge` / `qwen35-9b-judge` (STEMs `judge_qwen35_4b` /
+  `judge_qwen35_9b`, the Qwen3.5 conda env and `Qwen3_5DecoderLayer`, same as
+  the `qwen35-9b` arm). Both judge arms set `NOPACK=1`.
+- **Why forced NOPACK**: the CE target is a SINGLE A/B token at the end of each
+  example. Under sdpa, trl's `packing=True` leaks attention across packed
+  conversations (trl delegates isolation to FlashAttention varlen, absent in
+  sdpa), so a packed example could read its neighbour's answer letter. The
+  alias decides it rather than documenting it — one forgotten env var would
+  produce a run that silently measures nothing.
+- **Why the launcher and not a direct `python -m training.sft.lora_sft`**:
+  `--max_seq_length 8192` is hardcoded here. `lora_sft.py` defaults to 5120 and
+  TRL truncates from the RIGHT, exactly where the supervised A/B target sits,
+  so a direct invocation would silently delete the target on the longest judge
+  rows (judge prompts run ~5k+).
+- **No-op for existing runs**: with `DATA`/`OUT` unset and `MODEL` at its
+  `qwen3-8b` default, every resolved path and CLI arg is byte-identical to
+  before. `tests/test_sft_variant_launcher.py` executes the launcher's fenced
+  resolution block and asserts the previous literals for all
+  MODEL x VARIANT combinations.
+- **Reverted**: no. Persistent.
