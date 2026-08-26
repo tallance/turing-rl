@@ -450,23 +450,39 @@ _ARGS = dict(
 )
 
 
-def _capture(monkeypatch, env, reply):
-    """Run one scoring call, returning the kwargs the HTTP layer was handed."""
+def _choice(pairs):
+    """A minimal OpenAI choice carrying one position's top_logprobs."""
+    return {"logprobs": {"content": [
+        {"top_logprobs": [{"token": t, "logprob": lp} for t, lp in pairs]}
+    ]}}
+
+
+def _capture(monkeypatch, env, *, text_reply=None, choice_reply=None):
+    """Run one scoring call, returning the kwargs the HTTP layer was handed.
+
+    Both transports are patched because the two paths use different ones: the
+    full-schema path needs response text, the single-token path needs the choice
+    object so it can read logprobs.
+    """
     seen = {}
 
-    def fake_post(kwargs):
+    def fake_text(kwargs):
         seen.update(kwargs)
-        return reply
+        return text_reply
+
+    def fake_choice(kwargs):
+        seen.update(kwargs)
+        return choice_reply
 
     for k, v in env.items():
         monkeypatch.setenv(k, v)
-    monkeypatch.setattr(metrics, "post_chat_sync", fake_post)
+    monkeypatch.setattr(metrics, "post_chat_sync", fake_text)
+    monkeypatch.setattr(metrics, "post_chat_choice_sync", fake_choice, raising=False)
     return seen
 
 
 def test_default_path_is_unchanged(monkeypatch):
-    reply = '{"rating": 5, "score_gap": 0.5}'
-    seen = _capture(monkeypatch, {}, reply)
+    seen = _capture(monkeypatch, {}, text_reply='{"rating": 5, "score_gap": 0.5}')
     metrics._turing_api_call(**_ARGS, max_tokens=2048)
     assert seen["response_format"] == {"type": "json_object"}
     assert seen["max_completion_tokens"] == 2048
@@ -475,10 +491,9 @@ def test_default_path_is_unchanged(monkeypatch):
 
 
 def test_single_token_request_shape(monkeypatch):
-    seen = _capture(monkeypatch, {"JUDGE_PROMPT_STYLE": "single_token"}, None)
-    with pytest.raises(Exception):
-        # The fake returns no logprobs, so this must fail loudly rather than guess.
-        metrics._turing_api_call(**_ARGS, return_details=True)
+    seen = _capture(monkeypatch, {"JUDGE_PROMPT_STYLE": "single_token"},
+                    choice_reply=_choice([("A", -0.1), ("B", -2.0)]))
+    metrics._turing_api_call(**_ARGS, return_details=True)
     assert seen["max_completion_tokens"] == 1
     assert "response_format" not in seen
     assert seen["logprobs"] is True
@@ -487,7 +502,45 @@ def test_single_token_request_shape(monkeypatch):
 
 
 def test_single_token_result_carries_letter_and_p_a(monkeypatch):
-    ...  # see Step 3 for the reply shape this asserts on
+    _capture(monkeypatch, {"JUDGE_PROMPT_STYLE": "single_token"},
+             choice_reply=_choice([("A", -0.1), ("B", -2.0)]))
+    out = metrics._turing_api_call(**_ARGS, return_details=True)
+    assert out["letter"] == "A"
+    assert out["p_a"] > 0.5
+    assert out["rating"] == 1          # 1 == "definitely A" on the existing scale
+    assert out["parse_error"] is None
+
+
+def test_single_token_maps_b_to_rating_seven(monkeypatch):
+    _capture(monkeypatch, {"JUDGE_PROMPT_STYLE": "single_token"},
+             choice_reply=_choice([("A", -2.0), ("B", -0.1)]))
+    out = metrics._turing_api_call(**_ARGS, return_details=True)
+    assert out["letter"] == "B"
+    assert out["rating"] == 7
+
+
+def test_hard_fail_propagates_and_is_not_retried(monkeypatch):
+    """A hard fail is a property of the input, not a transient. Retrying would hide it
+    from the hard_fail column and bias the accuracy toward the shorter inputs."""
+    from shared.single_token_verdict import HardFail
+
+    calls = []
+
+    def fake_choice(kwargs):
+        calls.append(kwargs)
+        return _choice([("Neither", -0.1)])
+
+    monkeypatch.setenv("JUDGE_PROMPT_STYLE", "single_token")
+    monkeypatch.setattr(metrics, "post_chat_choice_sync", fake_choice, raising=False)
+    with pytest.raises(HardFail):
+        metrics._turing_api_call(**_ARGS, return_details=True)
+    assert len(calls) == 1
+
+
+def test_unknown_style_is_rejected(monkeypatch):
+    monkeypatch.setenv("JUDGE_PROMPT_STYLE", "freeform")
+    with pytest.raises(ValueError, match="full|single_token"):
+        metrics._turing_api_call(**_ARGS)
 ```
 
 **Step 2: Run it and watch it fail**
@@ -500,7 +553,21 @@ Expected: `test_single_token_request_shape` fails — `max_completion_tokens` is
 
 **Step 3: Implement**
 
-`post_chat_sync` currently returns response *text*. The single-token path needs the logprobs object, so add a sibling that returns the full choice rather than overloading the existing helper — changing `post_chat_sync`'s return type would touch every caller.
+`post_chat_sync` currently returns response *text*. The single-token path needs the logprobs object, so add a sibling named **`post_chat_choice_sync`** that returns the full choice dict, rather than overloading the existing helper — changing `post_chat_sync`'s return type would touch every caller. Put it beside `post_chat_sync` in `shared/api_client.py` and import it into `eval/metrics.py` under that name (the tests patch `metrics.post_chat_choice_sync`).
+
+**Do not copy the retry body.** `post_chat_sync` (`shared/api_client.py:267-290`) ends by returning `_extract_chat_content(parsed)`; everything above that — key resolution, URL, headers, retry count, sleep, timeout, the request loop — is transport that both callers need. Extract that body once into a private `_post_chat_json(payload, ...) -> dict` returning the parsed response, then:
+
+```python
+def post_chat_sync(payload, **kw) -> str:
+    return _extract_chat_content(_post_chat_json(payload, **kw))
+
+
+def post_chat_choice_sync(payload, **kw) -> dict:
+    """Full first choice, so callers can read logprobs. Same transport and retries."""
+    return _post_chat_json(payload, **kw)["choices"][0]
+```
+
+`post_chat_sync`'s signature and return type must not change — every existing caller depends on both.
 
 In `eval/metrics.py`:
 
