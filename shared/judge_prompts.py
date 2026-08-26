@@ -396,7 +396,7 @@ Your output:
 """
 
 
-TURING_PROMPT = """## Task
+TURING_PROMPT_HEADER = """## Task
 
 You are judging a pairwise Turing test for personalized user simulation.
 
@@ -446,7 +446,9 @@ One candidate is the real [HUMAN] response. The other candidate is AI-generated.
 {source_copy_watchlist}
 <|End Source-Copy Watchlist|>
 
+"""
 
+_TURING_PROMPT_TAIL = """
 ## Evaluation Procedure
 
 Evaluate each response independently before comparing them. Reason backward from the response to the likely target, goal, and style.
@@ -647,3 +649,15 @@ Return exactly one valid JSON object with this schema:
 - "rating" must be a single integer from 1 to 7.
 
 Your output:"""
+
+TURING_PROMPT = TURING_PROMPT_HEADER + _TURING_PROMPT_TAIL
+
+_SINGLE_TOKEN_TAIL = """
+## Output Format
+
+Answer with a single letter, A or B, and nothing else.
+A means Response A was written by the real [HUMAN]. B means Response B was.
+
+Your output:"""
+
+TURING_SINGLE_TOKEN_PROMPT = TURING_PROMPT_HEADER + _SINGLE_TOKEN_TAIL
