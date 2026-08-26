@@ -264,14 +264,14 @@ async def post_chat_async(
     raise RuntimeError(f"OpenAI API call failed after {max_retries} retries")
 
 
-def post_chat_sync(
+def _post_chat_json(
     payload: dict,
     *,
     max_retries: int | None = None,
     api_base: str | None = None,
     api_key: str | None = None,
-) -> str:
-    """Post a chat request synchronously."""
+) -> dict:
+    """Post a chat request synchronously and return the parsed response body."""
     resolved_api_key = api_key or resolve_judge_api_key()
     url = chat_url(api_base)
     headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
@@ -284,7 +284,7 @@ def post_chat_sync(
         try:
             request = urllib.request.Request(url, data=data_bytes, headers=headers, method="POST")
             with urllib.request.urlopen(request, timeout=timeout) as resp:
-                return _extract_chat_content(json.loads(resp.read().decode("utf-8")))
+                return json.loads(resp.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
             retry_after = (
@@ -305,3 +305,29 @@ def post_chat_sync(
                 raise
             time.sleep(retry_sleep_seconds)
     raise RuntimeError(f"OpenAI API call failed after {max_retries} retries")
+
+
+def post_chat_sync(
+    payload: dict,
+    *,
+    max_retries: int | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
+) -> str:
+    """Post a chat request synchronously."""
+    return _extract_chat_content(
+        _post_chat_json(payload, max_retries=max_retries, api_base=api_base, api_key=api_key)
+    )
+
+
+def post_chat_choice_sync(
+    payload: dict,
+    *,
+    max_retries: int | None = None,
+    api_base: str | None = None,
+    api_key: str | None = None,
+) -> dict:
+    """Full first choice, so callers can read logprobs. Same transport and retries."""
+    return _post_chat_json(
+        payload, max_retries=max_retries, api_base=api_base, api_key=api_key
+    )["choices"][0]
