@@ -6,7 +6,7 @@ Date: 2026-08-26
 ## Question
 
 Does the Turing judge need hidden thinking and a 37-field JSON verdict, or does a
-bare prompt with a **single `A`/`B` output token** work as well? The answer decides
+prompt with a **single `A`/`B` output token** work as well? The answer decides
 whether the judge protocol changes for all downstream work.
 
 Scope is **measurement only**. Wiring a single-token judge into the generator's
@@ -40,8 +40,8 @@ replaceable by training.
 | Decision | Choice | Reason |
 |---|---|---|
 | Trained-arm training method | Supervised LoRA cross-entropy on the answer token | GRPO over a one-token output has nothing to explore and no format to reward. The labels are already in the pair parquet. The comparison is therefore between two **packages** (thinking + schema + GRPO) vs (single token + CE); it does not decompose into format-vs-method, which is acceptable because the practical question is whether the cheap package suffices. |
-| Prompt content | Bare: task, inputs, "Answer with a single letter, A or B" | The rubric was written to structure a *generated* analysis whose fields produce the rating. With no generation it can only act as static prefill conditioning, and it costs ~2-3k prompt tokens per call against a change whose point is cost. |
-| Source-copy watchlist | Dropped from the new arm | Follows from the bare prompt. This makes the new arm differ from the old on an **input** as well as an output; recorded here so the difference is not mistaken for an output-format effect. |
+| Prompt content | The existing prompt **truncated** after the inputs, plus one answer instruction | Change only what the output protocol forces. The rubric, penalty checks, scoring arithmetic and output schema exist to structure a *generated* analysis whose fields produce the rating; with no generation they can only act as static prefill conditioning, and they cost ~5k prompt tokens per call against a change whose point is cost. |
+| Everything before `## Evaluation Procedure` | **Kept byte-identical**, including `## Task`, `## Inputs` and the source-copy watchlist | These sections are equally relevant (or irrelevant) under either output protocol, so changing them would add confounds for nothing. `## Inputs` in particular carries "One candidate is the real [HUMAN] response. The other candidate is AI-generated." — the most load-bearing sentence in the prompt for a one-token classifier. The watchlist is an advisory *input*, unaffected by the output format. Inputs are therefore identical across arms and exactly one variable changes. |
 | Verdict extraction | `max_tokens=1` + `logprobs`, softmax over A/B token variants | One forward pass, no constrained decoding, and yields a calibrated `p_a` for free. Fallback if tokenizer variant handling proves unreliable: vLLM `guided_choice: ["A","B"]`, accepting that its logprobs may be post-constraint renormalized. |
 | Rejected: one-field JSON `{"answer":"A"}` | — | Retains the JSON dependency the experiment exists to remove, spends ~8 output tokens instead of 1, and gives no clean probability. |
 | Rejected: full-rubric prompt with single-token output | — | Defends a hypothesis the design does not hold (see prompt row above), and the cell that matters is the trained one, where CE on labelled pairs swamps prompt conditioning. |
@@ -52,9 +52,9 @@ Five changes. No new subsystem.
 
 | # | Location | Change |
 |---|---|---|
-| 1 | `shared/judge_prompts.py` | Add `TURING_SINGLE_TOKEN_PROMPT` beside `TURING_PROMPT` (literal below). Placeholders `user_history`, `context`, `response_a`, `response_b`; **no** `source_copy_watchlist`. Ends with the single-letter instruction. |
+| 1 | `shared/judge_prompts.py` | Split the existing template at the `## Evaluation Procedure` boundary into `TURING_PROMPT_HEADER` (902 chars, all four placeholders including `source_copy_watchlist`) and the rubric/output tail. Then `TURING_PROMPT = HEADER + TAIL` (unchanged text) and `TURING_SINGLE_TOKEN_PROMPT = HEADER + ANSWER_INSTRUCTION`. No second copy of the inputs exists, so the two templates cannot drift. |
 | 2 | `eval/metrics.py` (render+score site, currently line 602) | Branch on `JUDGE_PROMPT_STYLE` (`full` default, `single_token`). Single-token path: `max_completion_tokens=1`, no `response_format`, `logprobs=True`, `top_logprobs=20`, thinking off. |
-| 3 | `scripts/build_judge_train_pairs.py` | Add `--prompt-style {full,bare}`. Only the `render_turing_prompt` call changes; slice, both-orders emission, labels and `extra_info` are untouched. |
+| 3 | `scripts/build_judge_train_pairs.py` | Add `--prompt-style {full,single_token}`. Only the `render_turing_prompt` call changes; slice, both-orders emission, labels and `extra_info` are untouched. |
 | 4 | *(no new trainer)* | `training/sft/lora_sft.py:build_chat_template_sft_features` already masks to the assistant target span. With the assistant message set to `"A"` or `"B"` the target is one token. Needs only a pair-parquet → SFT-jsonl converter and a config. |
 | 5 | `scripts/launch_judge_eval_matrix.sh` | Add `JUDGE_PROMPT_STYLE`, guarded the same way `THINKING_MODE` is: the style name must appear in `EVAL_ROOT`, and stale output directories are refused. |
 
@@ -69,25 +69,35 @@ characters of *template scaffolding*, measured before any input is substituted i
 placeholder. It is not reproduced here; that file is the source of truth and a copy
 would drift. What follows is its section map against the proposed prompt.
 
-| Section (current) | Lines | Chars | In bare prompt? |
+The cut is a single clean boundary: everything up to and including the watchlist block
+is kept byte-identical; everything from `## Evaluation Procedure` onward is replaced by
+one instruction line.
+
+| Section (current) | Lines | Chars | Single-token prompt |
 |---|---:|---:|---|
-| `## Task` | 6 | 220 | **Kept**, rewritten to 2 lines |
-| `## Inputs` (enumerates what follows) | 10 | 280 | Dropped — the delimiters are self-describing |
+| `## Task` | 6 | 220 | **Kept verbatim** |
+| `## Inputs` | 10 | 280 | **Kept verbatim** |
 | `## User History` | 6 | 70 | **Kept verbatim** |
 | `## Context` | 6 | 50 | **Kept verbatim** |
 | `## Candidate Responses` (A and B blocks) | 14 | 151 | **Kept verbatim** |
-| `## Advisory Watchlist` (source-copy) | 9 | 131 | Dropped — see the watchlist decision above |
+| `## Advisory Watchlist` (source-copy) | 9 | 131 | **Kept verbatim** |
+| *— cut here —* | | | |
 | `## Evaluation Procedure` | 6 | 214 | Dropped |
 | `## Criteria` (immediate target, human goal, communication style) | 64 | 5,863 | Dropped |
 | `## Penalty Checks` (source copy, wrong target/role, adversarial reframing, assistant-like) | 46 | 5,167 | Dropped |
 | `## Scoring and Rating` (score-gap arithmetic, 1-7 mapping) | 29 | 1,224 | Dropped |
 | `## Output Format` (the 37-field JSON) | 43 | 6,652 | Dropped |
-| `## Format Rules` | 12 | 492 | Dropped, replaced by one instruction line |
-| **Total** | **251** | **20,525** | **~600 chars retained** |
+| `## Format Rules` + `Your output:` | 12 | 492 | Replaced by one instruction line |
+| **Total** | **251** | **20,525** | **902 kept + ~120 added** |
+
+Every dropped section is one that exists to produce or shape a *generated* verdict. Every
+kept section is an input or a statement of the task, equally applicable under either
+output protocol. Inputs are therefore identical across the two arms, and the only
+variable is the output protocol.
 
 At the repository's own `CHARS_PER_TOKEN_ESTIMATE = 3.9`
 (`scripts/build_judge_train_pairs.py`), that is roughly **5,260 template tokens per call
-reduced to ~155**. Against a measured p95 judge prompt of ~10k tokens
+reduced to ~260**. Against a measured p95 judge prompt of ~10k tokens
 (`training/grpo/configs/qwen35_judge_grpo.yaml`), about half of every judge prompt is
 currently scaffolding rather than the conversation being judged.
 
@@ -95,43 +105,22 @@ Combined with the output side — up to 8,192 completion tokens reduced to 1 —
 whole cost argument for the switch, and the reason a 2-point accuracy loss is treated as
 acceptable in the decision rule.
 
-The proposed prompt in full, so implementation is not guessing at "bare":
+The replaced tail, in full. Everything above it is `TURING_PROMPT_HEADER`, taken
+unmodified from the existing template:
 
 ```
-One of the two candidate responses below was written by the real [HUMAN] user.
-The other was written by an AI imitating that user.
+## Output Format
 
-## User History
+Answer with a single letter, A or B, and nothing else.
+A means Response A was written by the real [HUMAN]. B means Response B was.
 
-<|User History|>
-{user_history}
-<|End User History|>
-
-## Context
-
-<|Context|>
-{context}
-<|End Context|>
-
-## Response A
-
-<|Response A|>
-{response_a}
-<|End Response A|>
-
-## Response B
-
-<|Response B|>
-{response_b}
-<|End Response B|>
-
-Which response was written by the real [HUMAN]? Answer with a single letter, A or B,
-and nothing else.
+Your output:
 ```
 
-The input delimiters are kept identical to `TURING_PROMPT` so the only differences from
-the existing arm are the removed rubric, the removed watchlist, and the removed output
-schema — not the way the inputs are presented.
+`## Output Format` and the trailing `Your output:` are retained from the existing
+template so the prompt still terminates the way the model has always seen it; only the
+content of that section changes. Nothing above this block differs from `TURING_PROMPT`
+by a single character.
 
 ### Template-parity hazard
 
@@ -152,7 +141,7 @@ thinking on/off (10), plus the GRPO-trained 4B/9B graded judges × thinking on/o
 The directional-arm rows present in those CSVs are carried through unchanged but are not
 part of this comparison; the graded arms are the reference.
 
-**New — one `single_token` column** (thinking off, bare prompt, one output token):
+**New — one `single_token` column** (thinking off, single-token prompt, one output token):
 
 | cell | model | kind |
 |---|---|---|
@@ -171,7 +160,7 @@ table; at one output token their marginal cost is prefill only.
 
 The CE cells train on exactly the pair set the GRPO-trained judges used — same
 `build_judge_train_pairs` slice, same both-orders emission, same labels — with only
-`--prompt-style bare` changed. A val slice is held out of that training set for early
+`--prompt-style single_token` changed. A val slice is held out of that training set for early
 stopping. The 880 eval pairs come from held-out test users (`data/judge/slice.py` plus
 the existing split guard), so they do not enter training.
 
@@ -248,13 +237,21 @@ cell does, because the 9B graded judge is the protocol currently in use.
 
 Local, no GPU:
 
-- Bare prompt renders all four placeholders, contains none of `Output Format`,
-  `score_gap`, `rating`, and ends with the single-letter instruction.
+- **Header identity**: `TURING_PROMPT.startswith(TURING_PROMPT_HEADER)` and
+  `TURING_SINGLE_TOKEN_PROMPT.startswith(TURING_PROMPT_HEADER)`. This is the test that
+  enforces "inputs are identical across arms" as a property rather than a claim, and it
+  fails loudly if anyone later edits one template's input section without the other.
+- The refactor is text-preserving: the composed `TURING_PROMPT` equals the pre-refactor
+  template byte for byte (pinned by a checksum of the current string), so splitting it
+  cannot silently perturb the existing full-schema arm.
+- The single-token prompt renders all four placeholders (including
+  `source_copy_watchlist`), contains none of `score_gap`, `rating` or the 37-field key
+  names, and ends with the single-letter instruction.
 - `p_a` extraction from synthetic logprob payloads: leading-space variants, both orders,
   the hard-fail path, and argmax agreeing with `p_a > 0.5`.
 - Metrics on a hand-built case **including the always-A degenerate**, asserting accuracy
   0.5, `a_rate` 1.0, `order_consistency` 0.0.
-- `--prompt-style bare` preserves row count, labels, both orders and ids; only the
+- `--prompt-style single_token` preserves row count, labels, both orders and ids; only the
   `prompt` content differs from `full`.
 - Renderer parity: training-time render equals eval-time render for identical inputs.
 
