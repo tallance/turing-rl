@@ -1475,138 +1475,271 @@ git commit -m "judge-eval: merge single-token cells into the comparison table"
 
 # Phase B — cluster
 
-Read `docs/cluster-workflow.md` first. Publish with `scripts/cluster_launch.sh`; never call `sbatch`. Run the `preflight-job-check` skill before each submit, and keep concurrent jobs under ~10.
+**Rewritten 2026-08-26, after Phase A.** The original Phase B was prose, and prose let five
+assumptions through unchecked — every one of the form *"the capability exists, therefore
+the cluster can reach it"*. All five are now fixed or tracked below. Each task here names
+the exact command that carries each flag from launcher to Python process, because that is
+the step prose kept skipping.
 
-Cluster run root for this plan:
-`/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge`
-(the path contains `single-token`, which the Task 10 guard requires).
+Read `docs/cluster-workflow.md` first. Publish with `scripts/cluster_launch.sh`; never call
+`sbatch` directly. Run the `preflight-job-check` skill before each submit, and keep
+concurrent jobs under ~10.
 
-## Task 13: Build the single-token pair sets and run the gates
+**The runner lies here too.** The Bash tool replaces pytest's stdout with
+`Pytest: No tests collected` and returns rc=0 regardless of reality. Any local check in
+these tasks must go through a subprocess wrapper.
 
-**Step 1: Commit and publish the snapshot**
+### Naming constraints, now enforced at submit time
 
-```bash
-git log --oneline -1   # must be clean; dirty runs are prohibited
-scripts/cluster_launch.sh --dependency-profile data \
-  --run-root /home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge \
-  scripts/launch_judge_pairs.sh
+A single-token eval run must satisfy **both** guards, so its `EVAL_ROOT` must contain
+`thinking-off` **and** `single-token`:
+
+```
+/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge-thinking-off
 ```
 
-Set `PROMPT_STYLE=single_token` for the CE training pairs, built from the **same** inference pickle and slice the GRPO judge arms used — see the "MODELS"/"DATA" sections of `results/2026-08-12-judge-only-rlvr/README.txt` for the exact source.
+The original Task 17 command used `.../2026-08-26-single-token-judge`, which lacks
+`thinking-off`. That was a latent submit-time failure *before* the coupling guard existed,
+because the thinking-off guard has always required the substring.
 
-**Step 2: Run the gates**
+Pair-build output is nested by style, and single-token requires the style in the path:
 
-```bash
-python scripts/judge_ce_guards.py \
-  --train-pairs <ce_train_pairs.parquet> \
-  --eval-pairs  /home/lancewicki/projects/turing-rl/results/2026-08-10-test-eval-9b-full5ep-full-schema/raw/pairs/gen_9b-full5ep-step0_880.parquet \
-  --expected-sha256 95f48a9c52d85a6f6c49fd3387e60efe0e1ee5e436bd961f1884750ecfcf7783 \
-  --out <run_root>/split_guard.json
 ```
-
-Expected: exit 0, `overlap: []`. **A non-empty overlap stops the plan** — do not work around it; the trained cell would be inflated and the switch decision invalid.
-
-**Step 3: Verify the prompt-length distribution**
-
-Read the `.meta.json` beside the new parquet. The single-token prompts should be ~5k tokens shorter than the full-schema ones. If they are not, the wrong template was rendered.
-
-**Step 4: Convert to JSONL**
-
-```bash
-python scripts/build_judge_ce_dataset.py \
-  --pairs <ce_train_pairs.parquet> \
-  --out <run_root>/ce_train.jsonl \
-  --val-out <run_root>/ce_val.jsonl --val-frac 0.1
+full          <GENERATED>/prism/judge/iter1                (unchanged)
+single_token  <GENERATED>/prism/judge/iter1/single_token
 ```
-
-**Step 5: Record provenance** — parquet SHA-256, row counts, source pickle path — into the run root.
 
 ---
 
-## Task 14: Target-length assertion and the CE overfit gate
+## Task B0 (PREREQUISITE): let the eval matrix reference the CE-trained judges
 
-`scripts/judge_overfit_gate.py` parses veRL console logs and does **not** apply here — it belongs to the GRPO arms. The CE gate reuses the eval path instead of adding metric plumbing.
+**This blocks Task 17 and is the last known gap.** `scripts/launch_judge_eval_matrix.sh`
+hardcodes four `JUDGE_*_MODEL` env vars for the *GRPO-trained* judges (lines ~19-22), a
+fixed nine-row `MATRIX` heredoc, and a model-existence loop over those same four. There is
+no hook for the CE-trained models this experiment produces, and a `single_token` run would
+still demand the four GRPO models exist even though they belong to the other arm.
 
-**Step 1: Assert the target length under each tokenizer**
+**Files:** `scripts/launch_judge_eval_matrix.sh`, `tests/test_launch_judge_eval_matrix.py`
 
-Write a throwaway check (keep the output, not the script):
+Make the matrix and the existence check **style-dependent**:
 
-```python
-from transformers import AutoTokenizer
-from training.sft.lora_sft import build_chat_template_sft_features
+- `full` → today's nine rows and today's four-model check, byte-identical. This is the
+  regression guard that matters; an existing full-schema submission must not change.
+- `single_token` → the seven cells from the spec: five zero-shot (`qwen35-4b`, `qwen35-9b`,
+  `qwen35-27b`, `gemma4-12b`, `gemma4-31b`) plus `judge-4b-ce-st` and `judge-9b-ce-st`,
+  with `JUDGE_4B_CE_MODEL` / `JUDGE_9B_CE_MODEL` env vars following the existing
+  `JUDGE_*_MODEL` naming, and the existence check applied to those two rather than the four.
 
-for base in ("Qwen/Qwen3.5-4B", "Qwen/Qwen3.5-9B", "google/gemma-4-12B-it"):
-    tok = AutoTokenizer.from_pretrained(base)
-    feats = build_chat_template_sft_features(
-        tok,
-        [{"role": "user", "content": "prompt"}, {"role": "assistant", "content": "A"}],
-        supervise_stop_token=False,
-    )
-    n = sum(1 for x in feats["labels"] if x != -100)
-    print(base, "supervised tokens:", n)
+Cell names must differ from the full-schema arm's, or the merged table cannot attribute a
+row to an arm by name alone — `prompt_style` is a column, not part of the cell name.
+
+**Guard-test paths must be inert in naming AND writable.** Three tautology mechanisms have
+already produced negative tests that could not be negative on this branch: fixture row
+ordering; `tmp_path` embedding the test function name into a path the guard matches; and an
+unwritable synthetic path supplying a substitute non-zero exit that impersonates the guard
+firing.
+
+---
+
+## Task 13: Build the single-token pair sets and run the gates
+
+**Step 1 — build the CE training pairs.** `PROMPT_STYLE` now reaches the builder
+(`launch_judge_pairs.sh` → `judge_train_gen.sh` → `build_judge_train_pairs.py
+--prompt-style`). The nested `OUT_DIR` default applies, and the style must appear in the
+path:
+
+```bash
+scripts/cluster_launch.sh --dependency-profile data \
+  --run-root <ABS_RUN_ROOT> \
+  --env PROMPT_STYLE=single_token \
+  --env SPLITS="train val" \
+  scripts/launch_judge_pairs.sh
 ```
 
-Expected: `1` for each. **If any prints 2**, the chat template appends a terminator into the span — record the real number in the run README and in the spec. It is acceptable, but "single-token CE" then means something slightly different and the plan must say so rather than leave it implied.
+Source the pairs from the **same inference pickle and slice** the GRPO judge arms used —
+see the MODELS/DATA sections of `results/2026-08-12-judge-only-rlvr/README.txt`. Different
+source data would confound the trained comparison.
 
-**Step 2: Overfit gate**
+**Step 2 — read the `.meta.json` beside each parquet.** It records `prompt_style`, and the
+single-token prompt-length distribution should sit ~5k tokens below the full-schema one. If
+it does not, the wrong template was rendered — stop.
 
-Train on 16 pairs for many epochs, then score those same 16 pairs through the normal single-token eval path with the trained adapter.
+**Step 3 — run the leakage and pair-set gates.** Both parquet shapes are supported (the
+flat evaluation shape and the nested `extra_info` training shape):
 
-Expected: accuracy ≈ 1.0. **A flat 0.5 means the label is not wired to the supervised position** — stop and fix; nothing downstream is meaningful until this passes.
+```bash
+python scripts/judge_ce_guards.py \
+  --train-pairs <OUT_DIR>/train.parquet \
+  --eval-pairs  /home/lancewicki/projects/turing-rl/results/2026-08-10-test-eval-9b-full5ep-full-schema/raw/pairs/gen_9b-full5ep-step0_880.parquet \
+  --expected-sha256 95f48a9c52d85a6f6c49fd3387e60efe0e1ee5e436bd961f1884750ecfcf7783 \
+  --out <RUN_ROOT>/split_guard.json
+```
 
-**Step 3: Commit the gate artifacts** into the run root with a short provenance note.
+Exit 0 and `overlap: []` required. **A non-empty overlap stops the plan.** Do not work
+around it: the trained cell would inflate and the comparison would be invalid.
+
+**Step 4 — convert to the CE JSONL.** `--expect-prompt-style` defaults to `single_token`
+and is checked against the sibling `.meta.json` *and* the rendered prompt text, so a
+full-schema parquet fails loudly here rather than training a judge on the wrong prompt:
+
+```bash
+python scripts/build_judge_ce_dataset.py \
+  --pairs <OUT_DIR>/train.parquet \
+  --out <RUN_ROOT>/ce_train.jsonl \
+  --val-out <RUN_ROOT>/ce_val.jsonl --val-frac 0.1 \
+  --expect-prompt-style single_token
+```
+
+The val split holds out whole **users**, not rows — both orders of a pair and all of a
+user's pairs land on one side, or the val score measures memorisation.
+
+**Step 5 — record provenance:** parquet SHA-256s, row counts, source pickle path.
+
+---
+
+## Task 14: Target length, and the CE overfit gate
+
+`scripts/judge_overfit_gate.py` does **not** apply — it parses veRL console logs for
+`reward/judge_acc/mean`, which CE training never emits.
+
+**Step 1 — measure the supervised span** under each tokenizer in the matrix, using
+`build_chat_template_sft_features` with `supervise_stop_token=False`. Expect 1. If any
+model gives 2, the chat template folds a terminator into the span: acceptable, but record
+the real number in the run README and the spec, because "single-token CE" then means
+something slightly different.
+
+**Step 2 — overfit gate.** Train on ~16 pairs for many epochs, then score those same 16
+through the single-token eval path with the trained adapter. Accuracy must reach ~1.0.
+**A flat 0.5 means the label is not wired to the supervised position** — stop; nothing
+downstream is meaningful until it passes.
 
 ---
 
 ## Task 15: One-cell serving smoke
 
-Serve zero-shot `Qwen/Qwen3.5-4B` and score 20 pairs with `JUDGE_PROMPT_STYLE=single_token`.
+Serve zero-shot `Qwen/Qwen3.5-4B` and score ~20 pairs with `JUDGE_PROMPT_STYLE=single_token`.
 
-Assert, before spending seven cells:
-- `hard_fail == 0`
-- every response carries `logprobs.content[0].top_logprobs`
-- both `A` and `B` appear across the 20
-- `residual_mass` is small (large residual means the model wants to say something else, and the prompt needs a look)
+Assert before spending seven cells:
 
-If `top_logprobs` is absent, the server was not started with logprobs enabled — fix serving, not the parser. The `guided_choice` fallback in the spec is for tokenizer trouble, not for this.
+- `hard_fail == 0`.
+- Every response carries `logprobs.content[0].top_logprobs`.
+- Both `A` and `B` appear across the 20.
+- **`choice.logprobs.content[0].token` is present.** The structural sampled-token check is
+  optional by design, so if vLLM omits this field it degrades silently to a no-op and only
+  the mass floor protects the rows. Decide here whether to make it required.
+- **Record the `ab_mass` distribution.** `MIN_AB_MASS = 0.01` is a reasoned argument, not a
+  measurement against any real judge. This is the first point real logprobs exist; confirm
+  the floor sits in an empty region between genuine verdicts and noise, and adjust with
+  evidence if it does not.
+- Revisit the deferred `_STRIP` question with real tokens: does any judge emit a verdict
+  token this branch currently rejects (`"A."`, `"A)"`, `"**A"`)?
+
+If `top_logprobs` is absent, serving was misconfigured — fix serving, not the parser.
 
 ---
 
 ## Task 16: CE training runs
 
-Train `qwen35-4b-judge` and `qwen35-9b-judge` on `ce_train.jsonl`, early-stopping on `ce_val.jsonl`.
+Use the existing launcher. **Do not write a new one** and **do not invoke
+`training.sft.lora_sft` directly** — its own `--max_seq_length` default is 5120, judge
+prompts run ~5k+, and TRL truncates from the **right**, where the `A`/`B` target sits. The
+launcher hardcodes 8192.
 
-- Single node, LoRA, `--no_packing` (assert it in the resolved command echo).
-- Record the val curve; "trained" means best val accuracy, not a fixed step count.
-- Merge each adapter to a dense model for serving with the existing `scripts/merge_sft_adapter.py`, and validate the merge before evaluating.
+```bash
+scripts/cluster_launch.sh --dependency-profile sft \
+  --run-root <ABS_RUN_ROOT> \
+  --env MODEL=qwen35-9b-judge \
+  --env VARIANT=bf16_fsdp \
+  --env DATA=<RUN_ROOT>/ce_train.jsonl \
+  --env OUT=<ABS judge checkpoint dir> \
+  scripts/slurm/sft_variant.sh
+```
 
-Expected wall-clock: minutes to low hours per model. **If a run looks like the multi-hour GRPO jobs, something is wrong** — most likely packing is still on or the target span is the whole prompt.
+Three things that will silently do the wrong thing if you deviate:
+
+- **`MODEL` must be set and non-empty.** `${MODEL:-qwen3-8b}` treats empty as unset, so an
+  unresolved `--env MODEL=$SOMETHING_UNSET` silently runs a **generator** SFT. Assert the
+  resolved `MODEL` in the job's echo before trusting the run.
+- **`VARIANT=bf16_fsdp`.** `qlora_r64` would pass `--force_qlora` against a judge config
+  that sets `use_qlora: false`; the variant is not cross-checked against the model.
+- **`OUT` must be set.** Its default still carries the generator's `prism_full_s42` segment.
+
+`NOPACK=1` is **forced** by the judge aliases and must not be overridden. Under sdpa, TRL's
+packing lets one example attend into a neighbour's answer letter — with a one-token target
+that is the model reading the answers.
+
+**Checkpoint selection replaces early stopping.** `lora_sft.py` has no `eval_dataset`, no
+`eval_strategy` and no `load_best_model_at_end`; adding them would mean editing shared
+generator-training code, which is out of scope by decision. Instead: train fixed epochs,
+keep all three checkpoints, and pick the best by scoring each on `ce_val.jsonl` through the
+single-token eval path. Record all three scores — the selection is then an explicit,
+reproducible step rather than an implicit "last checkpoint".
+
+Merge each adapter with `scripts/merge_sft_adapter.py` and validate before evaluating.
+Expected wall-clock is minutes to low hours. **If it looks like a multi-hour GRPO job,
+something is wrong** — most likely packing, or the target span is the whole prompt.
 
 ---
 
 ## Task 17: The seven-cell matrix
 
+Requires Task B0. `EVAL_ROOT` must name both arms.
+
 ```bash
-EVAL_ROOT=/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge \
-JUDGE_PROMPT_STYLE=single_token THINKING_MODE=off CONFIRM_THINKING_OFF=1 \
+EVAL_ROOT=/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge-thinking-off \
+JUDGE_PROMPT_STYLE=single_token \
+THINKING_MODE=off CONFIRM_THINKING_OFF=1 \
+JUDGE_4B_CE_MODEL=<merged 4B CE dense model> \
+JUDGE_9B_CE_MODEL=<merged 9B CE dense model> \
 scripts/cluster_launch.sh --dependency-profile eval \
   --run-root $EVAL_ROOT scripts/launch_judge_eval_matrix.sh
 ```
 
-Cells: `qwen35-4b`, `qwen35-9b`, `qwen35-27b`, `gemma4-12b`, `gemma4-31b` (zero-shot), plus the two CE-trained models. Same 880-pair parquet, checksum-verified at cell start.
+`single_token` with `THINKING_MODE=on` is now rejected at submit: the scorer pins
+`enable_thinking=False` regardless, so a thinking-on run would attribute every artifact to
+the wrong arm.
 
-Per cell, confirm `hard_fail == 0`, then compute the metrics from Task 7 and flag any degenerate cell.
+Same 880-pair parquet, checksum-verified at cell start. Per cell confirm `hard_fail == 0`,
+then compute the metrics and flag any degenerate cell (`|a_rate_excess| > 0.2`).
+
+**Sanity check that catches the whole "wrong protocol ran" family:** per-cell timing should
+show ~1 completion token. If it shows ~8192, the full-schema path ran under a single-token
+label — that is what the timing summary is for.
 
 ---
 
 ## Task 18: Analysis and results package
 
-**Step 1:** Merge new cells with the two reused CSVs via `scripts/merge_judge_comparison.py`.
+**Step 1** — merge the new cells with the reused CSVs via `scripts/merge_judge_comparison.py`.
+Beware the duplicate-key hole: `NaN == NaN` but `NaN != "on"`, so a CSV lacking a
+`thinking_mode` column can merge the *same* cell twice with different accuracies and no
+collision raised. Supply the missing dimension per input, or refuse an input lacking a key
+column.
 
-**Step 2:** Run the paired stats — `judge-9b-ce-st` against `judge-9b-graded-step52` thinking-off (0.7551) with McNemar, plus clustered CIs for every cell.
+**Step 2** — report, don't adjudicate. There is **no automated switch rule**; you read the
+table and the plot and decide. Produce:
 
-**Step 3:** Apply the pre-registered rule. Switch if `≥ 0.7551 − 0.02` on the paired test; keep the schema otherwise; report any cell with `a_rate` outside [0.3, 0.7] or `order_consistency < 0.3` as degenerate regardless of accuracy.
+- the merged table with the reference cell (`judge-9b-graded-step52`, thinking off,
+  **0.7551**) clearly marked;
+- per cell `accuracy`, `a_rate`, `expected_a_rate`, `a_rate_excess`, `hard_fail`, the
+  `ab_mass` distribution, `brier`, `auc`, and the interval;
+- the accuracy plot;
+- any degenerate cell flagged regardless of its accuracy.
 
-**Step 4:** Pull artifacts to `results/2026-08-26-single-token-judge/` with a `README.txt` carrying **provenance only** — configuration and versions, job IDs and dates, cluster source paths, artifact filenames and checksums (including the two reused CSVs), mechanical validation status, and reproduction commands. Per `CLAUDE.md`, no interpretation, no verdicts, no claims about what the numbers mean. The switch decision is the user's to make from the table.
+Ties in the full-schema arm (`rating == 4`, 79 of 880 in the reference cell) are **kept and
+counted half-right**, matching the published CSVs. They are not dropped: the single-token
+arm never ties, so those are the rows where the protocols differ most.
 
-**Step 5:** Commit the package and report: the table, the paired test result, whether the rule was met, and any degenerate cells.
+`order_consistency` will be `None` for every cell and the clustered CI reduces to the naive
+one — the 880 rows are 880 unique pairs in one order each, not 440×2. Report that as a
+limitation rather than as a computed result.
+
+**Step 3** — pull to `results/2026-08-26-single-token-judge/` with a `README.txt` carrying
+**provenance only**: configuration and versions, job IDs and dates, cluster source paths,
+artifact filenames and checksums, mechanical validation status, reproduction commands. Per
+`CLAUDE.md`, no interpretation, no verdicts, no claims about what the numbers mean.
+
+Record as known provenance gaps: the thinking-ON reference rows come from
+`results/2026-08-12-judge-only-rlvr/judge_eval_880.csv`, which is **untracked** (`results/`
+is gitignored and packages are force-added selectively), and `MIN_AB_MASS` was set by
+argument rather than measurement until Task 15 confirms it.
