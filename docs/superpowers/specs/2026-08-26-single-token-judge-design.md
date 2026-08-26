@@ -235,6 +235,42 @@ cell does, because the 9B graded judge is the protocol currently in use.
 
 ## Tests
 
+Extend the existing files where they overlap — `tests/test_build_judge_train_pairs.py`,
+`tests/test_judge_launchers.py`, `tests/test_judge_overfit.py` — rather than adding
+parallel ones.
+
+### Gates that protect the conclusion
+
+These four can each produce a *believable but wrong* number, so they run as gates before
+the matrix, not as ordinary unit tests.
+
+- **No leakage** (mechanical, not claimed): zero `user_id` overlap between the CE
+  training pairs and the 880-pair eval parquet. The spec's split reasoning is only a
+  sentence; if it is ever false the trained cell inflates and the switch decision is made
+  on a bad number. Emitted as a `split_guard.json` alongside the run, matching the
+  existing pattern.
+- **Target length**: under each tokenizer in the matrix (Qwen3.5, Gemma), the masked
+  assistant span for `"A"` / `"B"` is asserted to be the expected token count and that
+  count is recorded. "One token" is currently an assumption about the chat template — if
+  it appends an end-of-turn token the target is two, which is acceptable but is a
+  different loss than specced, and the overfit gate would still pass.
+- **Label alignment**: the two presentation orders of one `pair_id` carry *opposite*
+  labels. A systematic swap is learnable, so training succeeds and the eval lands near
+  0.25 — below chance, and slow to diagnose.
+- **Pair-set identity**: the eval parquet's SHA-256 is checked against
+  `95f48a9c...cfcf7783` at cell start. The spec records the checksum; nothing currently
+  verifies it, and scoring a different pair set makes every number silently
+  incomparable to the reused cells.
+
+### Default-path regression guard
+
+With `JUDGE_PROMPT_STYLE` unset, the rendered prompt and the request kwargs must be
+byte-identical to today's. Every new branch keys off that variable, and the full-schema
+arm supplies the reference cell for the decision rule — a regression there moves the
+baseline the switch is judged against.
+
+### Unit tests
+
 Local, no GPU:
 
 - **Header identity**: `TURING_PROMPT.startswith(TURING_PROMPT_HEADER)` and
@@ -249,11 +285,35 @@ Local, no GPU:
   names, and ends with the single-letter instruction.
 - `p_a` extraction from synthetic logprob payloads: leading-space variants, both orders,
   the hard-fail path, and argmax agreeing with `p_a > 0.5`.
-- Metrics on a hand-built case **including the always-A degenerate**, asserting accuracy
-  0.5, `a_rate` 1.0, `order_consistency` 0.0.
+- Metrics on three hand-built cases, not one: a perfect judge (accuracy 1.0,
+  `order_consistency` 1.0), the **always-A degenerate** (accuracy 0.5, `a_rate` 1.0,
+  `order_consistency` 0.0), and a mixed case with known `brier` and `auc`. The degenerate
+  case alone does not show that a *correct* judge scores correctly.
+- **McNemar** against a hand-computed 2×2. The decision rule is a paired test, so an
+  error here is an error in the switch/keep verdict itself.
+- **Clustered CI**: on synthetic data where the two orders of each pair agree perfectly,
+  the `pair_id`-clustered interval must be materially wider than the unpaired one. That
+  widening is the entire reason the column was added; untested it is decoration.
+- **Single-token request construction**: `max_completion_tokens == 1`, no
+  `response_format`, `logprobs` on. Asserted on the kwargs, not just the parse.
+- **Launcher guard**, mirroring the `THINKING_MODE` coverage already in
+  `tests/test_judge_launchers.py`: a `single_token` run into an `EVAL_ROOT` lacking the
+  style name is refused, and a stale output directory is refused.
+- **CSV merge**: joining new cells to the two reused CSVs preserves every row and
+  produces no duplicate `(model, thinking_mode, prompt_style)` key.
 - `--prompt-style single_token` preserves row count, labels, both orders and ids; only the
   `prompt` content differs from `full`.
 - Renderer parity: training-time render equals eval-time render for identical inputs.
+
+### Deliberately not tested
+
+The tokenizer-variant collection is exercised against real Qwen and Gemma tokenizers
+only on the cluster, where the HF cache exists; locally it is covered by synthetic
+payloads. The 1-cell smoke is the backstop.
+
+Not covered by tests at all, by choice: the reused cells' numbers. They are pinned by
+recording the source CSVs' checksums in the results package, which is the right tool —
+a test would only re-assert a constant.
 
 GPU gates, both before the 7-cell matrix:
 
