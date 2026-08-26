@@ -7,6 +7,9 @@ lora_alpha: 128
 lora_dropout: 0.05
 use_qlora: false
 
+# NOTE: this key is documentation of intent only — lora_sft.py does not read `packing`
+# from the config. Packing is controlled solely by the --no_packing CLI flag (default is
+# packing ON). The launcher that trains this config MUST pass --no_packing explicitly.
 packing: false
 supervise_stop_token: false
 
