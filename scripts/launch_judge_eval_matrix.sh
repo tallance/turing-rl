@@ -37,6 +37,19 @@ case "$THINKING_MODE" in
   *) echo "FATAL: THINKING_MODE must be on|off, got '$THINKING_MODE'" >&2; exit 2 ;;
 esac
 
+JUDGE_PROMPT_STYLE=${JUDGE_PROMPT_STYLE:-full}
+case "$JUDGE_PROMPT_STYLE" in
+  full) ;;
+  single_token)
+    case "$EVAL_ROOT" in
+      *single-token*) ;;
+      *) echo "FATAL: a single_token EVAL_ROOT must name the style: $EVAL_ROOT" >&2; exit 2 ;;
+    esac
+    ;;
+  *) echo "FATAL: JUDGE_PROMPT_STYLE must be full|single_token, got '$JUDGE_PROMPT_STYLE'" >&2; exit 2 ;;
+esac
+export JUDGE_PROMPT_STYLE
+
 case "$EVAL_ROOT" in /*) ;; *) echo "FATAL: EVAL_ROOT must be absolute: $EVAL_ROOT" >&2; exit 2 ;; esac
 [ -f "$PAIRS" ] || { echo "FATAL: pair set not found: $PAIRS" >&2; exit 2; }
 for model in \
@@ -64,6 +77,7 @@ EOF
 SWEEP_ROOT=$EVAL_ROOT/raw/sweep
 while read -r cell _model _tp _replicas _concurrency; do
   reward_dir=$SWEEP_ROOT/$cell/$THINKING_MODE/reward
+  [ "$JUDGE_PROMPT_STYLE" = "full" ] || reward_dir=$SWEEP_ROOT/$cell/$THINKING_MODE/$JUDGE_PROMPT_STYLE/reward
   if [ -d "$reward_dir" ] && [ -n "$(find "$reward_dir" -maxdepth 1 -type f -print -quit)" ]; then
     echo "FATAL: refusing stale output in $reward_dir" >&2
     exit 2

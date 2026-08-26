@@ -136,3 +136,94 @@ def test_refuses_duplicate_submission_before_outputs_exist(tmp_path: Path) -> No
     assert second.returncode != 0
     assert "already claimed for submission" in second.stderr
     assert not _planned(second)
+
+
+def test_single_token_style_requires_a_matching_eval_root(tmp_path: Path) -> None:
+    """A single-token cell written into a full-schema EVAL_ROOT would be silently mistaken
+    for a full-schema number when the comparison table is assembled."""
+    env = _env(tmp_path)
+    env["JUDGE_PROMPT_STYLE"] = "single_token"
+
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "single_token" in result.stderr
+    assert not _planned(result)
+
+
+def test_single_token_style_accepts_a_matching_eval_root(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    env["JUDGE_PROMPT_STYLE"] = "single_token"
+    env["EVAL_ROOT"] = str(tmp_path / "2026-08-26-single-token-judge")
+    env["TURING_RL_RUN_ROOT"] = env["EVAL_ROOT"]
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert len(_planned(result)) == 9
+
+
+def test_unknown_prompt_style_is_rejected(tmp_path: Path) -> None:
+    env = _env(tmp_path)
+    env["JUDGE_PROMPT_STYLE"] = "freeform"
+
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "full|single_token" in result.stderr
+    assert not _planned(result)
+
+
+def test_default_prompt_style_reward_dir_is_unchanged(tmp_path: Path) -> None:
+    """JUDGE_PROMPT_STYLE unset must stay byte-identical to the pre-existing path: the
+    stale-output pre-check must still key off $SWEEP_ROOT/$cell/$THINKING_MODE/reward with
+    no style segment folded in, or every existing cell path would be silently orphaned."""
+    env = _env(tmp_path)
+    reward = Path(env["EVAL_ROOT"]) / "raw/sweep/qwen35-4b/on/reward"
+    reward.mkdir(parents=True)
+    (reward / "stale.jsonl").write_text("{}\n")
+
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "refusing stale output" in result.stderr
+    assert "single_token" not in result.stderr
+    assert not _planned(result)
+
+
+def test_single_token_style_does_not_collide_with_the_full_schema_reward_dir(tmp_path: Path) -> None:
+    """The style must be folded into the per-cell reward directory: stale output sitting
+    under the OLD style-less path must not block a single_token run against the same
+    EVAL_ROOT/THINKING_MODE/cell (they no longer share a directory)."""
+    env = _env(tmp_path)
+    env["JUDGE_PROMPT_STYLE"] = "single_token"
+    env["EVAL_ROOT"] = str(tmp_path / "2026-08-26-single-token-judge")
+    env["TURING_RL_RUN_ROOT"] = env["EVAL_ROOT"]
+
+    old_reward = Path(env["EVAL_ROOT"]) / "raw/sweep/qwen35-4b/on/reward"
+    old_reward.mkdir(parents=True)
+    (old_reward / "stale.jsonl").write_text("{}\n")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert len(_planned(result)) == 9
+
+
+def test_single_token_style_reward_dir_is_itself_guarded(tmp_path: Path) -> None:
+    """The other half of the fold-in: stale output under the NEW style-scoped path must
+    still be caught, or a retried single_token cell could silently append to old output."""
+    env = _env(tmp_path)
+    env["JUDGE_PROMPT_STYLE"] = "single_token"
+    env["EVAL_ROOT"] = str(tmp_path / "2026-08-26-single-token-judge")
+    env["TURING_RL_RUN_ROOT"] = env["EVAL_ROOT"]
+
+    new_reward = Path(env["EVAL_ROOT"]) / "raw/sweep/qwen35-4b/on/single_token/reward"
+    new_reward.mkdir(parents=True)
+    (new_reward / "stale.jsonl").write_text("{}\n")
+
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "refusing stale output" in result.stderr
+    assert not _planned(result)
