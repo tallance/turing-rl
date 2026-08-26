@@ -153,7 +153,15 @@ EOF
 done
 
 if [ "$END" -lt "$TOTAL" ]; then
-  dep="afterok:$PREV"
+  dep=""
+  if [ -n "$PREV" ]; then
+    dep="afterok:$PREV"
+  elif [ -n "${SLURM_JOB_ID:-}" ]; then
+    # A batch can contain only a verified reused cell, so it submits no new
+    # judge job and leaves PREV empty. Chain the next controller after this
+    # controller rather than emitting the invalid dependency "afterok:".
+    dep="afterok:$SLURM_JOB_ID"
+  fi
   next=$(submit "$dep" --gres=gpu:0 --job-name="${JOB_PREFIX}_continue" \
     --export=ALL,NEXT_OFFSET=$END -- "$CONTINUE_SCRIPT")
   need_jid "$next" "continuation at offset $END"

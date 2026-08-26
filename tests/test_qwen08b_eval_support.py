@@ -101,6 +101,42 @@ class Qwen08BEvalSupportTest(unittest.TestCase):
         self.assertIn("THINKING_MODE=off", planned[0])
         self.assertIn("reusing verified step-0 cell gemma4-12b/on", result.stderr)
 
+    def test_skip_only_batch_chains_continuation_after_current_controller(self) -> None:
+        env = self.matrix_env(steps=(0, 12))
+        env.update(
+            {
+                "JUDGES": "gemma4-12b",
+                "JUDGE_MODES": "on",
+                "REUSED_STEP0_CELLS": "gemma4-12b",
+                "BATCH_SIZE": "1",
+                "OFFSET": "0",
+                "SLURM_JOB_ID": "777",
+            }
+        )
+        reward = (
+            Path(env["EVAL_ROOT"])
+            / "raw/9b-qwen08btrain-step0/sweep/gemma4-12b/on/reward"
+        )
+        reward.mkdir(parents=True)
+        (reward / "reward-123-1.jsonl").write_text("{}\n")
+        manifest = Path(env["EVAL_ROOT"]) / "provenance/step0_reuse.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.write_text("{}\n")
+
+        result = subprocess.run(
+            ["bash", str(MATRIX_LAUNCHER)],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        planned = [line for line in result.stderr.splitlines() if line.startswith("[DRY] sbatch")]
+        self.assertEqual(len(planned), 1)
+        self.assertIn("--dependency=afterok:777", planned[0])
+        self.assertNotIn("--dependency=afterok: ", planned[0])
+
 
 if __name__ == "__main__":
     unittest.main()
