@@ -29,6 +29,7 @@ import sys
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 
 class LeakageError(Exception):
@@ -61,9 +62,33 @@ def write_split_guard(out: Path, payload: dict) -> None:
 
 
 def load_user_ids(parquet: Path) -> set:
-    """Pull the ``user_id`` set out of a judge-pairs parquet's ``extra_info`` column."""
-    df = pd.read_parquet(parquet, columns=["extra_info"])
-    return {str(extra["user_id"]) for extra in df["extra_info"]}
+    """Pull the ``user_id`` set out of a judge-pairs parquet.
+
+    Two shapes exist in this pipeline and this gate must accept either one, since a
+    real run mixes them: CE training pairs (``build_judge_train_pairs.py``, veRL-shaped)
+    nest ``user_id`` inside an ``extra_info`` dict column; evaluation pairs
+    (``build_judge_pairs.py``) carry a flat top-level ``user_id`` column and have no
+    ``extra_info`` at all. Selecting ``extra_info`` out of the flat shape raises
+    ``pyarrow.lib.ArrowInvalid`` (a ``ValueError`` subclass), so check the schema first
+    instead of trying one shape and catching the failure.
+
+    Uses ``read_schema`` (the logical/top-level column list) rather than
+    ``ParquetFile(...).schema`` (the physical schema), which flattens a struct column
+    like ``extra_info`` into its leaf field names and would never report "extra_info"
+    as a column at all.
+    """
+    columns = pq.read_schema(parquet).names
+    if "extra_info" in columns:
+        df = pd.read_parquet(parquet, columns=["extra_info"])
+        return {str(extra["user_id"]) for extra in df["extra_info"]}
+    if "user_id" in columns:
+        df = pd.read_parquet(parquet, columns=["user_id"])
+        return {str(u) for u in df["user_id"]}
+    raise ValueError(
+        f"{parquet}: no user_id column found; expected either a nested 'extra_info' "
+        f"dict column with a 'user_id' key (training-pairs shape) or a flat 'user_id' "
+        f"column (evaluation-pairs shape); got columns {columns}"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

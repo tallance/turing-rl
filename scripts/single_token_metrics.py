@@ -58,7 +58,15 @@ def summarize(rows: list[dict]) -> dict:
     ph = [_p_human(r) for r in scored]
     brier = sum((1.0 - p) ** 2 for p in ph) / len(ph) if ph else 0.0
 
-    degenerate = abs(a_rate_excess) > 0.3 or (
+    # abs(a_rate_excess) cannot exceed 1 - accuracy: with s = accuracy on human-in-A
+    # rows and t = accuracy on human-in-B rows, a_rate_excess = (s - t)/2 and
+    # accuracy = (s + t)/2, so the ceiling at a given accuracy is exactly 1 - accuracy.
+    # At the switch threshold (0.7351) that ceiling is 0.2648, and at the reference
+    # (0.7551) it is 0.2455 -- both below 0.3, so a 0.3 threshold can never fire on a
+    # cell that passes the accuracy gate. 0.2 matches the old a_rate-outside-[0.3, 0.7]
+    # rule on a balanced sample and sits ~12 sigma clear of the n=880 sampling noise
+    # (~0.017, 1 sigma) -- do not raise it back toward 0.3.
+    degenerate = abs(a_rate_excess) > 0.2 or (
         order_consistency is not None and order_consistency < 0.3
     )
 

@@ -38,6 +38,19 @@ SINGLETONS = _rows([
     ("p1", False, "A", 0.9), ("p2", True, "B", 0.1), ("p3", False, "A", 0.7),
 ])
 
+# 4 human-in-A rows, all judged correctly (letter "A") -> s = accuracy on human-in-A
+# = 1.0. 4 human-in-B rows, half judged correctly (letter "B") and half wrongly (letter
+# "A") -> t = accuracy on human-in-B = 0.5. accuracy = (s+t)/2 = 0.75,
+# a_rate_excess = (s-t)/2 = 0.25 -- above the fixed 0.2 threshold (Fix 2) and below the
+# accuracy-dependent ceiling of 1 - accuracy = 0.25 is exactly the boundary, so this
+# cell sits at the ceiling itself: the largest excess reachable at 0.75 accuracy.
+EXCESS_QUARTER = _rows([
+    ("a0", False, "A", 0.9), ("a1", False, "A", 0.9),
+    ("a2", False, "A", 0.9), ("a3", False, "A", 0.9),
+    ("b0", True, "B", 0.1), ("b1", True, "B", 0.1),
+    ("b2", True, "A", 0.9), ("b3", True, "A", 0.9),
+])
+
 
 def test_perfect_judge():
     s = summarize(PERFECT)
@@ -72,6 +85,18 @@ def test_imbalanced_but_correct_judge_is_not_flagged_degenerate():
     assert s["expected_a_rate"] == pytest.approx(0.8)
     assert s["a_rate_excess"] == pytest.approx(0.0)
     assert s["degenerate"] is False
+
+
+def test_excess_above_0_2_is_flagged_degenerate():
+    # Pins the threshold itself: the old 0.3 value can never fire on any cell that
+    # passes the accuracy gate (ceiling is 1 - accuracy, which is below 0.3 at every
+    # accuracy the gate allows through), so a fixture at exactly 0.0 or 0.5 (the only
+    # values the rest of this suite exercises) cannot distinguish 0.2 from 0.3. This
+    # fixture sits at 0.25, which is degenerate under 0.2 but not under 0.3.
+    s = summarize(EXCESS_QUARTER)
+    assert s["accuracy"] == pytest.approx(0.75)
+    assert s["a_rate_excess"] == pytest.approx(0.25)
+    assert s["degenerate"] is True
 
 
 def test_order_consistency_is_none_without_complete_pairs():

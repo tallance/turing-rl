@@ -70,6 +70,23 @@ def test_no_ab_token_is_a_hard_fail_not_a_coin_flip():
         extract_verdict(_payload([("Neither", -0.1), ("\n", -2.0)]))
 
 
+def test_trailing_newline_merged_into_verdict_token_is_stripped():
+    # A chat template can merge a trailing newline into the verdict token itself
+    # (e.g. "\nA"). Before stripping "\n", "\nA".strip(_STRIP) left the token
+    # unclassified, so this would raise HardFail instead of picking A.
+    v = extract_verdict(_payload([("\nA", -0.1), ("B", -3.0)]))
+    assert v.letter == "A"
+    assert v.p_a > 0.5
+
+
+def test_bare_newline_token_is_still_not_a_verdict():
+    # Stripping "\n" off a token must not turn a BARE newline into an empty string
+    # that somehow reads as a letter -- confirm the existing hard-fail behaviour for a
+    # pure "\n" token is unchanged now that "\n" is part of _STRIP.
+    with pytest.raises(HardFail):
+        extract_verdict(_payload([("Neither", -0.1), ("\n", -2.0)]))
+
+
 def test_empty_payload_is_a_hard_fail():
     with pytest.raises(HardFail):
         extract_verdict([])

@@ -27,7 +27,9 @@ class Verdict:
 
 # SentencePiece renders a leading space as U+2581 (▁); BPE tokenizers (e.g. GPT-2, Qwen)
 # use Ġ as the leading-space marker; both appear in the eval matrix (Gemma and Qwen).
-_STRIP = " \t▁Ġ"
+# \n and \r are included because a chat template can merge a trailing newline into the
+# verdict token (e.g. "\nA"); stripping them must not turn a bare "\n" into a verdict.
+_STRIP = " \t\n\r▁Ġ"
 
 
 def _classify(token: str) -> str | None:
