@@ -149,6 +149,58 @@ def test_prompt_length_stats_on_no_rows_do_not_crash():
     assert stats["over_budget_rate"] == 0.0
 
 
+def test_prompt_style_changes_only_the_prompt_text():
+    full, _ = build_judge_rows(
+        _source_df(), flatten_all_generations(_inference(n_gens=2)),
+        lo=0.0, hi=1.0, limit=None, split="train", prompt_style="full",
+    )
+    single, _ = build_judge_rows(
+        _source_df(), flatten_all_generations(_inference(n_gens=2)),
+        lo=0.0, hi=1.0, limit=None, split="train", prompt_style="single_token",
+    )
+
+    assert len(full) == len(single)
+    for f, s in zip(full.to_dict("records"), single.to_dict("records")):
+        assert f["reward_model"] == s["reward_model"]
+        assert f["extra_info"] == s["extra_info"]
+        assert f["prompt"][0]["content"] != s["prompt"][0]["content"]
+
+
+def test_the_two_orders_of_a_pair_carry_opposite_labels():
+    """A systematic order/label swap is learnable, so training would 'succeed' and the
+    eval would land near 0.25. Cheaper to assert than to diagnose."""
+    rows, _ = build_judge_rows(
+        _source_df(), flatten_all_generations(_inference(n_gens=3)),
+        lo=0.0, hi=1.0, limit=None, split="train", prompt_style="single_token",
+    )
+    by_pair = {}
+    for r in rows.to_dict("records"):
+        by_pair.setdefault(r["extra_info"]["pair_id"], []).append(r)
+
+    assert by_pair, "no pairs built"
+    for pair_id, group in by_pair.items():
+        labels = sorted(r["reward_model"]["ground_truth"] for r in group)
+        assert labels == ["A", "B"], f"{pair_id} has labels {labels}"
+
+
+def test_label_matches_which_slot_holds_the_human():
+    rows, _ = build_judge_rows(
+        _source_df(), flatten_all_generations(_inference(n_gens=3)),
+        lo=0.0, hi=1.0, limit=None, split="train", prompt_style="single_token",
+    )
+    for r in rows.to_dict("records"):
+        expected = "B" if r["extra_info"]["human_is_b"] else "A"
+        assert r["reward_model"]["ground_truth"] == expected
+
+
+def test_meta_records_the_prompt_style():
+    _df, meta = build_judge_rows(
+        _source_df(), flatten_all_generations(_inference(n_gens=1)),
+        lo=0.0, hi=1.0, limit=None, split="train", prompt_style="single_token",
+    )
+    assert meta["prompt_style"] == "single_token"
+
+
 def test_meta_carries_the_prompt_length_measurement():
     """max_prompt_length cannot be chosen without this; filter_overlong_prompts drops the rest."""
     _df, meta = build_judge_rows(

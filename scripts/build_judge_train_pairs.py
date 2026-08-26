@@ -211,6 +211,7 @@ def build_judge_rows(
     limit: int | None,
     split: str,
     prompt_budget_tokens: int = DEFAULT_PROMPT_BUDGET_TOKENS,
+    prompt_style: str = "full",
 ) -> tuple[pd.DataFrame, dict]:
     """Build veRL judge-training rows: two per (context, generation), one per order."""
     sliced = select_slice(source_df, lo=lo, hi=hi, limit=limit)
@@ -244,6 +245,7 @@ def build_judge_rows(
                     context=context,
                     response_a=response_a,
                     response_b=response_b,
+                    prompt_style=prompt_style,
                 )
                 prompts.append(rendered)
                 rows.append(
@@ -286,6 +288,7 @@ def build_judge_rows(
         "slice_hi": hi,
         "limit": limit,
         "split": split,
+        "prompt_style": prompt_style,
         "human_is_b_rate": (sum(human_is_b) / len(human_is_b)) if human_is_b else 0.0,
     }
     meta.update(prompt_length_stats(prompts, budget_tokens=prompt_budget_tokens))
@@ -309,6 +312,10 @@ def main() -> None:
              "n_over_budget/over_budget_rate fields in the .meta.json. Set it to whatever "
              "data.max_prompt_length the training config currently declares.",
     )
+    parser.add_argument(
+        "--prompt-style", choices=["full", "single_token"], default="full",
+        help="Judge prompt template. single_token drops the rubric and asks for one letter.",
+    )
     args = parser.parse_args()
 
     with open(args.inference_pkl, "rb") as handle:
@@ -323,6 +330,7 @@ def main() -> None:
         limit=args.limit,
         split=args.split,
         prompt_budget_tokens=args.prompt_budget_tokens,
+        prompt_style=args.prompt_style,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
