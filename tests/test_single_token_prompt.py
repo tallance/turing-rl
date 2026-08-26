@@ -32,3 +32,11 @@ def test_header_carries_every_input_placeholder():
     for field in ("user_history", "context", "response_a", "response_b",
                   "source_copy_watchlist"):
         assert "{" + field + "}" in TURING_PROMPT_HEADER
+
+
+def test_single_token_prompt_has_the_verdict_tail_and_no_rubric():
+    assert TURING_SINGLE_TOKEN_PROMPT.rstrip().endswith("Your output:")
+    assert "Answer with a single letter, A or B" in TURING_SINGLE_TOKEN_PROMPT
+    for leaked in ("## Evaluation Procedure", "## Criteria", "## Penalty Checks",
+                   "score_gap", "immediate_target_score_a"):
+        assert leaked not in TURING_SINGLE_TOKEN_PROMPT
