@@ -21,12 +21,10 @@ from shared.judge_utils import (
 from shared.api_client import (
     get_openai_max_retries,
     openrouter_request_extras,
-    post_chat_choice_sync,
     post_chat_sync,
 )
 from shared.load_env import get_openai_api_key
-from shared.judge_prompts import SPECIFICITY_PROMPT, TURING_PROMPT, TURING_SINGLE_TOKEN_PROMPT
-from shared.single_token_verdict import extract_verdict
+from shared.judge_prompts import SPECIFICITY_PROMPT, TURING_PROMPT
 
 
 def _sanitize_text(text: str) -> str:
@@ -47,13 +45,6 @@ DEFAULT_SIM_EVAL_JUDGE_MODEL = "anthropic/claude-sonnet-4-6"
 def get_judge_model() -> str:
     """Return the eval judge model."""
     return os.getenv("PERSONA_EVAL_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
-
-
-def _judge_prompt_style() -> str:
-    style = os.environ.get("JUDGE_PROMPT_STYLE", "full")
-    if style not in ("full", "single_token"):
-        raise ValueError(f"JUDGE_PROMPT_STYLE must be full|single_token, got {style!r}")
-    return style
 
 
 def get_sim_eval_judge_model() -> str:
@@ -612,49 +603,6 @@ def _turing_api_call(
         raise ValueError(
             "Turing eval requires non-empty user_history; refusing to score without it."
         )
-
-    if _judge_prompt_style() == "single_token":
-        prompt = TURING_SINGLE_TOKEN_PROMPT.format(
-            user_history=user_history,
-            context=context,
-            response_a=response_a,
-            response_b=response_b,
-            source_copy_watchlist=source_copy_watchlist,
-        )
-        kwargs = {
-            "model": get_judge_model(),
-            "max_completion_tokens": 1,
-            "messages": [{"role": "user", "content": prompt}],
-            "logprobs": True,
-            "top_logprobs": 20,
-        }
-        choice = post_chat_choice_sync(kwargs)
-        # Not retried: a hard fail is a property of the input, not a transient, and
-        # retrying would hide it from the hard_fail column and bias accuracy toward
-        # the shorter inputs.
-        position = choice["logprobs"]["content"][0]
-        verdict = extract_verdict(
-            position["top_logprobs"],
-            # The token actually sampled. If it is not itself an A/B variant the position
-            # is not a verdict position, regardless of what mass the top-k happens to
-            # carry. .get() because not every transport returns it.
-            sampled_token=position.get("token"),
-        )
-        # rating maps onto the existing 1-7 scale so downstream accuracy code is
-        # untouched: 7 == "definitely B", 1 == "definitely A". No tie is possible.
-        parsed = {
-            "rating": 7 if verdict.letter == "B" else 1,
-            "letter": verdict.letter,
-            "p_a": verdict.p_a,
-            "ab_mass": verdict.ab_mass,
-            "off_ab_mass": verdict.off_ab_mass,
-            "parse_error": None,
-        }
-        if return_details:
-            parsed["source_copy_warning_a"] = source_copy_warning_a
-            parsed["source_copy_warning_b"] = source_copy_warning_b
-            return parsed
-        return parsed["rating"]
 
     prompt = TURING_PROMPT.format(
         user_history=user_history,

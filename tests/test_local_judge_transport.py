@@ -20,7 +20,13 @@ class _FakeResponse:
         return None
 
     async def json(self):
-        return {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}]}
+        return {
+            "choices": [{
+                "message": {"content": "ok"},
+                "finish_reason": "stop",
+                "logprobs": {"content": [{"token": "A", "top_logprobs": []}]},
+            }]
+        }
 
 
 class _FakeSession:
@@ -52,3 +58,43 @@ def test_async_transport_uses_supplied_local_key_without_secret_lookup(monkeypat
 
     assert result == "ok"
     assert session.headers["Authorization"] == "Bearer EMPTY"
+
+
+def test_choice_transport_returns_the_first_choice_so_logprobs_are_reachable(monkeypatch):
+    """The single-token protocol's verdict lives in logprobs, not in the content, so it
+    needs the choice object -- and it needs the choice, not the whole response body."""
+    monkeypatch.setattr(api_client, "aiohttp", object())
+    monkeypatch.setenv("OPENAI_API_BASE", "http://localhost:8123/v1")
+
+    choice = asyncio.run(
+        api_client.post_chat_choice_async(
+            _FakeSession(),
+            {"model": "local", "messages": []},
+            semaphore=asyncio.Semaphore(1),
+            api_key="EMPTY",
+        )
+    )
+
+    assert choice["logprobs"]["content"][0]["token"] == "A"
+    assert "choices" not in choice
+
+
+def test_both_async_transports_share_one_telemetry_path(monkeypatch):
+    monkeypatch.setattr(api_client, "aiohttp", object())
+    monkeypatch.setenv("OPENAI_API_BASE", "http://localhost:8123/v1")
+
+    async def _both():
+        payload = {"model": "local", "messages": []}
+        await api_client.post_chat_async(
+            _FakeSession(), payload, semaphore=asyncio.Semaphore(1), api_key="EMPTY"
+        )
+        from_content = api_client.get_judge_call_meta()
+        await api_client.post_chat_choice_async(
+            _FakeSession(), payload, semaphore=asyncio.Semaphore(1), api_key="EMPTY"
+        )
+        return from_content, api_client.get_judge_call_meta()
+
+    from_content, from_choice = asyncio.run(_both())
+
+    assert from_content["finish_reason"] == "stop"
+    assert from_choice["finish_reason"] == "stop"

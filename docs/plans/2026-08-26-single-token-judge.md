@@ -425,6 +425,14 @@ git commit -m "judge: extract A/B verdict and p_a from one-token logprobs"
 
 ## Task 4: Branch the eval scorer on JUDGE_PROMPT_STYLE
 
+> **SUPERSEDED.** `eval/metrics.py` is not on either eval pipeline's path; both launchers
+> reach `scripts/run_judge_sweep_cell.py`, which called the full-schema reward scorer
+> regardless of the style. The branch below was implemented, then deleted. The shipped
+> design is a standalone `eval/single_token_judge.py` dispatched from
+> `run_judge_sweep_cell.py`; see `tests/test_single_token_judge.py`. The rest of this
+> section is kept for the request-shape and hard-fail requirements it states, which the
+> new module still honours.
+
 **Files:**
 - Modify: `eval/metrics.py:569-628` (`_turing_api_call`)
 - Test: `tests/test_single_token_scoring.py` (create)

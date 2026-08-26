@@ -110,6 +110,9 @@ while read -r cell model tp replicas concurrency; do
   [ -n "$previous" ] && dependency="--dependency=afterok:$previous"
   exports="ALL,MODEL=$model,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency"
   exports="$exports,THINKING_MODE=$THINKING_MODE,CELL_NAME=$cell,PAIRS=$PAIRS,SWEEP_ROOT=$SWEEP_ROOT"
+  # Explicit, not merely inherited through --export=ALL: the style decides both the judge
+  # protocol and the cell's output path, so it must be visible in the submission record.
+  exports="$exports,JUDGE_PROMPT_STYLE=$JUDGE_PROMPT_STYLE"
 
   if [ "$DRY" = "1" ]; then
     echo "[DRY] sbatch $dependency --gres=gpu:$gpus --job-name=${JOB_PREFIX}_${cell} --export=$exports -- scripts/slurm/judge_sweep_cell.sh" >&2

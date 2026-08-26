@@ -184,15 +184,20 @@ def _dump_judge_response(payload: dict, response: Any, *, latency_ms: float) -> 
         print(f"[judge_dump] failed to append: {type(exc).__name__}: {exc}", flush=True)
 
 
-async def post_chat_async(
+async def _post_chat_async_json(
     session,
     payload: dict,
     *,
     semaphore,
     max_retries: int | None = None,
     api_key: str | None = None,
-) -> str:
-    """Post a chat request with retries."""
+) -> dict:
+    """Post a chat request with retries and return the parsed response body.
+
+    The shared implementation behind ``post_chat_async`` (content only) and
+    ``post_chat_choice_async`` (full choice, so a caller can read logprobs). One body
+    so the two cannot drift on retries, telemetry, or dumping.
+    """
     if aiohttp is None:
         raise ImportError("OpenRouter judge scoring requires aiohttp to be installed")
     resolved_api_key = api_key or resolve_judge_api_key()
@@ -230,7 +235,6 @@ async def post_chat_async(
                             )
                         resp.raise_for_status()
                         data = await resp.json()
-                        content = _extract_chat_content(data)
                         latency_ms = (time.monotonic() - t0) * 1000.0
                         # Stash per-call telemetry on the contextvar side-channel.
                         # Defensive: telemetry must never raise inside the HTTP path.
@@ -252,7 +256,7 @@ async def post_chat_async(
                             pass
                         if _should_dump_judge(payload):
                             _dump_judge_response(payload, data, latency_ms=latency_ms)
-                        return content
+                        return data
             if retry_after is not None:
                 await asyncio.sleep(retry_after)
                 continue
@@ -262,6 +266,41 @@ async def post_chat_async(
                 raise
             await asyncio.sleep(retry_sleep_seconds)
     raise RuntimeError(f"OpenAI API call failed after {max_retries} retries")
+
+
+async def post_chat_async(
+    session,
+    payload: dict,
+    *,
+    semaphore,
+    max_retries: int | None = None,
+    api_key: str | None = None,
+) -> str:
+    """Post a chat request with retries."""
+    return _extract_chat_content(
+        await _post_chat_async_json(
+            session, payload, semaphore=semaphore, max_retries=max_retries, api_key=api_key
+        )
+    )
+
+
+async def post_chat_choice_async(
+    session,
+    payload: dict,
+    *,
+    semaphore,
+    max_retries: int | None = None,
+    api_key: str | None = None,
+) -> dict:
+    """Full first choice, so callers can read logprobs. Same transport and retries.
+
+    The async twin of ``post_chat_choice_sync``; the single-token judge protocol needs
+    the choice object because its verdict lives in ``logprobs``, not in the content.
+    """
+    data = await _post_chat_async_json(
+        session, payload, semaphore=semaphore, max_retries=max_retries, api_key=api_key
+    )
+    return data["choices"][0]
 
 
 def _post_chat_json(

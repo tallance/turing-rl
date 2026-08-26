@@ -26,6 +26,12 @@ for v in MODEL TP REPLICAS THINKING_MODE CELL_NAME; do
   [ -z "${!v:-}" ] && { echo "ERROR: $v unset" >&2; exit 2; }
 done
 case "$THINKING_MODE" in on|off) ;; *) echo "ERROR: THINKING_MODE must be on|off" >&2; exit 2 ;; esac
+JUDGE_PROMPT_STYLE=${JUDGE_PROMPT_STYLE:-full}
+case "$JUDGE_PROMPT_STYLE" in
+  full|single_token) ;;
+  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token, got '$JUDGE_PROMPT_STYLE'" >&2; exit 2 ;;
+esac
+export JUDGE_PROMPT_STYLE
 # Unique per-job default port base: this cluster does NOT isolate the network
 # namespace per Slurm job, so co-scheduled gpu:1 cells on one node would collide
 # on a fixed port (a client would then hit a co-tenant's wrong-model server and
@@ -105,13 +111,20 @@ PAIRS=${PAIRS:-$REPO/results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.
 
 # The client appends $CELL_NAME/$THINKING_MODE to --out_dir, so pass the sweep ROOT.
 SWEEP_ROOT=${SWEEP_ROOT:-$REPO/results/2026-07-08-judge-sweep/raw/sweep}
+# --- BEGIN mode-dir ---
+# Kept identical to run_judge_sweep_cell.cell_output_dirs() and to the stale-output guard
+# in launch_judge_eval_matrix.sh. If the writer and the guard disagree the guard inspects
+# a directory nothing writes, and a single_token rerun appends into the full-schema cell.
+# tests/test_judge_sweep_cell_paths.py executes this block and the guard against each other.
 MODE_DIR=$SWEEP_ROOT/$CELL_NAME/$THINKING_MODE
+[ "$JUDGE_PROMPT_STYLE" = "full" ] || MODE_DIR=$MODE_DIR/$JUDGE_PROMPT_STYLE
+# --- END mode-dir ---
 mkdir -p "$MODE_DIR/vllm_server" "$MODE_DIR/reward" "$MODE_DIR/http"
 TIMING_JOB_STARTED_EPOCH=$(date +%s.%N)
 TIMING_JOB_STARTED_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
 
 echo "============================================"
-echo "sweep cell: MODEL=$MODEL CELL_NAME=$CELL_NAME MODE=$THINKING_MODE TP=$TP REPLICAS=$REPLICAS"
+echo "sweep cell: MODEL=$MODEL CELL_NAME=$CELL_NAME MODE=$THINKING_MODE STYLE=$JUDGE_PROMPT_STYLE TP=$TP REPLICAS=$REPLICAS"
 echo "date=$(date) host=$(hostname)"
 [ "$IS_GEMMA4" = "1" ] && echo "gemma_snapshot=$GEMMA_SNAPSHOT"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
@@ -219,6 +232,7 @@ for i in $(seq 0 $((REPLICAS-1))); do
     --pairs "$PAIRS" --endpoints "$ENDPOINTS" \
     --model "$MODEL" --thinking_mode "$THINKING_MODE" \
     --out_dir "$SWEEP_ROOT" --cell_name "$CELL_NAME" \
+    --prompt_style "$JUDGE_PROMPT_STYLE" \
     --concurrency_per_endpoint "$CONCURRENCY" \
     --endpoint_index $i --num_endpoints $REPLICAS "${EXTRA[@]}" &
   CLIENT_PIDS+=($!)
@@ -244,6 +258,7 @@ record = {
     "model": "$MODEL",
     "cell_name": "$CELL_NAME",
     "thinking_mode": "$THINKING_MODE",
+    "prompt_style": "$JUDGE_PROMPT_STYLE",
     "tp": int("$TP"),
     "replicas": int("$REPLICAS"),
     "concurrency_per_endpoint": int("$CONCURRENCY"),

@@ -7,6 +7,7 @@ from scripts.run_judge_sweep_cell import (
     _raise_on_scoring_errors,
     cell_env,
     cell_output_dirs,
+    resolve_prompt_style,
     shard_indices,
 )
 
@@ -70,6 +71,45 @@ def test_output_dirs(tmp_path):
     assert d["reward"].endswith("qwen3-8b/off/reward") and d["http"].endswith("qwen3-8b/off/http")
 
 
+def test_output_dirs_fold_in_a_non_default_style(tmp_path):
+    # The two arms must not share a directory: the single-token dump is a different
+    # schema, and appending it into a full-schema cell corrupts both numbers.
+    d = cell_output_dirs(str(tmp_path), "qwen3-8b", "off", "single_token")
+    assert d["reward"].endswith("qwen3-8b/off/single_token/reward")
+    assert d["http"].endswith("qwen3-8b/off/single_token/http")
+
+
+def test_prompt_style_defaults_to_full_and_rejects_junk(monkeypatch):
+    monkeypatch.delenv("JUDGE_PROMPT_STYLE", raising=False)
+    assert resolve_prompt_style() == "full"
+    monkeypatch.setenv("JUDGE_PROMPT_STYLE", "single_token")
+    assert resolve_prompt_style() == "single_token"
+    # An explicit argument wins over the env so the sbatch flag is authoritative.
+    assert resolve_prompt_style("full") == "full"
+    with pytest.raises(ValueError, match="full|single_token"):
+        resolve_prompt_style("freeform")
+
+
+def test_single_token_env_describes_the_request_that_is_actually_sent():
+    """run_metadata.json is copied from this env. The full-schema values would claim a
+    37-field JSON constraint, an 8192-token budget and (in an 'on' cell) thinking on --
+    none of which the single-token scorer sends."""
+    env = cell_env(model_id="Qwen/Qwen3-8B", mode="on", out_dir="/tmp/x", style="single_token")
+    assert "PERSONA_JUDGE_JSON_SCHEMA" not in env
+    assert env["PERSONA_JUDGE_MAX_COMPLETION_TOKENS"] == "1"
+    assert env["PERSONA_JUDGE_ENABLE_THINKING"] == "0"
+    assert env["JUDGE_PROMPT_STYLE"] == "single_token"
+    assert env["PERSONA_REWARD_DUMP_DIR"] == "/tmp/x/reward"
+
+
+def test_full_style_env_is_unchanged():
+    env = cell_env(model_id="Qwen/Qwen3-8B", mode="on", out_dir="/tmp/x")
+    assert env["PERSONA_JUDGE_JSON_SCHEMA"] == "1"
+    assert env["PERSONA_JUDGE_MAX_COMPLETION_TOKENS"] == "8192"
+    assert env["PERSONA_JUDGE_ENABLE_THINKING"] == "1"
+    assert env["JUDGE_PROMPT_STYLE"] == "full"
+
+
 def test_final_metadata_emits_consumer_keys():
     # Producer must emit the keys calibration_report.py reads (n_pairs, wall_seconds).
     base = {"cell_name": "qwen3-8b", "n_pairs_total": 100}
@@ -90,3 +130,94 @@ def test_final_metadata_roundtrip_gives_finite_projection():
     proj = extrapolate_wall_hours(calls, out["wall_seconds"])
     assert proj != float("inf")
     assert proj > 0
+
+
+# --------------------------------------------------------------------------- dispatch
+#
+# The defect this covers: JUDGE_PROMPT_STYLE=single_token passed every guard in the
+# launcher and then scored the OLD 37-field protocol, writing the result into a directory
+# named single-token -- a plausible-but-wrong number. These tests drive the real
+# async_main, so the dispatch is exercised where it actually lives.
+
+
+def _pair_set(tmp_path):
+    import pandas as pd
+
+    path = tmp_path / "pairs.parquet"
+    pd.DataFrame(
+        [{
+            "pair_id": "p0", "generated": "gen turn", "human": "human turn",
+            "user_history": "[HUMAN]: past", "context": "[OTHER]: hi",
+            "user_id": "u", "post_id": "post", "target_idx": 0,
+        }]
+    ).to_parquet(path)
+    return path
+
+
+def _run_cell(monkeypatch, tmp_path, style):
+    """Run one shard end-to-end with both scorers stubbed; return which one was called."""
+    import asyncio
+
+    import training.grpo.reward as reward_module
+    from eval import single_token_judge as single_token_module
+    from scripts import run_judge_sweep_cell
+
+    called = []
+
+    async def fake_single_token(session, api_key, *args, **kwargs):
+        called.append(("single_token", kwargs))
+        return {}
+
+    async def fake_full(session, api_key, *args, **kwargs):
+        called.append(("full", kwargs))
+        return {}
+
+    monkeypatch.setattr(single_token_module, "score_single_token_with_info", fake_single_token)
+    monkeypatch.setattr(reward_module, "score_turing_with_info", fake_full)
+    monkeypatch.setenv("JUDGE_PROMPT_STYLE", style)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "run_judge_sweep_cell.py",
+            "--pairs", str(_pair_set(tmp_path)),
+            "--endpoints", "http://localhost:8123/v1",
+            "--model", "Qwen/Qwen3.5-9B",
+            "--thinking_mode", "off",
+            "--out_dir", str(tmp_path / "sweep"),
+            "--cell_name", "qwen35-9b",
+        ],
+    )
+    asyncio.run(run_judge_sweep_cell.async_main())
+    return called
+
+
+def test_single_token_style_reaches_the_single_token_scorer(monkeypatch, tmp_path):
+    called = _run_cell(monkeypatch, tmp_path, "single_token")
+
+    assert [name for name, _ in called] == ["single_token"]
+    assert called[0][1]["pair_id"] == "p0"
+    # ...and the cell writes under the style-scoped path, not the full-schema one.
+    assert (tmp_path / "sweep/qwen35-9b/off/single_token/run_metadata.json").is_file()
+    assert not (tmp_path / "sweep/qwen35-9b/off/reward").exists()
+
+
+def test_default_style_still_reaches_the_reward_path(monkeypatch, tmp_path):
+    called = _run_cell(monkeypatch, tmp_path, "full")
+
+    assert [name for name, _ in called] == ["full"]
+    assert "pair_id" not in called[0][1]
+    assert (tmp_path / "sweep/qwen35-9b/off/run_metadata.json").is_file()
+
+
+def test_the_metadata_records_the_style_and_the_request_it_describes(monkeypatch, tmp_path):
+    import json
+
+    _run_cell(monkeypatch, tmp_path, "single_token")
+    meta = json.loads(
+        (tmp_path / "sweep/qwen35-9b/off/single_token/run_metadata.json").read_text()
+    )
+
+    assert meta["prompt_style"] == "single_token"
+    assert meta["json_schema"] is None
+    assert meta["max_completion_tokens"] == "1"
+    assert meta["enable_thinking"] == "0"

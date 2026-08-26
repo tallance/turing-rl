@@ -1,4 +1,4 @@
-"""Sweep-cell client: run one (judge, thinking-mode) cell through the REAL reward path.
+"""Sweep-cell client: run one (judge, thinking-mode, prompt-style) cell.
 
 One *process per endpoint*. The pair-set is sharded across endpoints
 (``pairs[endpoint_index::num_endpoints]``), so each process owns a disjoint slice
@@ -6,16 +6,30 @@ and sets ``OPENAI_API_BASE`` exactly once (to its own shard endpoint) before any
 scoring happens. This avoids the v1 race where a single process mutated
 ``os.environ["OPENAI_API_BASE"]`` per async task.
 
-Scoring is delegated to the production reward path
-(``training.grpo.reward.score_turing_with_info`` -> ``_score_pairwise_likert_with_info``),
-so the judge prompt, both-orderings randomization, JSON-schema response format, and
-the reward-layer + HTTP dump wiring (Task 6) are exercised exactly as in training.
-Reward rows land in ``<cell>/<mode>/reward/`` and raw judge HTTP dumps in
-``<cell>/<mode>/http/`` automatically via the env this client locks.
+``JUDGE_PROMPT_STYLE`` selects the judge protocol, and it is selected HERE because this
+is the one place both eval launchers converge on:
 
-Env is applied to ``os.environ`` *before* importing ``training.grpo.reward`` so its
-env reads pick up the locked values. The reward import lives inside ``async_main`` so
-this module imports cleanly on a machine with no live judge server.
+``full`` (the default)
+    Delegates to the production reward path
+    (``training.grpo.reward.score_turing_with_info`` ->
+    ``_score_pairwise_likert_with_info``), so the judge prompt, both-orderings
+    randomization, JSON-schema response format, and the reward-layer + HTTP dump wiring
+    are exercised exactly as in training. Byte-for-byte the pre-existing behaviour,
+    including the output paths, so existing result trees stay valid.
+
+``single_token``
+    Delegates to ``eval.single_token_judge``, which asks for one letter and reads the
+    verdict out of the logprobs. It emits the same per-call dump shape (plus the
+    single-token extras) so ``scripts/analyze_judge_sweep.py`` can compare the two arms,
+    and it writes under an extra ``<style>`` path segment so the two arms cannot land in
+    the same directory.
+
+Reward rows land in ``<cell>/<mode>[/<style>]/reward/`` and raw judge HTTP dumps in
+``<cell>/<mode>[/<style>]/http/`` automatically via the env this client locks.
+
+Env is applied to ``os.environ`` *before* importing the scorer so its env reads pick up
+the locked values. The scorer import lives inside ``async_main`` so this module imports
+cleanly on a machine with no live judge server.
 
 Usage:
   python scripts/run_judge_sweep_cell.py \\
@@ -44,25 +58,51 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
+PROMPT_STYLES = ("full", "single_token")
+
+
+def resolve_prompt_style(raw: str | None = None) -> str:
+    """Validate and return the judge prompt style (default ``full``)."""
+    style = (raw if raw is not None else os.environ.get("JUDGE_PROMPT_STYLE", "full")) or "full"
+    if style not in PROMPT_STYLES:
+        raise ValueError(
+            f"JUDGE_PROMPT_STYLE must be one of {'|'.join(PROMPT_STYLES)}, got {style!r}"
+        )
+    return style
+
+
 def cell_env(
     *,
     model_id: str,
     mode: str,
     out_dir: str,
     sampling: dict | None = None,
+    style: str = "full",
 ) -> dict[str, str]:
     """Return the locked judge env for one sweep cell.
 
     ``mode`` is ``"on"``/``"off"`` for judge chain-of-thought (``enable_thinking``).
-    ``out_dir`` is the per-(cell, mode) directory; HTTP dumps go to ``out_dir/http``
-    and reward-layer dumps to ``out_dir/reward``.
+    ``out_dir`` is the per-(cell, mode, style) directory; HTTP dumps go to
+    ``out_dir/http`` and reward-layer dumps to ``out_dir/reward``.
 
     ``sampling`` is accepted for interface compatibility but intentionally IGNORED:
     Task 1 froze the policy to "no wire override; vLLM uses each model's
     generation_config.json defaults", so ``PERSONA_JUDGE_SAMPLING`` is NOT emitted.
+
+    The ``single_token`` style overrides three of these. The env must describe the
+    request that is actually sent, because ``run_metadata.json`` is copied from it and
+    is the record the results package is read against:
+
+    * no ``PERSONA_JUDGE_JSON_SCHEMA`` -- there is no JSON body to constrain, and the
+      37-field schema would force the judge to emit one;
+    * ``PERSONA_JUDGE_MAX_COMPLETION_TOKENS=1`` -- the protocol decodes one token;
+    * ``PERSONA_JUDGE_ENABLE_THINKING=0`` even for ``mode == "on"`` -- the scorer pins
+      thinking off (a one-token budget spends its token on the think opener otherwise),
+      so claiming ``1`` here would record a request that was never sent.
     """
     del sampling  # deliberately unused (see docstring / Task-1 decision)
-    return {
+    style = resolve_prompt_style(style)
+    env = {
         "PERSONA_JUDGE_JSON_SCHEMA": "1",
         "PERSONA_JUDGE_DUMP_RATE": "1.0",
         "PERSONA_JUDGE_ENABLE_THINKING": "1" if mode == "on" else "0",
@@ -71,7 +111,13 @@ def cell_env(
         "PERSONA_JUDGE_MAX_COMPLETION_TOKENS": "8192",
         "PERSONA_JUDGE_DUMP_DIR": os.path.join(out_dir, "http"),
         "PERSONA_REWARD_DUMP_DIR": os.path.join(out_dir, "reward"),
+        "JUDGE_PROMPT_STYLE": style,
     }
+    if style == "single_token":
+        env.pop("PERSONA_JUDGE_JSON_SCHEMA")
+        env["PERSONA_JUDGE_MAX_COMPLETION_TOKENS"] = "1"
+        env["PERSONA_JUDGE_ENABLE_THINKING"] = "0"
+    return env
 
 
 def shard_indices(items: list, endpoint_index: int, num_endpoints: int) -> list:
@@ -85,9 +131,17 @@ def shard_indices(items: list, endpoint_index: int, num_endpoints: int) -> list:
     return items[endpoint_index::num_endpoints]
 
 
-def cell_output_dirs(base: str, cell_name: str, mode: str) -> dict[str, str]:
-    """Return {"reward": .../{cell}/{mode}/reward, "http": .../{cell}/{mode}/http}."""
+def cell_output_dirs(base: str, cell_name: str, mode: str, style: str = "full") -> dict[str, str]:
+    """Return {"reward": .../{cell}/{mode}[/{style}]/reward, "http": .../http}.
+
+    ``full`` keeps the historical style-less path so the existing result trees are not
+    orphaned. Any other style adds a segment, which is also the path
+    ``scripts/launch_judge_eval_matrix.sh``'s stale-output guard inspects -- the writer
+    and the guard must agree or a rerun silently appends to the other arm's directory.
+    """
     mode_dir = os.path.join(base, cell_name, mode)
+    if resolve_prompt_style(style) != "full":
+        mode_dir = os.path.join(mode_dir, style)
     return {
         "reward": os.path.join(mode_dir, "reward"),
         "http": os.path.join(mode_dir, "http"),
@@ -160,6 +214,8 @@ async def async_main() -> None:
     parser.add_argument("--num_endpoints", type=int, default=1)
     parser.add_argument("--max_pairs", type=int, default=None,
                         help="Cap total pairs (applied before sharding) for calibration")
+    parser.add_argument("--prompt_style", default=None, choices=[*PROMPT_STYLES],
+                        help="Judge protocol (default: $JUDGE_PROMPT_STYLE, else full)")
     args = parser.parse_args()
 
     endpoints = _parse_endpoints(args.endpoints)
@@ -177,15 +233,34 @@ async def async_main() -> None:
         )
     my_endpoint = endpoints[args.endpoint_index]
     cell_name = args.cell_name or model_cell_name(args.model)
+    try:
+        style = resolve_prompt_style(args.prompt_style)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if style == "single_token" and args.thinking_mode == "on":
+        # Not fatal: the server-side reasoning parser is what THINKING_MODE selects, and
+        # the request is pinned thinking-off either way. Loud because the path segment
+        # will still read ".../on/single_token" while no chain of thought was requested.
+        print(
+            "[sweep-cell] WARNING: thinking_mode=on with the single_token style; the "
+            "request pins enable_thinking=False (a 1-token budget cannot hold a chain of "
+            "thought), so this cell's 'on' path segment describes the server only.",
+            flush=True,
+        )
 
-    dirs = cell_output_dirs(args.out_dir, cell_name, args.thinking_mode)
-    mode_dir = os.path.dirname(dirs["reward"])  # base/cell/mode
+    dirs = cell_output_dirs(args.out_dir, cell_name, args.thinking_mode, style)
+    mode_dir = os.path.dirname(dirs["reward"])  # base/cell/mode[/style]
     os.makedirs(dirs["reward"], exist_ok=True)
     os.makedirs(dirs["http"], exist_ok=True)
 
-    # Lock env BEFORE importing the reward module and set this shard's endpoint once.
-    env = cell_env(model_id=args.model, mode=args.thinking_mode, out_dir=mode_dir)
+    # Lock env BEFORE importing the scorer and set this shard's endpoint once.
+    env = cell_env(model_id=args.model, mode=args.thinking_mode, out_dir=mode_dir, style=style)
     os.environ.update(env)
+    if style == "single_token":
+        # cell_env omits it, but the job inherits the submitting environment, so an
+        # inherited value would otherwise survive into run_metadata.json and describe a
+        # constraint this arm never applies.
+        os.environ.pop("PERSONA_JUDGE_JSON_SCHEMA", None)
     os.environ["OPENAI_API_BASE"] = my_endpoint
 
     # Imports that read env / need aiohttp live here so the module imports cleanly
@@ -194,7 +269,11 @@ async def async_main() -> None:
     import pandas as pd
 
     from shared.api_client import resolve_judge_api_key
-    from training.grpo.reward import score_turing_with_info
+
+    if style == "single_token":
+        from eval.single_token_judge import score_single_token_with_info as score_pair
+    else:
+        from training.grpo.reward import score_turing_with_info as score_pair
 
     df = pd.read_parquet(args.pairs)
     all_pairs = df.to_dict("records")
@@ -203,7 +282,8 @@ async def async_main() -> None:
     my_pairs = shard_indices(all_pairs, args.endpoint_index, args.num_endpoints)
 
     print(
-        f"[sweep-cell] model={args.model} mode={args.thinking_mode} cell={cell_name} "
+        f"[sweep-cell] model={args.model} mode={args.thinking_mode} style={style} "
+        f"cell={cell_name} out={mode_dir} "
         f"endpoint_index={args.endpoint_index}/{args.num_endpoints} endpoint={my_endpoint} "
         f"pairs_total={len(all_pairs)} pairs_this_shard={len(my_pairs)} "
         f"concurrency={args.concurrency_per_endpoint}",
@@ -218,6 +298,7 @@ async def async_main() -> None:
         metadata = {
             "model": args.model,
             "thinking_mode": args.thinking_mode,
+            "prompt_style": style,
             "cell_name": cell_name,
             "endpoints": endpoints,
             "num_endpoints": args.num_endpoints,
@@ -243,17 +324,24 @@ async def async_main() -> None:
 
     async def _score_one(session: aiohttp.ClientSession, pair: dict) -> None:
         async with semaphore:
+            kwargs: dict[str, Any] = {
+                "user_id": pair.get("user_id", ""),
+                "post_id": pair.get("post_id", ""),
+                "target_idx": pair.get("target_idx", ""),
+            }
+            if style == "single_token":
+                # The full arm's dump has no pair_id (the analyzer reconstructs one from
+                # user/post/target); the single-token arm carries the real one through.
+                kwargs["pair_id"] = pair.get("pair_id")
             try:
-                await score_turing_with_info(
+                await score_pair(
                     session,
                     api_key,
                     str(pair.get("generated", "") or ""),
                     str(pair.get("human", "") or ""),
                     str(pair.get("user_history", "") or ""),
                     str(pair.get("context", "") or ""),
-                    user_id=pair.get("user_id", ""),
-                    post_id=pair.get("post_id", ""),
-                    target_idx=pair.get("target_idx", ""),
+                    **kwargs,
                 )
                 counters["ok"] += 1
             except Exception as exc:  # noqa: BLE001 - one bad pair must not kill the shard
