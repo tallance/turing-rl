@@ -2,6 +2,9 @@
 
 import hashlib
 
+import pytest
+
+from scripts.build_judge_train_pairs import render_turing_prompt
 from shared.judge_prompts import (
     TURING_PROMPT,
     TURING_PROMPT_HEADER,
@@ -40,3 +43,38 @@ def test_single_token_prompt_has_the_verdict_tail_and_no_rubric():
     for leaked in ("## Evaluation Procedure", "## Criteria", "## Penalty Checks",
                    "score_gap", "immediate_target_score_a"):
         assert leaked not in TURING_SINGLE_TOKEN_PROMPT
+
+
+_FIELDS = dict(
+    user_history="[HUMAN]: earlier turn",
+    context="[OTHER]: something happened",
+    response_a="first candidate",
+    response_b="second candidate",
+)
+
+
+def test_single_token_render_shares_the_full_prompt_header():
+    full = render_turing_prompt(**_FIELDS)
+    single = render_turing_prompt(**_FIELDS, prompt_style="single_token")
+    # Everything the model reads before the verdict instruction is byte-identical.
+    head = full.split("## Evaluation Procedure")[0]
+    assert single.startswith(head)
+
+
+def test_single_token_render_drops_the_rubric_and_schema():
+    single = render_turing_prompt(**_FIELDS, prompt_style="single_token")
+    for marker in ("score_gap", "immediate_target_score_a", "## Criteria",
+                   "## Penalty Checks", "rating"):
+        assert marker not in single
+    assert single.rstrip().endswith("Your output:")
+    assert "Answer with a single letter, A or B" in single
+
+
+def test_single_token_render_keeps_the_watchlist_block():
+    single = render_turing_prompt(**_FIELDS, prompt_style="single_token")
+    assert "<|Source-Copy Watchlist|>" in single
+
+
+def test_unknown_prompt_style_is_rejected():
+    with pytest.raises(ValueError, match="prompt_style"):
+        render_turing_prompt(**_FIELDS, prompt_style="nonsense")

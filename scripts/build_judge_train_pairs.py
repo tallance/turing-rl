@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from data.judge.slice import select_slice
-from shared.judge_prompts import TURING_PROMPT
+from shared.judge_prompts import TURING_PROMPT, TURING_SINGLE_TOKEN_PROMPT
 from shared.judge_utils import (
     build_source_copy_warning,
     format_source_copy_watchlist,
@@ -148,15 +148,36 @@ def prompt_length_stats(prompts: list[str], *, budget_tokens: int) -> dict[str, 
     return stats
 
 
+_PROMPT_TEMPLATES = {
+    "full": TURING_PROMPT,
+    "single_token": TURING_SINGLE_TOKEN_PROMPT,
+}
+
+
 def render_turing_prompt(
-    *, user_history: str, context: str, response_a: str, response_b: str
+    *,
+    user_history: str,
+    context: str,
+    response_a: str,
+    response_b: str,
+    prompt_style: str = "full",
 ) -> str:
-    """Render TURING_PROMPT exactly as the reward path does at eval time.
+    """Render the judge prompt exactly as the reward path does at eval time.
 
     "Exactly" includes the control-character strip the reward path applies to the four
     content fields before formatting (reward.py::_score_pairwise_likert_with_info); without
     it a history holding a stray \\x0b would render a different prompt here than at eval.
+
+    ``prompt_style`` selects the template: "full" (default) is the rubric-and-schema
+    TURING_PROMPT every existing caller expects; "single_token" is TURING_SINGLE_TOKEN_PROMPT,
+    which shares the same header and inputs but asks only for a bare A/B verdict.
     """
+    try:
+        template = _PROMPT_TEMPLATES[prompt_style]
+    except KeyError:
+        raise ValueError(
+            f"prompt_style must be one of {sorted(_PROMPT_TEMPLATES)}, got {prompt_style!r}"
+        ) from None
     user_history = sanitize_prompt_text(user_history)
     context = sanitize_prompt_text(context)
     response_a = sanitize_prompt_text(response_a)
@@ -167,7 +188,7 @@ def render_turing_prompt(
     warning_b = build_source_copy_warning(
         response_b, user_history=user_history, thread_context=context
     )
-    return TURING_PROMPT.format(
+    return template.format(
         persona="",
         user_history=user_history,
         context=context,
