@@ -4,8 +4,14 @@ import json
 from collections import Counter
 
 import pandas as pd
+import pytest
 
-from scripts.build_judge_ce_dataset import build_ce_records, split_by_user
+from scripts.build_judge_ce_dataset import (
+    build_ce_records,
+    check_prompt_style,
+    split_by_user,
+)
+from scripts.build_judge_train_pairs import render_turing_prompt
 
 
 def _rows():
@@ -179,3 +185,143 @@ def test_records_survive_a_real_parquet_round_trip(tmp_path):
     assert len(recs) == 20
     for rec in recs:
         json.dumps(rec)
+
+
+# --- prompt-style provenance ------------------------------------------------------
+#
+# The pair builder records prompt_style in its sidecar and, until now, nothing read it.
+# Pointing --pairs at a full-schema parquet trains the discriminator on 20k-char rubric
+# prompts that are then served against ~900-char single-token prompts: nothing crashes,
+# the val curve looks sane, and the bad number reads as "the single-token protocol does
+# not work".
+
+_PROMPT_FIELDS = dict(
+    user_history="[HUMAN]: earlier turn",
+    context="[OTHER]: something happened",
+    response_a="first candidate",
+    response_b="second candidate",
+)
+
+
+def _styled_records(style):
+    """CE records whose prompts are rendered by the real template, not hand-spelled.
+
+    A hand-written fixture ending in "Your output:" would pass the text check whatever
+    the source style actually was, which is precisely the fixture weakness that let this
+    defect through.
+    """
+    prompt = render_turing_prompt(**_PROMPT_FIELDS, prompt_style=style)
+    return [{"messages": [{"role": "user", "content": prompt},
+                          {"role": "assistant", "content": "A"}],
+             "pair_id": "p1", "order": "human_a", "user_id": "u1"}]
+
+
+def _pairs_with_meta(tmp_path, meta):
+    """A --pairs path whose sidecar carries `meta` (None writes no sidecar at all)."""
+    pairs = tmp_path / "pairs.parquet"
+    pairs.write_bytes(b"")  # only the path is read; the parquet itself is loaded upstream
+    if meta is not None:
+        (tmp_path / "pairs.meta.json").write_text(json.dumps(meta))
+    return pairs
+
+
+def test_matching_prompt_style_is_accepted(tmp_path):
+    pairs = _pairs_with_meta(tmp_path, {"prompt_style": "single_token"})
+    check_prompt_style(_styled_records("single_token"), pairs, expected="single_token")
+
+
+def test_full_schema_pairs_are_rejected_when_single_token_is_expected(tmp_path):
+    pairs = _pairs_with_meta(tmp_path, {"prompt_style": "full"})
+    with pytest.raises(ValueError) as exc:
+        check_prompt_style(_styled_records("full"), pairs, expected="single_token")
+    # Naming both values is the point: the operator has to see which side is wrong.
+    assert "'full'" in str(exc.value)
+    assert "'single_token'" in str(exc.value)
+
+
+def test_expecting_full_accepts_full_pairs(tmp_path):
+    pairs = _pairs_with_meta(tmp_path, {"prompt_style": "full"})
+    check_prompt_style(_styled_records("full"), pairs, expected="full")
+
+
+def test_single_token_pairs_are_rejected_when_full_is_expected(tmp_path):
+    pairs = _pairs_with_meta(tmp_path, {"prompt_style": "single_token"})
+    with pytest.raises(ValueError, match="prompt style mismatch"):
+        check_prompt_style(_styled_records("single_token"), pairs, expected="full")
+
+
+def test_a_sidecar_predating_the_field_reads_as_full(tmp_path):
+    pairs = _pairs_with_meta(tmp_path, {"n_rows": 4})
+    with pytest.raises(ValueError, match="'full'"):
+        check_prompt_style(_styled_records("full"), pairs, expected="single_token")
+
+
+def test_missing_sidecar_still_catches_full_schema_prompts(tmp_path):
+    """Belt and braces: a .meta.json can go missing, so the prompt text must also carry
+    the evidence."""
+    pairs = _pairs_with_meta(tmp_path, None)
+    with pytest.raises(ValueError, match="does not end with the single-letter instruction"):
+        check_prompt_style(_styled_records("full"), pairs, expected="single_token")
+
+
+def test_missing_sidecar_passes_when_the_prompts_are_single_token(tmp_path, capsys):
+    pairs = _pairs_with_meta(tmp_path, None)
+    check_prompt_style(_styled_records("single_token"), pairs, expected="single_token")
+    assert "WARNING" in capsys.readouterr().out
+
+
+def test_a_lying_sidecar_does_not_excuse_full_schema_prompts(tmp_path):
+    """The two checks are independent on purpose: a hand-edited or copied sidecar that
+    claims single_token must still lose to what the prompts actually say."""
+    pairs = _pairs_with_meta(tmp_path, {"prompt_style": "single_token"})
+    with pytest.raises(ValueError, match="does not end with the single-letter instruction"):
+        check_prompt_style(_styled_records("full"), pairs, expected="single_token")
+
+
+def test_unknown_expected_style_is_rejected(tmp_path):
+    pairs = _pairs_with_meta(tmp_path, {"prompt_style": "single_token"})
+    with pytest.raises(ValueError, match="expect-prompt-style"):
+        check_prompt_style(_styled_records("single_token"), pairs, expected="nonsense")
+
+
+def _styled_parquet(tmp_path, style):
+    """A --pairs parquet plus the sidecar the pair builder would have written."""
+    prompt = render_turing_prompt(**_PROMPT_FIELDS, prompt_style=style)
+    pd.DataFrame([
+        {"prompt": [{"role": "user", "content": prompt}],
+         "reward_model": {"ground_truth": "A"},
+         "extra_info": {"pair_id": "p1", "order": "human_a", "user_id": "u1"}},
+    ]).to_parquet(tmp_path / "pairs.parquet")
+    (tmp_path / "pairs.meta.json").write_text(json.dumps({"prompt_style": style}))
+    return tmp_path / "pairs.parquet"
+
+
+def _run_cli(tmp_path, pairs, *extra):
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "scripts/build_judge_ce_dataset.py",
+         "--pairs", str(pairs), "--out", str(tmp_path / "out.jsonl"), *extra],
+        capture_output=True, text=True)
+
+
+def test_cli_defaults_to_expecting_single_token(tmp_path):
+    """The default matters more than the flag: the mistake this guards against is an
+    operator reusing a full-schema parquet without thinking about the flag at all."""
+    r = _run_cli(tmp_path, _styled_parquet(tmp_path, "full"))
+    assert r.returncode != 0
+    assert "prompt style mismatch" in r.stderr
+    assert not (tmp_path / "out.jsonl").exists()
+
+
+def test_cli_accepts_single_token_pairs(tmp_path):
+    r = _run_cli(tmp_path, _styled_parquet(tmp_path, "single_token"))
+    assert r.returncode == 0, r.stderr
+    assert (tmp_path / "out.jsonl").exists()
+
+
+def test_cli_can_be_pointed_at_full_schema_pairs_deliberately(tmp_path):
+    r = _run_cli(tmp_path, _styled_parquet(tmp_path, "full"),
+                 "--expect-prompt-style", "full")
+    assert r.returncode == 0, r.stderr

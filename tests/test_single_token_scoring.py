@@ -14,11 +14,16 @@ _ARGS = dict(
 )
 
 
-def _choice(pairs):
-    """A minimal OpenAI choice carrying one position's top_logprobs."""
-    return {"logprobs": {"content": [
-        {"top_logprobs": [{"token": t, "logprob": lp} for t, lp in pairs]}
-    ]}}
+def _choice(pairs, sampled=None):
+    """A minimal OpenAI choice carrying one position's top_logprobs.
+
+    ``sampled`` is the token the model actually emitted. Left out by default so the
+    fixtures also cover the transport that does not return it.
+    """
+    position = {"top_logprobs": [{"token": t, "logprob": lp} for t, lp in pairs]}
+    if sampled is not None:
+        position["token"] = sampled
+    return {"logprobs": {"content": [position]}}
 
 
 def _capture(monkeypatch, env, *, text_reply=None, choice_reply=None):
@@ -73,6 +78,45 @@ def test_single_token_result_carries_letter_and_p_a(monkeypatch):
     assert out["p_a"] > 0.5
     assert out["rating"] == 1          # 1 == "definitely A" on the existing scale
     assert out["parse_error"] is None
+    # ab_mass, not a top-k residual: see Verdict.off_ab_mass for why.
+    assert out["ab_mass"] > 0.01
+    assert out["off_ab_mass"] == pytest.approx(1.0 - out["ab_mass"])
+    assert "residual_mass" not in out
+
+
+def test_scorer_threads_the_sampled_token_into_the_structural_check(monkeypatch):
+    """The scorer must forward choice[...]["token"], not just the top_logprobs.
+
+    The top-k below is a clean, high-mass A. Only the sampled token reveals that the
+    model was emitting a think tag and this is not a verdict position at all.
+    """
+    from shared.single_token_verdict import HardFail
+
+    _capture(monkeypatch, {"JUDGE_PROMPT_STYLE": "single_token"},
+             choice_reply=_choice([("A", -0.1), ("B", -2.0)], sampled="<think>"))
+    with pytest.raises(HardFail, match="not an A/B verdict"):
+        metrics._turing_api_call(**_ARGS, return_details=True)
+
+
+def test_scorer_accepts_a_sampled_verdict_token(monkeypatch):
+    _capture(monkeypatch, {"JUDGE_PROMPT_STYLE": "single_token"},
+             choice_reply=_choice([("A", -0.1), ("B", -2.0)], sampled="A"))
+    out = metrics._turing_api_call(**_ARGS, return_details=True)
+    assert out["letter"] == "A"
+
+
+def test_scorer_hard_fails_below_the_mass_floor(monkeypatch):
+    """A stray " a" at 1e-9 must not be scored as a certain A."""
+    import math
+
+    from shared.single_token_verdict import HardFail
+
+    _capture(monkeypatch, {"JUDGE_PROMPT_STYLE": "single_token"},
+             choice_reply=_choice([("<think>", math.log(0.60)),
+                                   ("Answer", math.log(0.399)),
+                                   (" a", math.log(1e-9))]))
+    with pytest.raises(HardFail):
+        metrics._turing_api_call(**_ARGS, return_details=True)
 
 
 def test_single_token_maps_b_to_rating_seven(monkeypatch):

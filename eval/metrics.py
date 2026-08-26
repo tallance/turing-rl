@@ -632,14 +632,22 @@ def _turing_api_call(
         # Not retried: a hard fail is a property of the input, not a transient, and
         # retrying would hide it from the hard_fail column and bias accuracy toward
         # the shorter inputs.
-        verdict = extract_verdict(choice["logprobs"]["content"][0]["top_logprobs"])
+        position = choice["logprobs"]["content"][0]
+        verdict = extract_verdict(
+            position["top_logprobs"],
+            # The token actually sampled. If it is not itself an A/B variant the position
+            # is not a verdict position, regardless of what mass the top-k happens to
+            # carry. .get() because not every transport returns it.
+            sampled_token=position.get("token"),
+        )
         # rating maps onto the existing 1-7 scale so downstream accuracy code is
         # untouched: 7 == "definitely B", 1 == "definitely A". No tie is possible.
         parsed = {
             "rating": 7 if verdict.letter == "B" else 1,
             "letter": verdict.letter,
             "p_a": verdict.p_a,
-            "residual_mass": verdict.residual_mass,
+            "ab_mass": verdict.ab_mass,
+            "off_ab_mass": verdict.off_ab_mass,
             "parse_error": None,
         }
         if return_details:

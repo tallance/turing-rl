@@ -18,6 +18,74 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from shared.judge_prompts import TURING_SINGLE_TOKEN_PROMPT  # noqa: E402
+
+PROMPT_STYLES = ("full", "single_token")
+
+# Everything the single-token template emits after its last placeholder: the watchlist
+# closer, the "## Output Format" heading and the single-letter instruction. Derived from
+# the template rather than spelled out so it cannot drift away from what is rendered.
+SINGLE_TOKEN_PROMPT_SUFFIX = TURING_SINGLE_TOKEN_PROMPT.rsplit("}", 1)[1]
+
+
+def meta_path_for(pairs_path: str | Path) -> Path:
+    """The sidecar build_judge_train_pairs.py writes next to its parquet."""
+    return Path(pairs_path).with_suffix(".meta.json")
+
+
+def recorded_prompt_style(pairs_path: str | Path) -> str | None:
+    """prompt_style from the sibling .meta.json, or None if there is no sidecar.
+
+    A sidecar that exists but predates the prompt_style field means "full", matching the
+    backfill in merge_judge_comparison.py.
+    """
+    meta = meta_path_for(pairs_path)
+    if not meta.exists():
+        return None
+    return json.loads(meta.read_text()).get("prompt_style", "full")
+
+
+def check_prompt_style(records: list[dict], pairs_path: str | Path, *, expected: str) -> None:
+    """Refuse to build a CE dataset from pairs rendered in the wrong prompt style.
+
+    Nothing downstream catches this. A full-schema parquet yields 20k-char rubric prompts
+    that train fine and produce a sane-looking val curve, and the resulting discriminator
+    is then served against ~900-char single-token prompts. The bad number reads as "the
+    single-token protocol does not work" -- corrupting the conclusion in exactly the
+    direction the experiment is testing.
+
+    Two independent checks, because either one alone can be defeated: the sidecar records
+    the style but can go missing, and the prompt text is always present but only tells us
+    about the single-token style.
+    """
+    if expected not in PROMPT_STYLES:
+        raise ValueError(f"--expect-prompt-style must be one of {list(PROMPT_STYLES)}, "
+                         f"got {expected!r}")
+
+    recorded = recorded_prompt_style(pairs_path)
+    if recorded is not None and recorded != expected:
+        raise ValueError(
+            f"prompt style mismatch: {meta_path_for(pairs_path)} records "
+            f"prompt_style={recorded!r}, but --expect-prompt-style is {expected!r}. "
+            f"Rebuild the pairs with --prompt-style {expected}, or pass "
+            f"--expect-prompt-style {recorded} if {recorded!r} is what you meant."
+        )
+    if recorded is None:
+        print(f"WARNING: no {meta_path_for(pairs_path)}; cannot confirm prompt_style "
+              f"from provenance, falling back to the prompt-text check.")
+
+    if expected != "single_token":
+        return
+    for i, rec in enumerate(records):
+        prompt = rec["messages"][0]["content"]
+        if not prompt.endswith(SINGLE_TOKEN_PROMPT_SUFFIX):
+            raise ValueError(
+                f"--expect-prompt-style single_token, but record {i} "
+                f"(pair_id={rec.get('pair_id')!r}) does not end with the single-letter "
+                f"instruction. Expected suffix {SINGLE_TOKEN_PROMPT_SUFFIX!r}; "
+                f"prompt ends {prompt[-len(SINGLE_TOKEN_PROMPT_SUFFIX):]!r}."
+            )
+
 
 def build_ce_records(df: pd.DataFrame) -> list[dict]:
     records = []
@@ -78,9 +146,16 @@ def main() -> None:
              "-- a floor always holds out at least one user, so --val-out never writes an "
              "empty file when given.",
     )
+    ap.add_argument(
+        "--expect-prompt-style", choices=list(PROMPT_STYLES), default="single_token",
+        help="Prompt style the --pairs parquet must have been built with. Checked against "
+             "the sibling .meta.json and, for single_token, against the rendered prompt "
+             "text. Not a conversion: mismatches fail rather than re-render.",
+    )
     args = ap.parse_args()
 
     records = build_ce_records(pd.read_parquet(args.pairs))
+    check_prompt_style(records, args.pairs, expected=args.expect_prompt_style)
 
     if args.val_out:
         train, val = split_by_user(records, val_frac=args.val_frac)

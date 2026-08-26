@@ -16,9 +16,42 @@ from shared.judge_prompts import (
 # for the switch decision, so it must not move by a single character.
 TURING_PROMPT_SHA256 = "a09b4e268cca2616f2f20af4e233998cc56fb33fb05fb89c476a38001018731d"
 
+# The composed hash alone has a compensating-boundary hole: moving a line of prose from
+# the header down into the full-schema tail leaves TURING_PROMPT byte-identical, so its
+# hash still passes -- while that line silently vanishes from the single-token arm, which
+# is header + a different tail. The line most at risk is judge_prompts.py's "One candidate
+# is the real [HUMAN] response. The other candidate is AI-generated.", the sentence the
+# design names as most load-bearing for a one-token classifier. Pinning the header and the
+# single-token prompt separately closes the boundary.
+TURING_PROMPT_HEADER_SHA256 = (
+    "7eabb1ea7be1c4c80c1e6107cda05b29f3fc1402f527a43ef26169d3fd7b81e4"
+)
+TURING_SINGLE_TOKEN_PROMPT_SHA256 = (
+    "e2c790c0bc8edc907cb778581e0015ef6cdc3c5ea1570ca7fa80b79a74816823"
+)
+
 
 def test_refactor_preserves_turing_prompt_exactly():
     assert hashlib.sha256(TURING_PROMPT.encode()).hexdigest() == TURING_PROMPT_SHA256
+
+
+def test_header_text_is_pinned_independently_of_the_composed_prompt():
+    assert (hashlib.sha256(TURING_PROMPT_HEADER.encode()).hexdigest()
+            == TURING_PROMPT_HEADER_SHA256)
+
+
+def test_single_token_prompt_text_is_pinned():
+    assert (hashlib.sha256(TURING_SINGLE_TOKEN_PROMPT.encode()).hexdigest()
+            == TURING_SINGLE_TOKEN_PROMPT_SHA256)
+
+
+def test_the_load_bearing_framing_sentence_is_in_the_single_token_arm():
+    # Named explicitly rather than left to the hash so a future edit reads a sentence,
+    # not a hex mismatch.
+    sentence = ("One candidate is the real [HUMAN] response. "
+                "The other candidate is AI-generated.")
+    assert sentence in TURING_PROMPT_HEADER
+    assert sentence in TURING_SINGLE_TOKEN_PROMPT
 
 
 def test_both_templates_start_with_the_shared_header():
