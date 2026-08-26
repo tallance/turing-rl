@@ -14,6 +14,8 @@ from shared.prompt_utils import tokenize_with_prefix_boundary
 MODEL_MAP = {
     "qwen3-8b": "Qwen/Qwen3-8B",
     "qwen35-9b": "Qwen/Qwen3.5-9B",
+    "qwen35-4b-judge": "Qwen/Qwen3.5-4B",
+    "qwen35-9b-judge": "Qwen/Qwen3.5-9B",
 }
 
 LORA_TARGET_MODULES = {
