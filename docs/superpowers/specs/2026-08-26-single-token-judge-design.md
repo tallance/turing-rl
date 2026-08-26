@@ -102,8 +102,9 @@ reduced to ~260**. Against a measured p95 judge prompt of ~10k tokens
 currently scaffolding rather than the conversation being judged.
 
 Combined with the output side — up to 8,192 completion tokens reduced to 1 — that is the
-whole cost argument for the switch, and the reason a 2-point accuracy loss is treated as
-acceptable in the decision rule.
+whole cost argument for the switch, and the reason some accuracy loss may be worth
+accepting. How much is a judgement made from the reported table, not a pre-registered
+threshold (see *Reporting, and how the decision gets made*).
 
 The replaced tail, in full. Everything above it is `TURING_PROMPT_HEADER`, taken
 unmodified from the existing template:
@@ -191,31 +192,54 @@ genuine uncertainty but is a different object; it is identified by `a_rate` ≈ 
 
 ### Interval and comparison statistics
 
-The existing `se` column is unpaired `sqrt(p(1-p)/n)` at n=880, but 880 is 440 pairs ×
-2 orders and the two orders of one pair are not independent — effective n is nearer 440,
-so that SE is optimistic by roughly √2. Add a bootstrap CI **clustered on `pair_id`** as
-a new column; leave `se` untouched, since those CSVs are published artifacts.
+**Correction (2026-08-26).** An earlier draft of this section claimed the 880 rows are
+"440 pairs × 2 orders" and that the published `se` is therefore optimistic by √2. That is
+**false for this pair set**, and two committed artifacts say so:
+`results/2026-08-10-.../summary_qwen35-4b.csv` records `n_scored 880, n_unique_pairs 880`,
+and `build_judge_pairs.py` emits one row per `pair_id` scored in a single deterministically
+randomized order. Both-orders emission belongs to `build_judge_train_pairs.py` — the
+*training* set, not this one.
 
-Arm-vs-arm comparisons use a paired test (McNemar on the shared rows), which is more
-powerful than comparing marginal CIs because the paired difference cancels shared pair
-difficulty.
+Three consequences, all of which reduce what the statistics can claim:
 
-## Decision rule
+- The existing `se` column is **correct**, not optimistic. Nothing needs replacing.
+- `order_consistency` is `None` for every cell, because no `pair_id` has two rows. The
+  degeneracy check therefore rests on `a_rate_excess` alone.
+- A `pair_id`-clustered bootstrap reduces exactly to the naive bootstrap here (880
+  singleton clusters). It is retained because it is correct in general, but on this pair
+  set it measures nothing extra and must not be reported as if it did.
 
-Fixed before the run. Reference cell: `judge-9b-graded-step52`, thinking off, **0.7551**.
+## Reporting, and how the decision gets made
 
-- `judge-9b-ce-st` ≥ 0.7551 − 0.02 on the paired test → **switch protocol.**
-- Below that margin → **keep the schema**; the structured output is doing real work.
-- Any cell with `a_rate` outside [0.3, 0.7] or `order_consistency` < 0.3 is reported as
-  **degenerate** regardless of accuracy and does not count as a pass.
+**There is no automated switch rule.** An earlier draft pre-registered
+"`judge-9b-ce-st` ≥ 0.7551 − 0.02 on a paired test → switch". That has been withdrawn:
+the user reads the comparison table and the plot and decides. Two reasons this is the
+better arrangement here — McNemar tests *equality*, which is not the same question as
+"no more than 2 points worse", and a non-significant result from an underpowered
+comparison is easily misread as a pass.
 
-The 2-point non-inferiority margin follows from the cost ratio: ~1 output token against
-up to 8192, and a trained judge costing minutes of LoRA CE on one GPU instead of an
-8-GPU GRPO job.
+What the run must therefore produce is **information, not a verdict**:
 
-`judge-4b-ce-st` is measured and reported against its own reference
-(`judge-4b-graded-step52`, thinking off, 0.6869) but does not gate the decision; the 9B
-cell does, because the 9B graded judge is the protocol currently in use.
+- The merged comparison table across all arms, with the reference cell
+  (`judge-9b-graded-step52`, thinking off, **0.7551**) clearly identified.
+- Per cell: `accuracy`, `a_rate`, `expected_a_rate`, `a_rate_excess`, `hard_fail`,
+  `ab_mass` distribution, `brier`, `auc`, and the interval.
+- The accuracy plot.
+- Any cell flagged **degenerate** — `|a_rate_excess| > 0.2` — reported as such regardless
+  of its accuracy, because a position-locked judge scores 0.5 and must not be read as
+  merely uncertain. Note the threshold is 0.2, not the 0.3 an earlier draft used: the
+  maximum attainable `|a_rate_excess|` at accuracy *a* is exactly `1 − a`, so 0.3 is
+  unreachable for any cell scoring above 0.70 and the flag could never fire where it
+  matters.
+
+**Tie handling in any paired comparison that is reported:** ties in the full-schema arm
+(`rating == 4`, 79 of 880 rows in the reference cell) are **kept and counted as
+half-right**, matching the accuracy definition already used in the published CSVs. They
+are not dropped: the single-token arm structurally never ties, so those are precisely the
+rows where the two protocols differ most.
+
+`judge-4b-ce-st` is reported against its own reference (`judge-4b-graded-step52`, thinking
+off, 0.6869). The 9B cell is the one that speaks to the protocol currently in use.
 
 ## Error handling
 
