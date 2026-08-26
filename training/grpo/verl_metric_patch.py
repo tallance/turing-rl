@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import os
 import re
+from collections import defaultdict
 from typing import Any
 
 import numpy as np
@@ -143,6 +144,15 @@ _RATE_METRIC_NAMES = {
     "format_nonempty_reasoning",
     "format_no_post_human_thinking",
     "format_reasoning_schema",
+    "judge_correct_strict",
+    "judge_tie",
+    "judge_recovered",
+    "judge_pred_b",
+    "judge_human_is_b",
+    "judge_fmt_json_valid",
+    "judge_fmt_all_fields",
+    "judge_fmt_arith",
+    "judge_fmt_rating_range",
 }
 
 _LEGACY_RATE_MEAN_NAMES = {
@@ -200,17 +210,20 @@ def _extract_reward_metric_values(non_tensor_batch: dict[str, Any], key: str) ->
     return _extract_reward_extra_info_values(reward_extra_info, key)
 
 
+_DISCOVERED_KEY_PREFIXES = ("format_", "length_", "judge_")
+
+
 def _collect_reward_metric_names(non_tensor_batch: dict[str, Any]) -> set[str]:
     metric_names = set(_REWARD_KEY_ALIASES)
     for key in non_tensor_batch:
         key = str(key)
-        if key.startswith("format_") or key.startswith("length_"):
+        if key.startswith(_DISCOVERED_KEY_PREFIXES):
             metric_names.add(key)
     reward_extra_info = non_tensor_batch.get("reward_extra_info")
     if isinstance(reward_extra_info, dict):
         for key in reward_extra_info:
             key = str(key)
-            if key.startswith("format_") or key.startswith("length_"):
+            if key.startswith(_DISCOVERED_KEY_PREFIXES):
                 metric_names.add(key)
     return metric_names
 
@@ -279,6 +292,46 @@ def append_custom_reward_metrics(metrics: dict[str, Any], batch: Any) -> None:
                     continue
 
         metrics[f"reward/train/{stage_name}/score/mean"] = float(np.mean(values))
+
+    append_judge_group_metrics(metrics, batch)
+
+
+def append_judge_group_metrics(metrics: dict[str, Any], batch: Any) -> None:
+    """Group-health metrics for judge GRPO.
+
+    A group whose rollouts all earn the same reward yields zero advantage and so
+    contributes no gradient. With a near-deterministic classifier this can dominate,
+    which is the signal that DAPO-style dynamic sampling is needed. Grouping needs the
+    whole batch, so it cannot live in the per-sample reward function.
+    """
+    non_tensor_batch = getattr(batch, "non_tensor_batch", None)
+    if not isinstance(non_tensor_batch, dict):
+        return
+    uids = non_tensor_batch.get("uid")
+    if uids is None:
+        return
+    totals = _extract_reward_metric_values(non_tensor_batch, "judge_total")
+    corrects = _extract_reward_metric_values(non_tensor_batch, "judge_correct_strict")
+    if totals is None or corrects is None:
+        return
+
+    grouped_totals: dict[str, list[float]] = defaultdict(list)
+    grouped_correct: dict[str, list[float]] = defaultdict(list)
+    for uid, total, correct in zip(uids, totals, corrects):
+        grouped_totals[str(uid)].append(float(total))
+        grouped_correct[str(uid)].append(float(correct))
+
+    n_groups = len(grouped_totals)
+    if not n_groups:
+        return
+    all_equal = sum(1 for v in grouped_totals.values() if max(v) - min(v) < 1e-9)
+    all_correct = sum(1 for v in grouped_correct.values() if all(c == 1.0 for c in v))
+    all_wrong = sum(1 for v in grouped_correct.values() if all(c == 0.0 for c in v))
+
+    metrics["judge_group/n_groups"] = float(n_groups)
+    metrics["judge_group/all_equal_rate"] = all_equal / n_groups
+    metrics["judge_group/all_correct_rate"] = all_correct / n_groups
+    metrics["judge_group/all_wrong_rate"] = all_wrong / n_groups
 
 
 def maybe_emit_reward_component_log(metrics: dict[str, Any]) -> None:

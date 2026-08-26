@@ -18,6 +18,9 @@ GEN_KEY_PREFIX=${GEN_KEY_PREFIX:-9b-full5ep-step}
 PAIRS_TAG=${PAIRS_TAG:-880}
 CELL_NAME=${CELL_NAME:-judge-9b-brier}
 JOB_PREFIX=${JOB_PREFIX:-te_brier}
+# Thinking mode defines the comparison. A judge trained thinking-OFF must be scored OFF, and
+# every model in one trajectory must share the mode. judge_sweep_cell.sh writes to
+# $CELL_NAME/$THINKING_MODE, so the two families coexist rather than overwrite each other.
 THINKING_MODE=${THINKING_MODE:-on}
 CONFIRM_THINKING_OFF=${CONFIRM_THINKING_OFF:-0}
 TP=${TP:-1}
@@ -45,6 +48,9 @@ esac
   echo "FATAL: missing reused step-0 reward dir: $BASELINE_CELL_ROOT/reward" >&2
   exit 2
 }
+# The reused step-0 cell must have been scored in THIS mode. judge_sweep_cell.sh names the leaf
+# directory after the mode, so a mismatch is mechanically detectable -- and worth detecting: an
+# ON step-0 grafted onto an OFF trajectory makes the whole curve cross-mode at its baseline.
 baseline_mode=$(basename "$BASELINE_CELL_ROOT")
 [ "$baseline_mode" = "$THINKING_MODE" ] || {
   echo "FATAL: cross-mode baseline: BASELINE_CELL_ROOT is '$baseline_mode', THINKING_MODE=$THINKING_MODE" >&2

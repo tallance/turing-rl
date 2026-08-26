@@ -1,0 +1,181 @@
+# veRL GRPO config for judge-only RLVR (Qwen3.5 2B / 4B / 9B discriminators).
+#
+# Composes the shared 8B base for structure, then overrides what the judge side needs
+# differently:
+#   - reward is training/grpo/judge_reward.py: local, label-verifiable, no judge server
+#   - thinking ON, matching what generator RL actually ran against
+#   - long prompts: a rendered TURING_PROMPT is ~6k tokens against ~1k for a generator prompt
+#   - the 9B optimiser recipe (lr 1e-4, kl 1e-4, rollout T=1.0), not the 8B-era defaults
+#
+# actor_rollout_ref.model.path is set per run by scripts/slurm/judge_grpo_train.sh.
+defaults:
+  - qwen3_8b_grpo
+  - _self_
+
+data:
+  train_files: data/prism/judge/iter1/train.parquet
+  val_files: data/prism/judge/iter1/val.parquet
+  train_batch_size: 64
+  # 11264, not 14336. Measured on the iter1 val split with the Qwen3.5 tokenizer: p50 6774,
+  # p99 9594, max 10535 tokens, so 14336 was ~3800 tokens above any real prompt. That is not
+  # free headroom -- prompt and response share max_model_len, so the surplus was taken straight
+  # out of generation. Re-measure before pointing this at a new slice; 11264 clears the current
+  # corpus by ~700 tokens and nothing is truncated.
+  # Re-measure for any new slice rather than porting this number: sample maxima grow with sample
+  # size (the observed max rose 10% when the sample grew from 416 to 1,121 contexts), and
+  # `filter_overlong_prompts: true` DROPS over-budget rows silently from train AND val, biasing
+  # results toward short-history users. Check <split>.meta.json's n_over_budget before submitting.
+  max_prompt_length: 11264
+  # Set by what TRAINS on the real corpus, which is not the same as what generates well.
+  # Step-0 validation of the 9B, thinking ON, 200 held-out rows before the fused token-loss fix:
+  #
+  #   budget   unclosed   coverage   exact   trains on FULL data?
+  #    7680      0.125      0.817     0.76    yes -- unfused, 52 steps
+  #    9216      0.050      0.945     0.93    no  -- unfused log_softmax OOM
+  #   10752      0.050      0.950     0.945   no  -- unfused log_softmax OOM
+  #
+  # 9216 generates markedly better and was briefly the default on the strength of a smoke that
+  # passed. That smoke was built from the FIRST 8 pairs, whose prompts top out at 7,083 tokens
+  # against the corpus maximum of 10,049, so it never exercised the tail. On real data the worst
+  # case is 10,049 + 9,216 = 19,265 tokens through log_softmax at micro_batch 1, and all three
+  # arms OOMed. Those failures established the limit of the unfused vocabulary-sized
+  # log_softmax, not the limit of the model or the response budget.
+  #
+  # max_prompt_length is a CAP and costs nothing by itself; peak memory tracks ACTUAL sequence
+  # length. Trimming the prompt allowance therefore buys configuration room, not memory -- the
+  # mistake that produced the failed launch.
+  # 2026-08-25: the fused token-loss path removed that vocabulary-logit allocation. Job 18920
+  # completed 42 full-data 9B actor updates at 10,752 without an OOM before this default was
+  # promoted; step 42 clipped 0.39% of rollouts. The configured caps exactly fill max_model_len,
+  # while the measured 10,535-token prompt maximum leaves 729 tokens of real context slack.
+  max_response_length: 10752
+  truncation: left
+  filter_overlong_prompts: true
+  apply_chat_template_kwargs:
+    enable_thinking: true
+
+actor_rollout_ref:
+  model:
+    # MUST stay an explicit list. The base config says all-linear, which on a Qwen3.5
+    # hybrid would attach LoRA to the Gated-DeltaNet backbone (destructive; arXiv:2604.22127).
+    target_modules: [q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj]
+    exclude_modules: '.*(visual|mtp).*'
+    lora_rank: 64
+    lora_alpha: 32
+    lora_adapter_path: null
+    enable_gradient_checkpointing: true
+    # Paired with the 10,752-token response budget above. Without this path, update_actor
+    # materializes logits over the full ~152k vocabulary for every token and OOMs even at shorter
+    # response caps. The Qwen3.5 + FSDP2 offload device fix lives in verl_runtime_patch.py.
+    use_fused_kernels: true
+    lora:
+      # MANDATORY for a Qwen3.5 hybrid. This is the merged-dense rollout weight sync the one
+      # proven 9B recipe pins (scripts/slurm/rl_generator_train_9b.sh, "merged dense sync").
+      # Left at veRL's default the rollout engine may be handed base weights instead of the
+      # LoRA-merged ones: the run completes, logs plausible curves, and every rollout came
+      # from the untrained model. The key exists in the composed parent (veRL ppo_trainer).
+      merge: true
+  actor:
+    ppo_mini_batch_size: 64
+    ppo_micro_batch_size_per_gpu: 1
+    use_kl_loss: true
+    kl_loss_coef: 0.0001
+    strategy: fsdp2
+    use_dynamic_bsz: false
+    optim:
+      lr: 0.0001
+  ref:
+    strategy: fsdp2
+    # The 8B generator base leaves this at 8. Judge sequences are LONGER than the 9B
+    # generator's, and that recipe pins all three micro-batch knobs (actor, ref, rollout)
+    # to 1; pinning only the actor one leaves the two log-prob passes to OOM at 8.
+    log_prob_micro_batch_size_per_gpu: 1
+  rollout:
+    n: 4
+    log_prob_micro_batch_size_per_gpu: 1
+    temperature: 1.0
+    top_p: 1.0
+    top_k: -1
+    max_model_len: 22016
+    # NOT equal to max_model_len. This bounds the per-step chunked-prefill workspace, and a
+    # 12k-token judge prompt is processed in chunks regardless; 4096 keeps the peak small.
+    # veRL's "use 8192 or the full sequence length" advice is a throughput heuristic, not a
+    # correctness requirement.
+    max_num_batched_tokens: 4096
+    # Interpolated, never a second literal. These two keys must always agree: data.* sizes the
+    # training batch while this one is what vLLM actually receives as max_new_tokens. Holding the
+    # number twice meant `data.max_response_length=10752` alone raised the batch allowance and
+    # left generation capped at 7680 -- a smoke that answered the wrong question while looking
+    # correctly configured (job 18583, 100% unclosed_thinking).
+    response_length: ${data.max_response_length}
+    # The parent is an 8B *generator* profile; every value below is overridden because the
+    # inherited one is wrong for a judge run -- the failure mode that cost jobs 15143/13634.
+    # TP=1 matches the working 9B recipe (a 2B/4B judge has no reason to shard).
+    tensor_model_parallel_size: 1
+    # MEASURED on an A100-40GB at max_model_len 22,016 (capacity probe, job 15926). Qwen3.5 is
+    # hybrid Gated-DeltaNet: 24 recurrent layers hold a FIXED state page per sequence and only
+    # 8 attention layers cache per token, so a request costs 3 + ceil(len/528) blocks and
+    # concurrency falls far more slowly with context than on a pure-attention model:
+    #     util 0.55 -> 2.05 GiB cache ->  2.76x concurrency   (too few; vLLM would thrash)
+    #     util 0.65 -> 6.00 GiB cache ->  8.27x
+    #     util 0.70 -> 7.97 GiB cache -> 10.98x   <-- chosen
+    #     util 0.75 -> 9.94 GiB cache -> 13.71x   (rejected: eats the weight-sync margin)
+    # This is close to free in hybrid mode: free_cache_engine sleeps the rollout engine
+    # between phases, so the extra memory is KV held only while training memory is offloaded.
+    # 0.75 is left on the table deliberately -- job 11774 was a wake-up OOM at the weight-sync
+    # spike, and that margin is worth more than 3x concurrency we do not need.
+    gpu_memory_utilization: 0.70
+    # REQUIRED: judge prompts (p95 ~10k tokens) far exceed the 4096 batched-token cap.
+    enable_chunked_prefill: true
+    # The inherited 64 would admit ~6x more sequences than physically fit (worst case ~11 at
+    # this context length), so vLLM would accept them and then preempt. 16 sits above the
+    # worst case without over-admitting; typical prompts are ~7.5k, so real concurrency is
+    # higher than the worst-case figure.
+    max_num_seqs: 16
+    checkpoint_engine:
+      # Same value the proven 9B recipe pins. Key exists in the composed parent.
+      update_weights_bucket_megabytes: 3072
+    val_kwargs:
+      # 0.6 matches the judge serving default in docs/default-params.md, so in-training validation
+      # and the 880-pair eval decode the same checkpoint the same way. At 0.7 they did not: step 52
+      # of job 18919 showed 19.3% unclosed thinking here and 0% under the eval policy.
+      # Repetition penalty is deliberately NOT set here yet.
+      temperature: 0.6
+      top_p: 0.8
+      top_k: 20
+      do_sample: true
+      n: 1
+
+critic:
+  optim:
+    lr: 0.0001
+
+# Declared BOTH ways on purpose. veRL 0.9's V1 controller does not migrate the legacy
+# top-level `custom_reward_function` block (see scripts/slurm/rl_generator_train_9b.sh),
+# so a config carrying only the legacy block runs V1, never calls the reward, and scores
+# every rollout 0 with no error at all. `trainer.use_v1: false` plus the nested
+# `reward.custom_reward_function` block is what the working 9B run uses. This lives in the
+# config rather than a submit-time override string for the same reason the 9B recipe does:
+# values that can be dropped from EXTRA_OVERRIDES eventually are.
+custom_reward_function:
+  path: training/grpo/judge_reward.py
+  name: compute_score
+
+reward:
+  custom_reward_function:
+    path: training/grpo/judge_reward.py
+    name: compute_score
+
+trainer:
+  use_v1: false
+  # `console` is not decoration. veRL writes no metrics file of any kind; with wandb alone the
+  # per-step series exists only in the wandb UI, and scripts/judge_overfit_gate.py -- which the
+  # R0 gate depends on -- would have nothing on disk to read. The console backend prints every
+  # logged metric to stdout, i.e. into the Slurm .out, which the gate parses directly.
+  logger:
+    - wandb
+    - console
+  project_name: grpo-judge
+  default_local_dir: results/grpo/checkpoints_judge
+  experiment_name: qwen35-judge-grpo
+  total_epochs: 3

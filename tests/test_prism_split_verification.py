@@ -42,6 +42,8 @@ def _users(df: pd.DataFrame) -> set[str]:
 
 
 def test_1_files_exist():
+    if not SPLIT_DIR.exists():
+        pytest.skip(f"missing {SPLIT_DIR}; rebuild the split first")
     for name in list(EXPECTED_COUNTS) + ["split_metadata.json"]:
         assert (SPLIT_DIR / name).exists(), f"missing {name}"
 

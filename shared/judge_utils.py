@@ -52,6 +52,19 @@ _JUDGE_REQUEST_LIMITS: dict[int, int] = {}
 _JUDGE_REQUEST_LOGGED_LOOPS: set[int] = set()
 
 
+_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def sanitize_prompt_text(text: str) -> str:
+    """Remove control characters that break JSON serialization.
+
+    Single source of truth for the four judge-prompt content fields. Lives here rather than
+    in ``training/grpo/reward.py`` so that offline renderers (``scripts/build_judge_train_pairs.py``)
+    produce byte-identical prompts to the online reward path instead of drifting from it.
+    """
+    return _CONTROL_CHAR_RE.sub("", text)
+
+
 def _copy_tokens(text: str) -> list[tuple[str, int, int]]:
     return [
         (match.group(0).casefold(), match.start(), match.end())

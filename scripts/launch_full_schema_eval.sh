@@ -17,6 +17,12 @@ CONTINUE_SCRIPT=${CONTINUE_SCRIPT:-$REPO/scripts/slurm/continue_full_schema_eval
 GEN_KEY_PREFIX=${GEN_KEY_PREFIX:-9b-full5ep-step}
 PAIRS_TAG=${PAIRS_TAG:-880}
 JOB_PREFIX=${JOB_PREFIX:-te}
+# Thinking mode is a comparison-defining property, not a constant. Judges trained thinking-OFF
+# must be scored OFF and judges trained ON must be scored ON, and every model inside one
+# comparison must use the same mode. judge_sweep_cell.sh writes to $CELL_NAME/$THINKING_MODE,
+# so the two families land side by side instead of overwriting each other.
+THINKING_MODE=${THINKING_MODE:-on}
+case "$THINKING_MODE" in on|off) ;; *) echo "FATAL: THINKING_MODE must be on|off, got $THINKING_MODE" >&2; exit 2 ;; esac
 OFFSET=${OFFSET:-0}
 BATCH_SIZE=${BATCH_SIZE:-8}
 CHAIN_AFTER=${CHAIN_AFTER:-}
@@ -41,7 +47,7 @@ if [ -n "$JUDGE_MODES" ]; then
   }
 else
   JUDGE_MODE_VALUES=()
-  for _judge in "${JUDGE_VALUES[@]}"; do JUDGE_MODE_VALUES+=(on); done
+  for _judge in "${JUDGE_VALUES[@]}"; do JUDGE_MODE_VALUES+=("$THINKING_MODE"); done
 fi
 for mode in "${JUDGE_MODE_VALUES[@]}"; do
   case "$mode" in on|off) ;; *) echo "FATAL: judge modes must be on|off (got '$mode')" >&2; exit 2 ;; esac
@@ -73,7 +79,11 @@ export TURING_JUDGE_SCORE_CLIP_MAX=7
 export PERSONA_JUDGE_MAX_COMPLETION_TOKENS=8192
 export PERSONA_OPENAI_TIMEOUT_SECONDS=1800
 export REPO EVAL_ROOT EVAL_PARQUET SLURM_SCRIPT CONTINUE_SCRIPT GEN_KEY_PREFIX PAIRS_TAG
-export BATCH_SIZE STEPS JUDGES JUDGE_MODES REUSED_STEP0_CELLS JOB_PREFIX
+# THINKING_MODE must be exported, not just set: continue_full_schema_eval.sh re-invokes this
+# script with only OFFSET overridden and inherits everything else via --export=ALL, so an
+# unexported mode would silently revert to the default after the first batch -- splitting one
+# sweep across two thinking modes.
+export BATCH_SIZE STEPS JUDGES JUDGE_MODES REUSED_STEP0_CELLS JOB_PREFIX THINKING_MODE
 
 submit() {
   local dep="$1"; shift
