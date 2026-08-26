@@ -127,3 +127,55 @@ def test_split_by_user_never_splits_a_pair_across_sides():
     val_counts = Counter(r["pair_id"] for r in val)
     assert all(c == 2 for c in train_counts.values())
     assert all(c == 2 for c in val_counts.values())
+
+
+def test_split_by_user_raises_on_single_user():
+    """A small --limit smoke run can plausibly hit exactly one user. Silently writing an
+    empty train (or val) file is worse than a loud failure: it looks like a training job
+    that ran and did nothing, rather than a config mistake caught at data-build time."""
+    records = build_ce_records(_rows())  # both rows are user "u1"
+    try:
+        split_by_user(records, val_frac=0.1)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("expected ValueError when only one user is present")
+
+
+def test_split_by_user_rejects_val_frac_out_of_range():
+    records = build_ce_records(_multi_user_rows())
+    for bad in (-0.1, 1.0, 1.5):
+        try:
+            split_by_user(records, val_frac=bad)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"expected ValueError for val_frac={bad!r}")
+
+
+def test_split_by_user_is_deterministic():
+    """A later task uses the val score to decide when training has converged; that is only
+    meaningful if repeated data-build invocations hold out the same users every time."""
+    records = build_ce_records(_multi_user_rows())
+    train1, val1 = split_by_user(records, val_frac=0.3)
+    train2, val2 = split_by_user(records, val_frac=0.3)
+    assert [r["pair_id"] for r in train1] == [r["pair_id"] for r in train2]
+    assert [r["pair_id"] for r in val1] == [r["pair_id"] for r in val2]
+
+
+def test_records_survive_a_real_parquet_round_trip(tmp_path):
+    """The in-memory fixtures above can never expose a numpy leak: an in-memory DataFrame
+    keeps "prompt" as a plain Python list, so json.dumps would succeed on it even if the
+    whole column leaked into a record by mistake. Verified by hand: writing the fixture
+    through pd.DataFrame.to_parquet and reading it back makes "prompt" decode as a
+    numpy.ndarray (pyarrow's real behavior for a nested list-of-struct column), and
+    json.dumps on an ndarray raises -- so only a write-then-read of a real parquet file
+    exercises the decode path this dataset is actually built from."""
+    parquet_path = tmp_path / "pairs.parquet"
+    _multi_user_rows().to_parquet(parquet_path)
+    df = pd.read_parquet(parquet_path)
+
+    recs = build_ce_records(df)
+    assert len(recs) == 20
+    for rec in recs:
+        json.dumps(rec)
