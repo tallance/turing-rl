@@ -22,10 +22,11 @@ class HardFail(Exception):
 class Verdict:
     letter: str          # "A" or "B"
     p_a: float           # P(A) renormalized over A and B only
-    residual_mass: float # probability that landed on neither, before renormalization
+    residual_mass: float # junk mass on tokens other than A/B in the supplied top_logprobs
 
 
-# SentencePiece renders a leading space as U+2581; BPE tokenizers use a literal space.
+# SentencePiece renders a leading space as U+2581 (▁); BPE tokenizers (e.g. GPT-2, Qwen)
+# use Ġ as the leading-space marker; both appear in the eval matrix (Gemma and Qwen).
 _STRIP = " \t▁Ġ"
 
 

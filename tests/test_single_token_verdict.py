@@ -23,10 +23,26 @@ def test_picks_b_when_b_is_more_probable():
     assert v.p_a < 0.5
 
 
-def test_leading_space_and_case_variants_count():
-    # Qwen and Gemma differ here; both must resolve to the same two classes.
-    v = extract_verdict(_payload([(" A", -0.1), ("b", -2.0), ("▁B", -3.0)]))
+def test_sentencepiece_leading_space_is_stripped():
+    # ▁B must carry the decision. If ▁ were not stripped, B's mass would be 0 and the
+    # only classified token would be A, so the assertion flips.
+    v = extract_verdict(_payload([("A", -3.0), ("▁B", -0.1)]))
+    assert v.letter == "B"
+    assert v.p_a < 0.5
+
+
+def test_bpe_leading_space_is_stripped():
+    # Ġ is the GPT-2/BPE marker Qwen returns; ▁ is SentencePiece (Gemma). Both are in
+    # the eval matrix, so both need CI coverage.
+    v = extract_verdict(_payload([("ĠA", -0.1), ("B", -3.0)]))
     assert v.letter == "A"
+    assert v.p_a > 0.5
+
+
+def test_lowercase_variants_count():
+    v = extract_verdict(_payload([("a", -0.1), ("B", -3.0)]))
+    assert v.letter == "A"
+    assert v.p_a > 0.5
 
 
 def test_variants_of_one_letter_are_summed_not_maxed():
