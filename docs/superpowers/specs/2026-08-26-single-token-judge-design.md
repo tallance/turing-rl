@@ -62,9 +62,40 @@ Five changes. No new subsystem.
 to the **generator's** prompt, not the judge's. Do not overload them; `JUDGE_PROMPT_STYLE`
 is a separate name on purpose.
 
-### The bare prompt
+### Prompt side by side
 
-Exact template, so implementation is not guessing at "bare":
+The current judge prompt is `shared/judge_prompts.py:399-649` — 251 lines and 20,525
+characters of *template scaffolding*, measured before any input is substituted into a
+placeholder. It is not reproduced here; that file is the source of truth and a copy
+would drift. What follows is its section map against the proposed prompt.
+
+| Section (current) | Lines | Chars | In bare prompt? |
+|---|---:|---:|---|
+| `## Task` | 6 | 220 | **Kept**, rewritten to 2 lines |
+| `## Inputs` (enumerates what follows) | 10 | 280 | Dropped — the delimiters are self-describing |
+| `## User History` | 6 | 70 | **Kept verbatim** |
+| `## Context` | 6 | 50 | **Kept verbatim** |
+| `## Candidate Responses` (A and B blocks) | 14 | 151 | **Kept verbatim** |
+| `## Advisory Watchlist` (source-copy) | 9 | 131 | Dropped — see the watchlist decision above |
+| `## Evaluation Procedure` | 6 | 214 | Dropped |
+| `## Criteria` (immediate target, human goal, communication style) | 64 | 5,863 | Dropped |
+| `## Penalty Checks` (source copy, wrong target/role, adversarial reframing, assistant-like) | 46 | 5,167 | Dropped |
+| `## Scoring and Rating` (score-gap arithmetic, 1-7 mapping) | 29 | 1,224 | Dropped |
+| `## Output Format` (the 37-field JSON) | 43 | 6,652 | Dropped |
+| `## Format Rules` | 12 | 492 | Dropped, replaced by one instruction line |
+| **Total** | **251** | **20,525** | **~600 chars retained** |
+
+At the repository's own `CHARS_PER_TOKEN_ESTIMATE = 3.9`
+(`scripts/build_judge_train_pairs.py`), that is roughly **5,260 template tokens per call
+reduced to ~155**. Against a measured p95 judge prompt of ~10k tokens
+(`training/grpo/configs/qwen35_judge_grpo.yaml`), about half of every judge prompt is
+currently scaffolding rather than the conversation being judged.
+
+Combined with the output side — up to 8,192 completion tokens reduced to 1 — that is the
+whole cost argument for the switch, and the reason a 2-point accuracy loss is treated as
+acceptable in the decision rule.
+
+The proposed prompt in full, so implementation is not guessing at "bare":
 
 ```
 One of the two candidate responses below was written by the real [HUMAN] user.
