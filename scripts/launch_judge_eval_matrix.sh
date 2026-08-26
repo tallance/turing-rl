@@ -48,6 +48,19 @@ case "$JUDGE_PROMPT_STYLE" in
     ;;
   *) echo "FATAL: JUDGE_PROMPT_STYLE must be full|single_token, got '$JUDGE_PROMPT_STYLE'" >&2; exit 2 ;;
 esac
+# The single-token protocol pins enable_thinking=False on every request (eval/single_token_judge.py),
+# so THINKING_MODE only decides how the cell is *labelled*: the mode directory, the provenance
+# thinking_mode field and the submission record would all read "on" for a run that executed
+# thinking-off. Reject rather than silently rewrite THINKING_MODE -- an altered submission is
+# exactly as hard to notice as the mislabel it fixes, and the thinking-off arm already demands an
+# explicit opt-in. Checked after both variables are validated, so the values quoted here are real.
+if [ "$JUDGE_PROMPT_STYLE" = "single_token" ] && [ "$THINKING_MODE" != "off" ]; then
+  echo "FATAL: JUDGE_PROMPT_STYLE=$JUDGE_PROMPT_STYLE requires THINKING_MODE=off, got THINKING_MODE=$THINKING_MODE" >&2
+  echo "       The single-token judge always serves with thinking disabled, so a thinking-on run" >&2
+  echo "       would attribute every artifact to the thinking-on arm. Re-submit with" >&2
+  echo "       THINKING_MODE=off CONFIRM_THINKING_OFF=1 and an EVAL_ROOT naming both." >&2
+  exit 2
+fi
 export JUDGE_PROMPT_STYLE
 
 case "$EVAL_ROOT" in /*) ;; *) echo "FATAL: EVAL_ROOT must be absolute: $EVAL_ROOT" >&2; exit 2 ;; esac

@@ -69,6 +69,15 @@ def test_full_keeps_the_historical_style_less_path(tmp_path: Path) -> None:
     )
 
 
+def _thinking_mode(style: str) -> str:
+    """The only thinking mode the launcher will accept for ``style``.
+
+    single_token serves with thinking pinned off, so the launcher refuses to submit it under
+    the default thinking-on arm; a launcher-level test must use the mode the style can run in.
+    """
+    return "off" if style == "single_token" else "on"
+
+
 def _launcher_env(tmp_path: Path, style: str) -> dict[str, str]:
     pairs = tmp_path / "pairs.parquet"
     pairs.write_text("pairs\n")
@@ -83,8 +92,10 @@ def _launcher_env(tmp_path: Path, style: str) -> dict[str, str]:
         model.mkdir()
         (model / "config.json").write_text("{}\n")
         models[key] = str(model)
-    root = tmp_path / ("single-token-eval" if style == "single_token" else "thinking-on-eval")
-    return {
+    root = tmp_path / (
+        "single-token-thinking-off-eval" if style == "single_token" else "thinking-on-eval"
+    )
+    env = {
         **os.environ,
         **models,
         "DRY": "1",
@@ -94,7 +105,11 @@ def _launcher_env(tmp_path: Path, style: str) -> dict[str, str]:
         "EVAL_ROOT": str(root),
         "PAIRS": str(pairs),
         "JUDGE_PROMPT_STYLE": style,
+        "THINKING_MODE": _thinking_mode(style),
     }
+    if env["THINKING_MODE"] == "off":
+        env["CONFIRM_THINKING_OFF"] = "1"
+    return env
 
 
 @pytest.mark.parametrize("style", ["full", "single_token"])
@@ -105,7 +120,7 @@ def test_the_guard_inspects_the_directory_the_cell_actually_writes(
     real launcher decide. If the two ever drift apart the launcher happily proceeds."""
     env = _launcher_env(tmp_path, style)
     sweep_root = os.path.join(env["EVAL_ROOT"], "raw", "sweep")
-    mode_dir = Path(_mode_dir(sweep_root, "qwen35-4b", "on", style))
+    mode_dir = Path(_mode_dir(sweep_root, "qwen35-4b", _thinking_mode(style), style))
     (mode_dir / "reward").mkdir(parents=True)
     (mode_dir / "reward" / "stale.jsonl").write_text("{}\n")
 
