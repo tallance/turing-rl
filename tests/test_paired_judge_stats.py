@@ -16,8 +16,15 @@ def test_mcnemar_against_a_hand_computed_table():
 
 
 def test_mcnemar_is_symmetric_in_its_verdict():
-    a, b = [1, 0, 1, 1], [0, 1, 1, 1]
-    assert mcnemar(a, b)["p_value"] == pytest.approx(mcnemar(b, a)["p_value"])
+    # Asymmetric on purpose: b01=2, b10=3 forward (and swapped, 3, 2), so a formula that
+    # is not genuinely symmetric in (b01, b10) has something to get wrong here. A
+    # balanced fixture (b01 == b10) can't expose that class of bug.
+    a, b = [1, 1, 0, 0, 0, 1], [0, 0, 1, 1, 1, 1]
+    fwd, swap = mcnemar(a, b), mcnemar(b, a)
+    assert fwd["b01"] == 2 and fwd["b10"] == 3
+    assert fwd["b01"] != fwd["b10"]  # guards against a future edit silently rebalancing this
+    assert fwd["b01"] == swap["b10"] and fwd["b10"] == swap["b01"]
+    assert fwd["p_value"] == pytest.approx(swap["p_value"])
 
 
 def test_no_discordant_pairs_is_not_significant():
