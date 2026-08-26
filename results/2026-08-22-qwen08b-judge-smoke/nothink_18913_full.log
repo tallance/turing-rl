@@ -1,0 +1,252 @@
+============================================
+Qwen/Qwen3.5-0.8B training-judge smoke  job=18913
+date=Sat Aug 22 04:40:05 AM UTC 2026 host=a100-042-140  out=/home/lancewicki/projects/turing-rl/results/runs/judge-smoke-qwen08b-nothink/work/job-18913-25f4f3d226d6/results/judge-smoke/Qwen-Qwen3.5-0.8B/18913
+gate2 prompts: 200 @ concurrency 32   gate3 reference: step60
+============================================
+>> waiting for judge endpoint (up to 40 min warmup)...
+>> endpoint: http://10.137.96.12:8413/v1
+=== GATE 1: server identity ===
+-- /v1/models --
+{
+    "object": "list",
+    "data": [
+        {
+            "id": "Qwen/Qwen3.5-0.8B",
+            "object": "model",
+            "created": 1787373727,
+            "owned_by": "vllm",
+            "root": "Qwen/Qwen3.5-0.8B",
+            "parent": null,
+            "max_model_len": 32768,
+            "permission": [
+                {
+                    "id": "modelperm-8eb1e3c440ccf4a6",
+                    "object": "model_permission",
+                    "created": 1787373727,
+                    "allow_create_engine": false,
+                    "allow_sampling": true,
+                    "allow_logprobs": true,
+                    "allow_search_indices": false,
+-- advertised id matches the canonical name? --
+PASS: /v1/models advertises Qwen/Qwen3.5-0.8B
+-- DP engines that reported ready --
+
+=== GATE 2: judge validity under the training reward config ===
+[smoke] mode=training response_format=json_object openrouter_extras=True prompts=200 concurrency=32 repeat=1
+[smoke] prompts drawn from dumps judged by: ['Qwen/Qwen3.5-9B']
+[smoke] pass 0: {
+  "tag": "training-pass0",
+  "n": 200,
+  "concurrency": 32,
+  "clean": 168,
+  "recovered": 0,
+  "failed": 0,
+  "error": 32,
+  "usable_rate": 0.84,
+  "hard_fail_rate": 0.16,
+  "finish_length_rate": 0.16,
+  "finish_reasons": {
+    "stop": 168,
+    "length": 32
+  },
+  "wall_s": 82.5,
+  "req_per_s": 2.424,
+  "p50_s": 31.98,
+  "p95_s": 70.66,
+  "rating_mean": 4.2574,
+  "rating_hist": {
+    "1": 11,
+    "2": 6,
+    "3": 33,
+    "4": 18,
+    "5": 41,
+    "6": 9,
+    "7": 18
+  },
+  "vs_reference": {
+    "comparison": "CROSS-JUDGE (not a gate)",
+    "n_compared": 136,
+    "ref_mean": 3.6838,
+    "new_mean": 4.2574,
+    "mean_delta": 0.5735,
+    "se_of_delta": 0.1888,
+    "exact_agreement": 0.1985,
+    "within_1": 0.4485,
+    "mean_abs_diff": 1.8235
+  }
+}
+[smoke] wrote /home/lancewicki/projects/turing-rl/results/runs/judge-smoke-qwen08b-nothink/work/job-18913-25f4f3d226d6/results/judge-smoke/Qwen-Qwen3.5-0.8B/18913/gate2_training_calls.jsonl and /home/lancewicki/projects/turing-rl/results/runs/judge-smoke-qwen08b-nothink/work/job-18913-25f4f3d226d6/results/judge-smoke/Qwen-Qwen3.5-0.8B/18913/gate2_training_summary.json
+[baseline] qwen on the same val prompts: {
+  "judge": "qwen3.5-9b (recorded in job 15371)",
+  "n_unique_val_prompts": 352,
+  "scored_rate": 1.0,
+  "hard_fail_rate": 0.0,
+  "finish_length_rate": 0.0,
+  "finish_reasons": {
+    "stop": 345,
+    "null": 7
+  }
+}
+=== GATE 3: schema-mode parse rate; vs the eval's 8-replica path when same-model ===
+[smoke] mode=eval response_format=json_schema openrouter_extras=False prompts=440 concurrency=32 repeat=2
+[smoke] prompts drawn from dumps judged by: ['google/gemma-4-12B-it']
+[smoke] pass 0: {
+  "tag": "eval-pass0",
+  "n": 440,
+  "concurrency": 32,
+  "clean": 390,
+  "recovered": 0,
+  "failed": 0,
+  "error": 50,
+  "usable_rate": 0.8864,
+  "hard_fail_rate": 0.1136,
+  "finish_length_rate": 0.1136,
+  "finish_reasons": {
+    "stop": 390,
+    "length": 50
+  },
+  "wall_s": 122.0,
+  "req_per_s": 3.608,
+  "p50_s": 50.66,
+  "p95_s": 98.08,
+  "rating_mean": 4.1872,
+  "rating_hist": {
+    "1": 30,
+    "2": 17,
+    "3": 94,
+    "4": 85,
+    "5": 89,
+    "6": 23,
+    "7": 52
+  },
+  "vs_reference": {
+    "comparison": "same-judge serving paths",
+    "n_compared": 390,
+    "ref_mean": 3.6872,
+    "new_mean": 4.1872,
+    "mean_delta": 0.5,
+    "se_of_delta": 0.1011,
+    "exact_agreement": 0.2026,
+    "within_1": 0.5179,
+    "mean_abs_diff": 1.6179
+  }
+}
+[smoke] pass 1: {
+  "tag": "eval-pass1",
+  "n": 440,
+  "concurrency": 32,
+  "clean": 376,
+  "recovered": 0,
+  "failed": 0,
+  "error": 64,
+  "usable_rate": 0.8545,
+  "hard_fail_rate": 0.1455,
+  "finish_length_rate": 0.1455,
+  "finish_reasons": {
+    "stop": 376,
+    "length": 64
+  },
+  "wall_s": 126.2,
+  "req_per_s": 3.488,
+  "p50_s": 53.03,
+  "p95_s": 102.45,
+  "rating_mean": 4.3617,
+  "rating_hist": {
+    "1": 30,
+    "2": 14,
+    "3": 71,
+    "4": 77,
+    "5": 101,
+    "6": 25,
+    "7": 58
+  },
+  "vs_reference": {
+    "comparison": "same-judge serving paths",
+    "n_compared": 376,
+    "ref_mean": 3.6809,
+    "new_mean": 4.3617,
+    "mean_delta": 0.6809,
+    "se_of_delta": 0.1013,
+    "exact_agreement": 0.1702,
+    "within_1": 0.4814,
+    "mean_abs_diff": 1.6809
+  }
+}
+[smoke] self-noise: {
+  "n_keys": 338,
+  "self_exact_agreement": 0.1805,
+  "self_within_1": 0.4527,
+  "self_mean_abs_diff": 1.858,
+  "pass_mean_spread": 0.1745
+}
+[smoke] wrote /home/lancewicki/projects/turing-rl/results/runs/judge-smoke-qwen08b-nothink/work/job-18913-25f4f3d226d6/results/judge-smoke/Qwen-Qwen3.5-0.8B/18913/gate3_eval_calls.jsonl and /home/lancewicki/projects/turing-rl/results/runs/judge-smoke-qwen08b-nothink/work/job-18913-25f4f3d226d6/results/judge-smoke/Qwen-Qwen3.5-0.8B/18913/gate3_eval_summary.json
+=== GATE 4: concurrency sweep and engine fan-out ===
+  conc=8   "usable_rate": 0.8906,
+  conc=8   "hard_fail_rate": 0.1094,
+  conc=8   "req_per_s": 1.105,
+  conc=8   "p50_s": 22.14,
+  conc=8   "p95_s": 38.41,
+  conc=16   "usable_rate": 0.875,
+  conc=16   "hard_fail_rate": 0.125,
+  conc=16   "req_per_s": 1.646,
+  conc=16   "p50_s": 9.27,
+  conc=16   "p95_s": 33.64,
+  conc=32   "usable_rate": 0.875,
+  conc=32   "hard_fail_rate": 0.125,
+  conc=32   "req_per_s": 1.937,
+  conc=32   "p50_s": 7.2,
+  conc=32   "p95_s": 29.19,
+  conc=64   "usable_rate": 0.9375,
+  conc=64   "hard_fail_rate": 0.0625,
+  conc=64   "req_per_s": 2.363,
+  conc=64   "p50_s": 4.89,
+  conc=64   "p95_s": 26.82,
+=== GATE 4: per-engine request spread over the whole session ===
+-- lines logged per engine (proxy for how much work each one saw) --
+     53 Engine 000
+     51 Engine 001
+     51 Engine 002
+     51 Engine 003
+     51 Engine 004
+     52 Engine 005
+     51 Engine 006
+     49 Engine 007
+
+-- last observed Running/Waiting per engine --
+  engine 000  Running: 1 reqs, Waiting: 0 reqs
+  engine 001  Running: 0 reqs, Waiting: 0 reqs
+  engine 002  Running: 1 reqs, Waiting: 0 reqs
+  engine 003  Running: 0 reqs, Waiting: 0 reqs
+  engine 004  Running: 0 reqs, Waiting: 0 reqs
+  engine 005  Running: 1 reqs, Waiting: 0 reqs
+  engine 006  Running: 1 reqs, Waiting: 0 reqs
+  engine 007  Running: 0 reqs, Waiting: 0 reqs
+
+-- server session length --
+  serve log lines: 2097
+============================================
+smoke complete. artifacts in /home/lancewicki/projects/turing-rl/results/runs/judge-smoke-qwen08b-nothink/work/job-18913-25f4f3d226d6/results/judge-smoke/Qwen-Qwen3.5-0.8B/18913
+total 787
+drwxrwxr-x. 2 lancewicki lancewicki     22 Aug 22 04:51 .
+drwxrwxr-x. 4 lancewicki lancewicki      4 Aug 22 04:40 ..
+-rw-rw-r--. 1 lancewicki lancewicki    855 Aug 22 04:42 gate1_identity.txt
+-rw-rw-r--. 1 lancewicki lancewicki    216 Aug 22 04:43 gate2_qwen_baseline.json
+-rw-rw-r--. 1 lancewicki lancewicki  31597 Aug 22 04:43 gate2_training_calls.jsonl
+-rw-rw-r--. 1 lancewicki lancewicki   1576 Aug 22 04:43 gate2_training.log
+-rw-rw-r--. 1 lancewicki lancewicki   1078 Aug 22 04:43 gate2_training_summary.json
+-rw-rw-r--. 1 lancewicki lancewicki 136105 Aug 22 04:47 gate3_eval_calls.jsonl
+-rw-rw-r--. 1 lancewicki lancewicki   2258 Aug 22 04:47 gate3_eval.log
+-rw-rw-r--. 1 lancewicki lancewicki   2177 Aug 22 04:47 gate3_eval_summary.json
+-rw-rw-r--. 1 lancewicki lancewicki   9923 Aug 22 04:49 gate4_conc16_calls.jsonl
+-rw-rw-r--. 1 lancewicki lancewicki   1072 Aug 22 04:49 gate4_conc16_summary.json
+-rw-rw-r--. 1 lancewicki lancewicki   9929 Aug 22 04:50 gate4_conc32_calls.jsonl
+-rw-rw-r--. 1 lancewicki lancewicki   1067 Aug 22 04:50 gate4_conc32_summary.json
+-rw-rw-r--. 1 lancewicki lancewicki   9686 Aug 22 04:51 gate4_conc64_calls.jsonl
+-rw-rw-r--. 1 lancewicki lancewicki   1074 Aug 22 04:51 gate4_conc64_summary.json
+-rw-rw-r--. 1 lancewicki lancewicki   9894 Aug 22 04:49 gate4_conc8_calls.jsonl
+-rw-rw-r--. 1 lancewicki lancewicki   1072 Aug 22 04:49 gate4_conc8_summary.json
+-rw-rw-r--. 1 lancewicki lancewicki    631 Aug 22 04:51 gate4_concurrency.log
+-rw-rw-r--. 1 lancewicki lancewicki    763 Aug 22 04:51 gate4_fanout.txt
+-rw-rw-r--. 1 lancewicki lancewicki     28 Aug 22 04:42 judge_endpoint.txt
+-rw-rw-r--. 1 lancewicki lancewicki 310636 Aug 22 04:51 judge_server.log
+============================================

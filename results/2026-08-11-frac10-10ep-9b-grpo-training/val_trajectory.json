@@ -1,0 +1,161 @@
+{
+  "metric": "val-core/prism_alignment_user_sim/reward/mean@1",
+  "n_points": 22,
+  "note": "step 60 appears TWICE: job 15371 ended there and job 18571 re-validated the SAME reloaded weights before resuming. The 0.0247 gap between them is an empirical measurement-noise floor for this metric.",
+  "points": [
+    {
+      "step": 0,
+      "epoch": 0,
+      "val_reward_mean": 0.44647938507908047,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "wandb u5qaz45l"
+    },
+    {
+      "step": 6,
+      "epoch": 1,
+      "val_reward_mean": 0.4529921155560508,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "wandb u5qaz45l"
+    },
+    {
+      "step": 12,
+      "epoch": 2,
+      "val_reward_mean": 0.49656334084284026,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "wandb u5qaz45l"
+    },
+    {
+      "step": 18,
+      "epoch": 3,
+      "val_reward_mean": 0.5194544911553914,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "wandb u5qaz45l"
+    },
+    {
+      "step": 24,
+      "epoch": 4,
+      "val_reward_mean": 0.5567897286488336,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "wandb u5qaz45l"
+    },
+    {
+      "step": 30,
+      "epoch": 5,
+      "val_reward_mean": 0.5862046215281059,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "wandb u5qaz45l"
+    },
+    {
+      "step": 36,
+      "epoch": 6,
+      "val_reward_mean": 0.5997618533755568,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "wandb u5qaz45l"
+    },
+    {
+      "step": 42,
+      "epoch": 7,
+      "val_reward_mean": 0.5957764495820315,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "wandb u5qaz45l"
+    },
+    {
+      "step": 48,
+      "epoch": 8,
+      "val_reward_mean": 0.6082594981522892,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "wandb u5qaz45l"
+    },
+    {
+      "step": 54,
+      "epoch": 9,
+      "val_reward_mean": 0.607027904712595,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "wandb u5qaz45l"
+    },
+    {
+      "step": 60,
+      "epoch": 10,
+      "val_reward_mean": 0.5994352643928406,
+      "segment": "job 15371 (epochs 1-10)",
+      "source": "training log (Final validation metrics); wandb lost this point"
+    },
+    {
+      "step": 60,
+      "epoch": 10,
+      "val_reward_mean": 0.5747068401807073,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "wandb clzo0hpw -- val_before_train: SAME weights as the row above"
+    },
+    {
+      "step": 66,
+      "epoch": 11,
+      "val_reward_mean": 0.5890037255224094,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "wandb clzo0hpw"
+    },
+    {
+      "step": 72,
+      "epoch": 12,
+      "val_reward_mean": 0.5874566240765323,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "wandb clzo0hpw"
+    },
+    {
+      "step": 78,
+      "epoch": 13,
+      "val_reward_mean": 0.6015889574720693,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "wandb clzo0hpw"
+    },
+    {
+      "step": 84,
+      "epoch": 14,
+      "val_reward_mean": 0.6062749855230901,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "wandb clzo0hpw"
+    },
+    {
+      "step": 90,
+      "epoch": 15,
+      "val_reward_mean": 0.5830780987373807,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "wandb clzo0hpw"
+    },
+    {
+      "step": 96,
+      "epoch": 16,
+      "val_reward_mean": 0.6085429867327382,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "wandb clzo0hpw"
+    },
+    {
+      "step": 102,
+      "epoch": 17,
+      "val_reward_mean": 0.6042686117474328,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "wandb clzo0hpw"
+    },
+    {
+      "step": 108,
+      "epoch": 18,
+      "val_reward_mean": 0.6054088771766559,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "wandb clzo0hpw"
+    },
+    {
+      "step": 114,
+      "epoch": 19,
+      "val_reward_mean": 0.6231384219771082,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "wandb clzo0hpw"
+    },
+    {
+      "step": 120,
+      "epoch": 20,
+      "val_reward_mean": 0.6025790565181524,
+      "segment": "job 18571 (epochs 11-20)",
+      "source": "training log (Final validation metrics); wandb lost this point"
+    }
+  ]
+}

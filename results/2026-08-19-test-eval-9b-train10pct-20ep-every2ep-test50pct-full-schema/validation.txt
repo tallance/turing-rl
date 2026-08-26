@@ -1,0 +1,4 @@
+Base source: PASS, 55/55 cells with exactly 440 unique pair keys.
+Extension source: PASS, 25/25 cells with exactly 440 unique pair keys.
+Combined summaries: PASS, 5 judges x 16 checkpoints, 440 scored pairs per row.
+Retained judge jobs: PASS, 80/80 COMPLETED with exit code 0:0.

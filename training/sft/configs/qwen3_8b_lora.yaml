@@ -1,8 +1,17 @@
 # Qwen3-8B LoRA SFT config
-lora_r: 16
-lora_alpha: 32
+# LoRA hyperparameters set to paper Table 5 (corrected from upstream defaults
+# r=16/alpha=32/use_qlora=true, which diverged from the paper). bfloat16, no
+# 4-bit quantization. See spec Step 4.3 / our_patches.md.
+lora_r: 64
+lora_alpha: 128
 lora_dropout: 0.05
-use_qlora: true
+use_qlora: false
+
+# Supervise the trailing <|im_end|> so the model learns to STOP its turn (the end-of-turn
+# token). Without it the SFT completion mask ends before <|im_end|>, so the model is never
+# trained to terminate — the shared masking bug that also affected the 9B. Not a Table-5
+# hyperparameter; a masking correctness fix.
+supervise_stop_token: true
 
 num_epochs: 3
 batch_size: 1
@@ -15,3 +24,6 @@ weight_decay: 0.01
 gradient_checkpointing: true
 logging_steps: 10
 report_to: none
+# One checkpoint per epoch, ALL retained (save_kwargs_from_config drops save_total_limit
+# when strategy=epoch). Yields checkpoint-26/52/78 = epochs 1/2/3 for the trajectory study.
+save_strategy: epoch

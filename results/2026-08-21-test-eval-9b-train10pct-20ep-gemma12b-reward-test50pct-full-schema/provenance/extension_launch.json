@@ -1,0 +1,30 @@
+{
+  "code_root": "/home/lancewicki/projects/turing-rl-sources/924345eec142e759b25c4ace23f4d3b44aed6157",
+  "debug_label": null,
+  "dependency_profile": "eval",
+  "environment_keys": [
+    "EVAL_PARQUET",
+    "EVAL_ROOT",
+    "EVAL_ROWS",
+    "GEN_BATCH_SIZE",
+    "GEN_KEY_PREFIX",
+    "JOB_PREFIX",
+    "JUDGES",
+    "JUDGE_BATCH_SIZE",
+    "MERGE_BATCH_SIZE",
+    "MERGE_STEPS",
+    "PAIRS_TAG",
+    "PHASE",
+    "RUN_TAG",
+    "STEPS"
+  ],
+  "format_version": 1,
+  "launched_at_utc": "2026-08-21T15:55:55.411196+00:00",
+  "launcher": "scripts/launch_frac10_test50_eval.sh",
+  "launcher_args": [],
+  "main_sha": "924345eec142e759b25c4ace23f4d3b44aed6157",
+  "run_class": "retained",
+  "run_root": "/home/lancewicki/projects/turing-rl/results/2026-08-20-test-eval-9b-train10pct-through12ep-gemma12b-reward-test50pct-full-schema/resume/2026-08-21-through-step108",
+  "source_sha": "924345eec142e759b25c4ace23f4d3b44aed6157",
+  "state_root": "/home/lancewicki/projects/turing-rl"
+}

@@ -1,0 +1,11 @@
+{
+  "judge": "qwen3.5-9b (recorded in job 15371)",
+  "n_unique_val_prompts": 352,
+  "scored_rate": 1.0,
+  "hard_fail_rate": 0.0,
+  "finish_length_rate": 0.0,
+  "finish_reasons": {
+    "stop": 345,
+    "null": 7
+  }
+}

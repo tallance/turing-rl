@@ -1,0 +1,2 @@
+DEPLOYED_SHA (current): c76ce84e2e4969fa0d58e23cb52969bc72a17f32
+job 18571 source sha:   bcba3b60120b (from work dir name)

@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import time
 import urllib.error
 import urllib.request
+from contextvars import ContextVar
 from typing import Any
 
 try:  # pragma: no cover - exercised in runtime envs
@@ -18,6 +20,19 @@ except ImportError:  # pragma: no cover
 from shared.load_env import get_openai_api_base, get_openai_api_key
 
 _OPENAI_MAX_RETRIES_CAP = 3
+
+# Side-channel for per-call judge telemetry (finish_reason / usage / latency).
+# post_chat_async stashes the metadata of its successful call here so callers can
+# read it back WITHOUT changing post_chat_async's widely-used ``-> str`` signature.
+# Concurrency-safe: asyncio.gather runs each top-level coroutine as its own Task
+# with a copied context, so a ``.set()`` inside an awaited callee is visible only
+# up that Task's own await-chain.
+judge_call_meta: ContextVar = ContextVar("judge_call_meta", default=None)
+
+
+def get_judge_call_meta() -> dict | None:
+    """Return the telemetry stashed by the most recent ``post_chat_async`` call."""
+    return judge_call_meta.get()
 
 
 def get_openai_max_retries(
@@ -75,6 +90,8 @@ def build_chat_payload(
     max_completion_tokens: int,
     response_format: dict | None = None,
     reasoning: bool,
+    sampling: dict | None = None,
+    chat_template_kwargs: dict | None = None,
 ) -> dict[str, Any]:
     """Build a chat-completions payload."""
     payload: dict[str, Any] = {
@@ -84,7 +101,12 @@ def build_chat_payload(
     }
     if response_format:
         payload["response_format"] = response_format
-    payload.update(openrouter_request_extras(reasoning=reasoning))
+    if sampling:
+        payload.update(sampling)  # T/top_p/top_k/min_p top-level (OpenAI-compat)
+    if chat_template_kwargs:
+        payload["chat_template_kwargs"] = chat_template_kwargs
+    if os.environ.get("PERSONA_DISABLE_OPENROUTER_EXTRAS") != "1":
+        payload.update(openrouter_request_extras(reasoning=reasoning))
     return payload
 
 
@@ -102,7 +124,64 @@ def _extract_chat_content(data: Any) -> str:
     content = message.get("content") if isinstance(message, dict) else None
     if isinstance(content, str):
         return content
-    raise ValueError("OpenAI response missing choices[0].message.content")
+    # OUR PATCH: when reasoning-parser is enabled and the model hits `length`
+    # inside <think>, vLLM returns choices[0].message.content=None. Rather than
+    # raising (which propagates past the retry loop and kills the whole run),
+    # return "" so downstream _extract_json returns None and the reward code
+    # falls back to a -0.15 penalty like any other parse failure.
+    return ""
+
+
+def _should_dump_judge(payload: dict) -> bool:
+    """Deterministic per-payload sampling gate.
+
+    Reads PERSONA_JUDGE_DUMP_RATE (float, default 0.0 = off). If 0, off.
+    If >=1, always on. Otherwise hashes the payload and dumps if the hash
+    bucket falls under the rate. Same payload always makes the same decision.
+    """
+    try:
+        rate = float(os.environ.get("PERSONA_JUDGE_DUMP_RATE", "0.0"))
+    except ValueError:
+        return False
+    if rate <= 0:
+        return False
+    if rate >= 1:
+        return True
+    blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    bucket = int.from_bytes(hashlib.md5(blob).digest()[:8], "big") / (1 << 64)
+    return bucket < rate
+
+
+def _dump_judge_response(payload: dict, response: Any, *, latency_ms: float) -> None:
+    """Append one JSONL row per judge call to a per-worker file.
+
+    File: ${PERSONA_JUDGE_DUMP_DIR}/judge-{slurm_job}-{pid}.jsonl
+    Row : {ts, worker_pid, latency_ms, model, payload_messages, response}
+
+    Safe under aiohttp concurrency: writes are per-process (Ray workers are
+    separate PIDs) and a single JSON line is <PIPE_BUF so append is atomic
+    on Linux. Any failure is swallowed so dumping never breaks training.
+    """
+    try:
+        dump_dir = os.environ.get("PERSONA_JUDGE_DUMP_DIR")
+        if not dump_dir:
+            return
+        os.makedirs(dump_dir, exist_ok=True)
+        job_id = os.environ.get("SLURM_JOB_ID", "nojob")
+        path = os.path.join(dump_dir, f"judge-{job_id}-{os.getpid()}.jsonl")
+        row = {
+            "ts": time.time(),
+            "worker_pid": os.getpid(),
+            "latency_ms": round(latency_ms, 3),
+            "model": payload.get("model"),
+            "payload_messages": payload.get("messages"),
+            "response": response,
+        }
+        line = json.dumps(row, ensure_ascii=False, default=str) + "\n"
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception as exc:  # noqa: BLE001 - never fail training over logging
+        print(f"[judge_dump] failed to append: {type(exc).__name__}: {exc}", flush=True)
 
 
 async def post_chat_async(
@@ -111,13 +190,14 @@ async def post_chat_async(
     *,
     semaphore,
     max_retries: int | None = None,
+    api_key: str | None = None,
 ) -> str:
     """Post a chat request with retries."""
     if aiohttp is None:
         raise ImportError("OpenRouter judge scoring requires aiohttp to be installed")
-    api_key = resolve_judge_api_key()
+    resolved_api_key = api_key or resolve_judge_api_key()
     url = openrouter_chat_url()
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    headers = {"Authorization": f"Bearer {resolved_api_key}", "Content-Type": "application/json"}
     if max_retries is None:
         max_retries = get_openai_max_retries()
     retry_sleep_seconds = max(0.0, float(os.environ.get("PERSONA_OPENAI_RETRY_SLEEP_SECONDS", "5")))
@@ -125,6 +205,7 @@ async def post_chat_async(
         try:
             retry_after = None
             async with semaphore:
+                t0 = time.monotonic()
                 async with session.post(url, headers=headers, json=payload) as resp:
                     if resp.status == 429:
                         body = await resp.text()
@@ -148,7 +229,30 @@ async def post_chat_async(
                                 flush=True,
                             )
                         resp.raise_for_status()
-                        return _extract_chat_content(await resp.json())
+                        data = await resp.json()
+                        content = _extract_chat_content(data)
+                        latency_ms = (time.monotonic() - t0) * 1000.0
+                        # Stash per-call telemetry on the contextvar side-channel.
+                        # Defensive: telemetry must never raise inside the HTTP path.
+                        try:
+                            choices = data.get("choices") if isinstance(data, dict) else None
+                            first_choice = choices[0] if isinstance(choices, list) and choices else {}
+                            finish_reason = (
+                                first_choice.get("finish_reason")
+                                if isinstance(first_choice, dict)
+                                else None
+                            )
+                            usage = data.get("usage") if isinstance(data, dict) else None
+                            judge_call_meta.set({
+                                "latency_ms": latency_ms,
+                                "finish_reason": finish_reason,
+                                "usage": usage or {},
+                            })
+                        except Exception:  # noqa: BLE001 - telemetry never breaks the call
+                            pass
+                        if _should_dump_judge(payload):
+                            _dump_judge_response(payload, data, latency_ms=latency_ms)
+                        return content
             if retry_after is not None:
                 await asyncio.sleep(retry_after)
                 continue

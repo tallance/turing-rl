@@ -11,6 +11,10 @@ data/*
 !data/*.py
 !data/sft/
 !data/sft/**
+# data/judge holds source modules only; generated payloads under it stay ignored.
+!data/judge/
+data/judge/*
+!data/judge/*.py
 !data/ood/
 data/ood/*
 !data/ood/chatbot_arena_ood_test50/
@@ -83,6 +87,8 @@ wandb/
 
 # Claude Code local state
 .claude/
+# Codex local state and nested worktrees
+.codex/
 
 # SLURM logs
 slurm-*.out
@@ -99,7 +105,20 @@ past/
 
 # Scratch files
 bash_scripts/Untitled
+temp/
 
 # Python bytecode (robust against data/ un-ignores)
 *.pyc
 *.pyo
+
+# ==== our (lancewicki) additions ====
+# macOS junk
+.DS_Store
+# IDE state
+.vscode/
+# Hydra run dirs (verl writes here on every launch)
+outputs/
+# Generated smoke datasets (regenerated from data/prism/build.py + generate_cot.py)
+data/prism/history_smoke/
+data/prism/prism_history_s42_sft40_grpo60/
+data/sft/qwen3-8b_prism_smoke_sft_cot.*

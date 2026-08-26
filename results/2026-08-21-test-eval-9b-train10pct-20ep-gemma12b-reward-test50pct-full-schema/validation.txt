@@ -1,0 +1,7 @@
+Source completeness: PASS, 22/22 cells with exactly 440 unique pair keys.
+Combined summaries: PASS, 2 judges x 11 checkpoints, 440 judge rows per cell.
+Parse-error threshold: PASS, every cell is below 2%; metrics exclude rows without a valid Likert score.
+  gemma4-12b: 0/4840 parse failures (0.00% overall; worst cell 0/440 = 0.00%).
+  qwen35-9b: 24/4840 parse failures (0.50% overall; worst cell 5/440 = 1.14%).
+Retained judge cells: PASS, 20 completed jobs plus 2 checksum-verified reused cells.
+Pipeline accounting: PASS, 80 completed jobs and 2 reused cells.

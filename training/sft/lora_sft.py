@@ -1,26 +1,31 @@
 """SFT training with reasoning traces using TRL + LoRA."""
 
 import argparse
+import glob
 import os
 import time
 from typing import Any
 
-import torch
 import yaml
-from datasets import load_dataset
-from peft import LoraConfig, TaskType
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-from trl import SFTConfig, SFTTrainer
 
 from shared.prompt_utils import tokenize_with_prefix_boundary
 
 
 MODEL_MAP = {
     "qwen3-8b": "Qwen/Qwen3-8B",
+    "qwen35-9b": "Qwen/Qwen3.5-9B",
 }
 
 LORA_TARGET_MODULES = {
     "qwen3": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    # Qwen3.5 has a HYBRID text tower (verified via probe_qwen35.py): full-attention layers
+    # use q/k/v/o_proj; ~3/4 are Gated-DeltaNet linear-attention layers (in_proj_qkv/z/b/a,
+    # out_proj). ATTENTION+MLP ONLY — do NOT adapt the DeltaNet backbone: LoRA on the GDN
+    # mixer is destructive (verified empirically here — targeting it produced a model that
+    # degenerates into non-terminating repetition even served with correct vLLM kernels; see
+    # arXiv:2604.22127 "Where Should LoRA Go?" for the same finding on Qwen3.5 hybrids). This
+    # matches the working qwen3-8B recipe and leaves the recurrent mixer at its base weights.
+    "qwen3.5": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     "llama": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
 }
 
@@ -36,6 +41,8 @@ CHAT_TEMPLATE_END_TOKENS = ("<|im_end|>",)
 
 def get_lora_targets(model_name: str) -> list[str]:
     """Get LoRA target modules for the model family."""
+    if "qwen35" in model_name or "qwen3.5" in model_name:
+        return LORA_TARGET_MODULES["qwen3.5"]
     if "qwen" in model_name:
         return LORA_TARGET_MODULES["qwen3"]
     if "llama" in model_name:
@@ -47,6 +54,52 @@ def load_config(config_path: str) -> dict:
     """Load training config from YAML file."""
     with open(config_path) as f:
         return yaml.safe_load(f)
+
+
+def resolve_resume_checkpoint(arg: str | None, output_dir: str) -> str | None:
+    """Resolve --resume_from_checkpoint; 'auto' picks the highest checkpoint-N dir."""
+    if arg != "auto":
+        return arg or None
+    ck = glob.glob(os.path.join(output_dir, "checkpoint-*"))
+    return max(ck, key=lambda p: int(p.rsplit("-", 1)[-1])) if ck else None
+
+
+def save_kwargs_from_config(config: dict) -> dict:
+    """Build SFTConfig save-cadence kwargs from the training config."""
+    ss = config.get("save_strategy", "epoch")
+    out = {"save_strategy": ss}
+    if ss == "steps":
+        out["save_steps"] = config.get("save_steps", 10)
+        out["save_total_limit"] = config.get("save_total_limit", 2)
+    return out
+
+
+def resolve_use_qlora(config: dict, *, force_qlora: bool, no_qlora: bool) -> bool:
+    """Force-on wins over the yaml default; --no_qlora always wins (force-off)."""
+    if no_qlora:
+        return False
+    if force_qlora:
+        return True
+    return bool(config.get("use_qlora", True))
+
+
+def build_fsdp_kwargs(fsdp: str, transformer_layer_cls: str | None) -> dict:
+    """SFTConfig kwargs for FSDP. Empty fsdp -> {} (FSDP off, unchanged behavior).
+
+    When on, returns fsdp=<str> + a fsdp_config tuned for PEFT/LoRA.
+    """
+    if not fsdp:
+        return {}
+    fsdp_config = {
+        "use_orig_params": True,  # required for LoRA (mixed frozen/trainable params)
+        "sync_module_states": True,
+        "cpu_ram_efficient_loading": True,  # rank0 loads, broadcasts — avoids 8x CPU model copies
+        "backward_prefetch": "backward_pre",
+        "limit_all_gathers": True,
+    }
+    if transformer_layer_cls:
+        fsdp_config["transformer_layer_cls_to_wrap"] = [transformer_layer_cls]
+    return {"fsdp": fsdp, "fsdp_config": fsdp_config}
 
 
 def strip_empty_think_prefill(prompt_text: str) -> tuple[str, str]:
@@ -73,20 +126,32 @@ def _normalize_messages(messages: Any) -> list[dict[str, str]]:
     return normalized
 
 
-def _assistant_target_end_char(full_text: str, target_start_char: int) -> int:
-    """Return the char offset before the assistant end marker, if the template has one."""
-    candidate_offsets = [
-        full_text.rfind(end_token)
-        for end_token in CHAT_TEMPLATE_END_TOKENS
-        if full_text.rfind(end_token) >= target_start_char
-    ]
+def _assistant_target_end_char(
+    full_text: str, target_start_char: int, *, include_end_token: bool = False
+) -> int:
+    """Char offset bounding the assistant target.
+
+    Default ends BEFORE the end marker (<|im_end|>). include_end_token=True extends past
+    it so the stop token is inside the supervised span — otherwise the model is never
+    trained to emit <|im_end|> and, after SFT, generates its turn then fails to stop
+    (verified: degenerates into non-terminating repetition on Qwen3.5-9B)."""
+    candidate_offsets = []
+    for end_token in CHAT_TEMPLATE_END_TOKENS:
+        idx = full_text.rfind(end_token)
+        if idx >= target_start_char:
+            candidate_offsets.append(idx + len(end_token) if include_end_token else idx)
     if not candidate_offsets:
         return len(full_text)
     return min(candidate_offsets)
 
 
-def build_chat_template_sft_features(tokenizer: Any, messages: Any) -> dict[str, list[int]]:
-    """Tokenize one SFT row and mask the assistant target span."""
+def build_chat_template_sft_features(
+    tokenizer: Any, messages: Any, *, supervise_stop_token: bool = False
+) -> dict[str, list[int]]:
+    """Tokenize one SFT row and mask the assistant target span.
+
+    supervise_stop_token=True includes the trailing <|im_end|> in the loss so the model
+    learns to terminate its turn (default off preserves the prior shared behavior)."""
     normalized_messages = _normalize_messages(messages)
     if not normalized_messages:
         raise ValueError("messages must be non-empty")
@@ -115,7 +180,9 @@ def build_chat_template_sft_features(tokenizer: Any, messages: Any) -> dict[str,
         )
 
     target_start_char = len(masked_prefix_text)
-    target_end_char = _assistant_target_end_char(full_text, target_start_char)
+    target_end_char = _assistant_target_end_char(
+        full_text, target_start_char, include_end_token=supervise_stop_token
+    )
     if target_end_char <= target_start_char:
         raise ValueError("Computed an empty assistant target span")
 
@@ -242,10 +309,51 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Exit successfully after SFTTrainer construction, before trainer.train()",
     )
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        type=str,
+        default=None,
+        help="Resume from a checkpoint dir, or 'auto' for the latest checkpoint-N in output_dir",
+    )
+    parser.add_argument(
+        "--attn_implementation",
+        type=str,
+        default="sdpa",
+        help="sdpa | flash_attention_2 | eager",
+    )
+    parser.add_argument(
+        "--report_to",
+        type=str,
+        default=None,
+        help="override yaml report_to, e.g. wandb",
+    )
+    parser.add_argument(
+        "--force_qlora",
+        action="store_true",
+        help="force 4-bit QLoRA on even if yaml use_qlora:false",
+    )
+    parser.add_argument(
+        "--fsdp",
+        type=str,
+        default="",
+        help='HF FSDP mode string, e.g. "full_shard auto_wrap"; empty = off',
+    )
+    parser.add_argument(
+        "--fsdp_transformer_layer_cls",
+        type=str,
+        default=None,
+        help="transformer layer class to auto-wrap, e.g. Qwen3DecoderLayer",
+    )
     return parser.parse_args()
 
 
 def main():
+    import torch
+    from datasets import load_dataset
+    from peft import LoraConfig, TaskType
+    from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+    from trl import SFTConfig, SFTTrainer
+
     args = parse_args()
     rank = int(os.environ.get("RANK", "0"))
 
@@ -295,8 +403,13 @@ def main():
         log(f"Selected {len(dataset)} / {original_len} examples for smoke run")
     log(f"Training examples: {len(dataset)}")
 
+    supervise_stop_token = bool(config.get("supervise_stop_token", False))
+    log(f"supervise_stop_token: {supervise_stop_token}")
+
     def tokenize_with_completion_mask(example):
-        return build_chat_template_sft_features(tokenizer, example["messages"])
+        return build_chat_template_sft_features(
+            tokenizer, example["messages"], supervise_stop_token=supervise_stop_token
+        )
 
     log("Tokenizing chat templates with explicit assistant completion masks")
     dataset = dataset.map(
@@ -321,7 +434,7 @@ def main():
         target_modules=get_lora_targets(args.model),
     )
 
-    use_qlora = config.get("use_qlora", True) and not args.no_qlora
+    use_qlora = resolve_use_qlora(config, force_qlora=args.force_qlora, no_qlora=args.no_qlora)
     bnb_config = None
     model_kwargs = {}
     if use_qlora:
@@ -342,7 +455,8 @@ def main():
         quantization_config=bnb_config,
         dtype=torch.bfloat16,
         trust_remote_code=True,
-        attn_implementation="sdpa",
+        attn_implementation=args.attn_implementation,
+        low_cpu_mem_usage=True,
         **model_kwargs,
     )
     log("Model loaded")
@@ -373,16 +487,17 @@ def main():
         weight_decay=config.get("weight_decay", 0.01),
         bf16=True,
         logging_steps=config.get("logging_steps", 10),
-        save_strategy="epoch",
+        **save_kwargs_from_config(config),
         max_length=args.max_seq_length,
         packing=not args.no_packing,
         gradient_checkpointing=config.get("gradient_checkpointing", True),
         gradient_checkpointing_kwargs={"use_reentrant": False},
-        report_to=config.get("report_to", "none"),
+        report_to=args.report_to or config.get("report_to", "none"),
         completion_only_loss=True,
         ddp_find_unused_parameters=False,
         seed=42,
         torch_compile=not args.no_torch_compile,
+        **build_fsdp_kwargs(args.fsdp, args.fsdp_transformer_layer_cls),
     )
 
     log("Building SFTTrainer")
@@ -410,7 +525,11 @@ def main():
     log(f"  Learning rate: {training_args.learning_rate}")
     log(f"  Max seq length: {args.max_seq_length}")
 
-    trainer.train()
+    trainer.train(
+        resume_from_checkpoint=resolve_resume_checkpoint(
+            args.resume_from_checkpoint, output_dir
+        )
+    )
 
     trainer.save_model(os.path.join(output_dir, "final"))
     tokenizer.save_pretrained(os.path.join(output_dir, "final"))

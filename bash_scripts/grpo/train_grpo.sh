@@ -72,6 +72,8 @@ echo ">> config=$CONFIG_NAME  data=$TRAIN_FILE  sft_adapter=$SFT_ADAPTER_PATH  -
 run "$PY" -m training.grpo.run_verl_main_ppo \
   --config-dir training/grpo/configs \
   --config-name "$CONFIG_NAME" \
+  hydra.run.dir="${TURING_RL_HYDRA_DIR:?}" \
+  hydra.job.chdir=false \
   actor_rollout_ref.model.lora_adapter_path="$SFT_ADAPTER_PATH" \
   trainer.default_local_dir="$CHECKPOINT_DIR" \
   trainer.experiment_name="$EXP" \

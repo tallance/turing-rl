@@ -1,0 +1,15 @@
+{
+  "code_root": "/home/lancewicki/projects/turing-rl-sources/924345eec142e759b25c4ace23f4d3b44aed6157",
+  "debug_label": null,
+  "dependency_profile": "eval",
+  "environment_keys": [],
+  "format_version": 1,
+  "launched_at_utc": "2026-08-20T18:35:58.949770+00:00",
+  "launcher": "scripts/launch_gemma12b_trained_frac10_eval.sh",
+  "launcher_args": [],
+  "main_sha": "924345eec142e759b25c4ace23f4d3b44aed6157",
+  "run_class": "retained",
+  "run_root": "/home/lancewicki/projects/turing-rl/results/2026-08-20-test-eval-9b-train10pct-through12ep-gemma12b-reward-test50pct-full-schema",
+  "source_sha": "924345eec142e759b25c4ace23f4d3b44aed6157",
+  "state_root": "/home/lancewicki/projects/turing-rl"
+}

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+import contextvars
 import hashlib
 import json
 import os
 import re
 import sys
+import time
 from typing import Any, Optional
 
 try:  # pragma: no cover - exercised in runtime envs
@@ -24,11 +26,12 @@ from shared.prompt_utils import (
 )
 from shared.api_client import (
     build_chat_payload,
+    get_judge_call_meta,
     get_openai_max_retries,
     post_chat_async,
     resolve_judge_api_key,
 )
-from shared.judge_prompts import TURING_PROMPT
+from shared.judge_prompts import TURING_PROMPT, TURING_RESPONSE_SCHEMA
 from shared.judge_utils import (
     _coerce_turing_rating,
     _extract_turing_rating,
@@ -37,6 +40,7 @@ from shared.judge_utils import (
     _turing_parse_failure_result,
     build_source_copy_warning,
     format_source_copy_watchlist,
+    sanitize_prompt_text,
 )
 
 try:
@@ -52,7 +56,10 @@ DEFAULT_FORMAT_NONEMPTY_REASONING_BONUS = 0.0
 DEFAULT_FORMAT_REASONING_SCHEMA_BONUS = 0.05
 DEFAULT_FORMAT_NO_POST_HUMAN_THINKING_BONUS = 0.05
 TURING_RAW_REWARD_SCALE = 0.9
-TURING_JUDGE_SCORE_CLIP_MAX = 5.0
+# No clip by default: 7 is a no-op on the 1-7 Likert. Upstream shipped 5.0, which flattens the
+# advantage across ratings 5/6/7 and kills exactly the gradient that pushes a generator past ~50%.
+# Every launcher already exported 7; this makes the unset default match. Overridable via env.
+TURING_JUDGE_SCORE_CLIP_MAX = 7.0
 DEFAULT_TURING_LENGTH_LOWER_RATIO = 0.8
 DEFAULT_TURING_LENGTH_UPPER_RATIO = 1.1
 DEFAULT_TURING_LENGTH_SHORT_PENALTY_LAMBDA = 0.35
@@ -262,9 +269,18 @@ def adjust_turing_raw_reward(raw_reward: float) -> float:
     return float(raw_reward) * TURING_RAW_REWARD_SCALE
 
 
+def _get_turing_judge_score_clip_max() -> float:
+    raw = os.environ.get("TURING_JUDGE_SCORE_CLIP_MAX")
+    if raw is None:
+        return TURING_JUDGE_SCORE_CLIP_MAX
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise ValueError(f"TURING_JUDGE_SCORE_CLIP_MAX must be a float, got {raw!r}") from exc
+
 def clip_turing_judge_score(score: float) -> float:
     """Clip the raw Turing judge score before reward normalization for training."""
-    return min(float(score), TURING_JUDGE_SCORE_CLIP_MAX)
+    return min(float(score), _get_turing_judge_score_clip_max())
 
 
 def compute_turing_length_info(response: str, ground_truth: str) -> dict[str, float]:
@@ -327,6 +343,66 @@ def compute_turing_length_info(response: str, ground_truth: str) -> dict[str, fl
     }
 
 
+def _resolve_response_format() -> dict | None:
+    """Select the decoding constraint for a judge call.
+
+    ``PERSONA_JUDGE_JSON_SCHEMA=1``     -> full 37-field ordered schema (the eval regime)
+    unset or anything else              -> ``{"type": "json_object"}`` (valid JSON, free fields)
+    """
+    mode = os.environ.get("PERSONA_JUDGE_JSON_SCHEMA")
+    if mode == "1":
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "turing_verdict",
+                "schema": TURING_RESPONSE_SCHEMA,
+            },
+        }
+    return {"type": "json_object"}
+
+
+_REWARD_DUMP_KEYS = ("generated_is_b", "human_side", "rating_gt_first", "rating_gen_first",
+    "randomized_order", "response", "ground_truth", "context", "user_history", "judge_response",
+    "judge_prompt", "judge_raw_content", "judge_reasoning", "judge_latency_ms", "judge_finish_reason",
+    "judge_model", "judge_usage", "final_reward", "turing_judge_score_raw", "turing_judge_score_clipped",
+    "source_copy_penalty", "assistant_like_penalty", "wrong_target_or_role_penalty",
+    "unsupported_adversarial_reframing_penalty", "call_id", "user_id", "post_id", "target_idx",
+    "persona", "ts", "worker_pid", "split")
+
+# Per-sample train/val tag for the reward dump. veRL passes no split flag to the reward fn, so
+# compute_score sets this from extra_info["split"] (default "train"); the deep dump call reads it.
+# A ContextVar is async-safe: each compute_score runs in its own asyncio task, so concurrent
+# train/val reward calls can't clobber each other's value.
+_DUMP_SPLIT: "contextvars.ContextVar[str]" = contextvars.ContextVar("dump_split", default="train")
+
+
+def _build_reward_dump_row(**f) -> dict:
+    """Reward-layer dump row matching scripts/dump_viewer.py. `rating` intentionally
+    omitted — the viewer derives it from rating_gt_first/rating_gen_first."""
+    return {k: f.get(k) for k in _REWARD_DUMP_KEYS}
+
+
+def _dump_reward_call(row: dict) -> None:
+    # Best-effort telemetry: a dump failure (bad env value, disk full, permission)
+    # must never break a judge call / crash a sweep, so the whole body is guarded.
+    try:
+        try:
+            rate = float(os.environ.get("PERSONA_JUDGE_DUMP_RATE", "0") or "0")
+        except (TypeError, ValueError):
+            return
+        if rate <= 0:
+            return
+        d = os.environ.get("PERSONA_REWARD_DUMP_DIR")
+        if not d:
+            return
+        os.makedirs(d, exist_ok=True)
+        job = os.environ.get("SLURM_JOB_ID", "local")
+        with open(os.path.join(d, f"reward-{job}-{os.getpid()}.jsonl"), "a") as fh:
+            fh.write(json.dumps(row, default=str) + "\n")
+    except Exception as exc:  # noqa: BLE001 - never let dumping break scoring
+        print(f"[reward-dump] skipped (non-fatal): {type(exc).__name__}: {exc}", flush=True)
+
+
 async def _openai_chat(
     session: aiohttp.ClientSession,
     messages: list[dict],
@@ -341,16 +417,25 @@ async def _openai_chat(
         or _env_flag("PERSONA_LOCAL_JUDGE_DISABLE_RESPONSE_FORMAT", False)
     ):
         response_format = None
+    _s = os.environ.get("PERSONA_JUDGE_SAMPLING")
+    _sampling = json.loads(_s) if _s else None
+    _te = os.environ.get("PERSONA_JUDGE_ENABLE_THINKING")
+    _ctk = {"enable_thinking": _te == "1"} if _te in ("0", "1") else None
     payload = build_chat_payload(
         model=model or os.environ.get("JUDGE_MODEL", JUDGE_MODEL),
         messages=messages,
         max_completion_tokens=max_tokens or _get_judge_max_completion_tokens(),
         response_format=response_format,
         reasoning=False,
+        sampling=_sampling,
+        chat_template_kwargs=_ctk,
     )
-    return await post_chat_async(session, payload, semaphore=_get_reward_judge_request_semaphore())
-
-    raise RuntimeError(f"OpenAI API call failed after {max_retries} retries")
+    return await post_chat_async(
+        session,
+        payload,
+        semaphore=_get_reward_judge_request_semaphore(),
+        api_key=api_key,
+    )
 
 
 def _get_judge_max_completion_tokens() -> int:
@@ -372,7 +457,14 @@ def _extract_json(text: str | None) -> dict | None:
             text = text[brace_start:brace_end + 1]
     try:
         return json.loads(text)
-    except json.JSONDecodeError:
+    except ValueError:
+        # ValueError, not JSONDecodeError: json.loads also raises a PLAIN ValueError when a
+        # numeric literal exceeds Python 3.11's 4300-digit int/str conversion limit, and that
+        # is not a JSONDecodeError, so it escaped this handler and killed the run. Job 18916
+        # died at step 7 when the Qwen3.5-0.8B judge emitted a 7726-digit number: one bad
+        # verdict took down the whole rollout batch. This is a trust boundary -- the text is
+        # model output -- so it must degrade to "unparseable" rather than raise.
+        # JSONDecodeError subclasses ValueError, so the original case is still covered.
         return None
 
 
@@ -402,8 +494,11 @@ def _coerce_penalty(value: Any) -> float:
 
 
 def _sanitize_text(text: str) -> str:
-    """Remove control characters that break JSON serialization."""
-    return re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+    """Remove control characters that break JSON serialization.
+
+    Delegates to shared.judge_utils so the offline prompt renderers share one implementation.
+    """
+    return sanitize_prompt_text(text)
 
 
 WORD_RE = re.compile(r"\b[\w']+\b")
@@ -496,13 +591,18 @@ async def _score_pairwise_likert_with_info(
         )
         parse_attempts = get_openai_max_retries()
         data = None
+        judge_meta: dict = {}
         for parse_attempt in range(parse_attempts):
             text = await _openai_chat(
                 session,
                 [{"role": "user", "content": prompt}],
                 api_key,
-                response_format={"type": "json_object"},
+                response_format=_resolve_response_format(),
             )
+            # Read the telemetry stashed by post_chat_async for THIS call. If the
+            # parse-retry loop runs again, this is overwritten by the next call's
+            # meta, so the value kept matches the ``text`` we ultimately return.
+            judge_meta = get_judge_call_meta() or {}
             data = _extract_json(text)
             if data is not None:
                 break
@@ -610,6 +710,11 @@ async def _score_pairwise_likert_with_info(
             "reasoning": str(data.get("reasoning", "") or ""),
             "rating": rating,
             "parse_error": parse_error,
+            "judge_prompt": prompt,
+            "judge_raw_content": text,
+            "judge_latency_ms": judge_meta.get("latency_ms"),
+            "judge_finish_reason": judge_meta.get("finish_reason"),
+            "judge_usage": judge_meta.get("usage") or {},
         }
 
     generated_is_b = _stable_turing_generated_is_b(
@@ -683,6 +788,44 @@ async def _score_pairwise_likert_with_info(
         judge_gt_first = None
         judge_gen_first = result
         randomized_order = "gen_first"
+
+    # Reward-layer dump for the GUI viewer (scripts/dump_viewer.py). No-op unless
+    # PERSONA_JUDGE_DUMP_RATE>0 and PERSONA_REWARD_DUMP_DIR are set.
+    _dump_reward_call(_build_reward_dump_row(
+        generated_is_b=generated_is_b,
+        # human (ground_truth) sits on side A when the generated answer is B.
+        human_side="A" if generated_is_b else "B",
+        rating_gt_first=rating_gt_first,
+        rating_gen_first=rating_gen_first,
+        randomized_order=randomized_order,
+        response=response,
+        ground_truth=ground_truth,
+        context=context,
+        user_history=user_history,
+        judge_response=result,
+        judge_prompt=result.get("judge_prompt"),
+        judge_raw_content=result.get("judge_raw_content"),
+        judge_reasoning=result.get("reasoning"),
+        judge_latency_ms=result.get("judge_latency_ms"),
+        judge_finish_reason=result.get("judge_finish_reason"),
+        judge_model=os.environ.get("JUDGE_MODEL", JUDGE_MODEL),
+        judge_usage=result.get("judge_usage") or {},
+        final_reward=None,
+        turing_judge_score_raw=likert_score,
+        turing_judge_score_clipped=clip_turing_judge_score(likert_score),
+        source_copy_penalty=generated_source_copy_penalty,
+        assistant_like_penalty=generated_assistant_like_penalty,
+        wrong_target_or_role_penalty=generated_wrong_target_or_role_penalty,
+        unsupported_adversarial_reframing_penalty=generated_unsupported_adversarial_reframing_penalty,
+        call_id=None,
+        user_id=user_id,
+        post_id=post_id,
+        target_idx=target_idx,
+        persona=persona,
+        ts=time.time(),
+        worker_pid=os.getpid(),
+        split=_DUMP_SPLIT.get(),
+    ))
     return {
         "score": likert_score,
         "source_copy": generated_source_copy,
@@ -789,6 +932,8 @@ async def compute_score(
 
     metric = os.environ.get("REWARD_METRIC", "turing")
     extra_info = extra_info or {}
+    # Tag this sample's reward-dump rows train/val (default train). Read at the deep dump call.
+    _DUMP_SPLIT.set(str(extra_info.get("split", "train")))
     prompt_mode = str(extra_info.get("prompt_mode", "") or "")
     cot, response = parse_response_for_prompt_mode(solution_str, prompt_mode)
     response_components = response_format_components(solution_str)

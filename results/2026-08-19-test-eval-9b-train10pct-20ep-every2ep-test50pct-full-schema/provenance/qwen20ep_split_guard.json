@@ -1,0 +1,40 @@
+{
+  "eval_parquet": "/storage/home/lancewicki/projects/turing-rl/data/prism/full_s42_history_sft40_grpo60_test10/eval_subsets/test_seed42_n440.parquet",
+  "eval_rows": 440,
+  "eval_sha256": "0c727d910484aeed0bc59c7f88f3dedbef51bd6b6babe1e3cd053a854e45e1d2",
+  "eval_users": 123,
+  "expect": "heldout",
+  "overlap": {
+    "grpo_train": {
+      "eval_rows_not_in_ref": 440,
+      "ref_rows": 4174,
+      "ref_users": 696,
+      "shared_rows": 0,
+      "shared_users": 0
+    },
+    "grpo_val": {
+      "eval_rows_not_in_ref": 440,
+      "ref_rows": 705,
+      "ref_users": 696,
+      "shared_rows": 0,
+      "shared_users": 0
+    },
+    "heldout_test": {
+      "eval_rows_not_in_ref": 0,
+      "ref_rows": 880,
+      "ref_users": 128,
+      "shared_rows": 440,
+      "shared_users": 123
+    },
+    "sft_train": {
+      "eval_rows_not_in_ref": 440,
+      "ref_rows": 3272,
+      "ref_users": 464,
+      "shared_rows": 0,
+      "shared_users": 0
+    }
+  },
+  "problems": [],
+  "split_root": "/storage/home/lancewicki/projects/turing-rl/data/prism/full_s42_history_sft40_grpo60_test10",
+  "verdict": "PASS"
+}

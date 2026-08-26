@@ -156,6 +156,22 @@ def find_latest_checkpoint(checkpoint_dir: str) -> str | None:
     return resolve_adapter_path(checkpoint_root)
 
 
+def resolve_adapter_for_run(checkpoint_dir: str, base_model: bool) -> str | None:
+    """Return the adapter path for this run, or None for base-model generation.
+
+    base_model=True short-circuits to None (no LoRA). Otherwise resolve the latest
+    checkpoint / adapter under checkpoint_dir and raise if none is found (existing
+    behavior)."""
+    if base_model:
+        return None
+    adapter_path = find_latest_checkpoint(checkpoint_dir)
+    if adapter_path is None:
+        adapter_path = resolve_adapter_path(checkpoint_dir)
+    if adapter_path is None:
+        raise ValueError(f"No LoRA adapter found under {checkpoint_dir}")
+    return adapter_path
+
+
 def _build_generation_task_list(
     user_results: list[dict[str, Any]],
     *,
@@ -374,6 +390,109 @@ def generate_for_user_results_vllm(
     return {user_result["user_id"]: user_result for user_result in user_results}
 
 
+def generate_for_user_results_hf(
+    *,
+    user_results: list[dict[str, Any]],
+    model_id: str,
+    adapter_path: str | None,
+    temperature: float,
+    top_p: float,
+    top_k: int,
+    min_p: float | None,
+    repetition_penalty: float | None,
+    batch_size: int,
+    max_tokens: int,
+    gen_num: int,
+    max_prompt_tokens: int = 8192,
+) -> dict[str, dict[str, Any]]:
+    """Generate with HuggingFace transformers + a PEFT adapter (no vLLM).
+
+    Needed for models vLLM can't LoRA-serve in our stack — e.g. Qwen3.5-9B, whose
+    Gated-DeltaNet adapter modules crash vLLM 0.18's LoRA path, and whose merged
+    Qwen3_5ForCausalLM arch vLLM doesn't register. Prompts/parsing are shared with the
+    vLLM path (_build_generation_task_list + parse_generation), so outputs stay comparable.
+    """
+    import torch
+    from transformers import AutoModelForCausalLM
+
+    if not user_results:
+        return {}
+    if batch_size <= 0:
+        raise ValueError(f"batch_size must be > 0, got {batch_size}")
+    tokenizer = load_tokenizer(model_id)
+    tokenizer.padding_side = "left"  # left-pad so generated tokens are contiguous per row
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    generation_tasks = _build_generation_task_list(user_results, tokenizer=tokenizer)
+    target_count = len(generation_tasks)
+    print(f"[hf] Starting generation for {len(user_results)} users / {target_count} targets",
+          flush=True)
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_id, dtype=torch.bfloat16, trust_remote_code=True,
+        low_cpu_mem_usage=True, device_map="cuda:0",
+    )
+    if adapter_path:
+        from peft import PeftModel
+        model = PeftModel.from_pretrained(model, adapter_path, is_trainable=False)
+        print(f"[hf] attached PEFT adapter: {adapter_path}", flush=True)
+    model.eval()
+
+    do_sample = bool(temperature and temperature > 0)
+    # Qwen3.5-9B ships no generation_config.json, so model.generate would fall back to
+    # config.json's eos (<|endoftext|>), which the CHAT model never emits -> every gen runs
+    # to max_new_tokens. The chat turn terminator is the tokenizer's eos (<|im_end|>); stop on it.
+    eos_id = tokenizer.eos_token_id
+    gen_kwargs: dict[str, Any] = {
+        "max_new_tokens": max_tokens,
+        "do_sample": do_sample,
+        "num_return_sequences": gen_num,
+        "pad_token_id": tokenizer.pad_token_id,
+        "eos_token_id": eos_id,
+    }
+    if do_sample:
+        gen_kwargs["temperature"] = temperature
+        gen_kwargs["top_p"] = top_p
+        if top_k and top_k > 0:
+            gen_kwargs["top_k"] = top_k
+        if min_p is not None:
+            gen_kwargs["min_p"] = min_p
+        if repetition_penalty is not None:
+            gen_kwargs["repetition_penalty"] = repetition_penalty
+
+    for start in range(0, target_count, batch_size):
+        batch_tasks = generation_tasks[start:start + batch_size]
+        tokenizer.truncation_side = "left"
+        enc = tokenizer(
+            [task["prompt_text"] for task in batch_tasks],
+            return_tensors="pt", padding=True, truncation=True,
+            max_length=max_prompt_tokens, add_special_tokens=False,
+        ).to(model.device)
+        input_len = enc["input_ids"].shape[1]
+        with torch.no_grad():
+            out = model.generate(**enc, **gen_kwargs)
+        gen_tokens = out[:, input_len:]
+        texts = tokenizer.batch_decode(gen_tokens, skip_special_tokens=True)
+        for i, task in enumerate(batch_tasks):
+            parsed_generations = []
+            for g in range(gen_num):
+                row = i * gen_num + g
+                raw_completion = texts[row]
+                parsed = parse_generation(raw_completion)
+                parsed["raw_completion"] = raw_completion
+                parsed["finish_reason"] = None
+                parsed["stop_reason"] = None
+                parsed["output_token_count"] = int(
+                    (gen_tokens[row] != tokenizer.pad_token_id).sum().item()
+                )
+                parsed_generations.append(parsed)
+            task["target_result"]["generations"] = parsed_generations
+        print(f"[hf] {min(start + batch_size, target_count)}/{target_count} targets", flush=True)
+
+    print(f"[hf] Finished generation for {target_count} targets", flush=True)
+    return {user_result["user_id"]: user_result for user_result in user_results}
+
+
 def load_user_results_from_test_parquet(
     test_parquet: str,
     *,
@@ -514,12 +633,15 @@ def apply_generation_defaults(args: argparse.Namespace) -> argparse.Namespace:
         args.max_tokens = DEFAULT_MAX_TOKENS
     normalize_model_id(getattr(args, "model_id", DEFAULT_MODEL_ID))
     model_defaults = get_domain_generation_defaults(args.test_parquet)
-    args.temperature = model_defaults["temperature"]
-    args.top_p = model_defaults["top_p"]
-    args.top_k = model_defaults["top_k"]
+    # Explicit CLI sampling overrides win; otherwise the domain defaults apply unchanged.
+    for key in ("temperature", "top_p", "top_k"):
+        if getattr(args, key, None) is None:
+            setattr(args, key, model_defaults[key])
     args.min_p = model_defaults["min_p"]
     args.presence_penalty = model_defaults["presence_penalty"]
-    args.repetition_penalty = DEFAULT_REPETITION_PENALTY
+    # Respect a CLI --repetition_penalty override; else the domain default (1.0 = none).
+    if getattr(args, "repetition_penalty", None) is None:
+        args.repetition_penalty = DEFAULT_REPETITION_PENALTY
     return args
 
 
@@ -528,8 +650,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--checkpoint_dir",
         type=str,
-        required=True,
+        required=False,
+        default="",
         help="Path to a veRL checkpoint directory containing global_step_*",
+    )
+    parser.add_argument(
+        "--base_model",
+        action="store_true",
+        help="Generate from the base --model_id with no LoRA adapter.",
     )
     parser.add_argument(
         "--metric",
@@ -567,6 +695,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gen_num", type=int, default=None, help="Generations per target")
     parser.add_argument("--batch_size", type=int, default=8, help="Number of prompts per generation batch")
     parser.add_argument("--max_tokens", type=int, default=None, help="Max tokens per generation")
+    parser.add_argument("--repetition_penalty", type=float, default=None,
+                        help="Override the generation repetition_penalty (default: domain default 1.0 = none).")
+    parser.add_argument("--temperature", type=float, default=None,
+                        help="Override the generation temperature (default: domain default, prism=0.6).")
+    parser.add_argument("--top_p", type=float, default=None,
+                        help="Override the generation top_p (default: domain default 1.0).")
+    parser.add_argument("--top_k", type=int, default=None,
+                        help="Override the generation top_k (default: domain default -1 = disabled).")
+    parser.add_argument(
+        "--backend", choices=("vllm", "hf"), default="vllm",
+        help="Inference backend. 'hf' = transformers+PEFT (for models vLLM can't LoRA-serve, "
+             "e.g. Qwen3.5-9B); 'vllm' = default.",
+    )
     parser.add_argument(
         "--vllm_tensor_parallel_size",
         type=int,
@@ -638,12 +779,11 @@ def main() -> None:
     args = parse_args()
     args.model_id = normalize_model_id(args.model_id)
 
-    args.adapter_path = find_latest_checkpoint(args.checkpoint_dir)
+    args.adapter_path = resolve_adapter_for_run(args.checkpoint_dir, args.base_model)
     if args.adapter_path is None:
-        args.adapter_path = resolve_adapter_path(args.checkpoint_dir)
-    if args.adapter_path is None:
-        raise ValueError(f"No LoRA adapter found under {args.checkpoint_dir}")
-    print(f"Using checkpoint/adapter: {args.adapter_path}")
+        print(f"Base model (no adapter): {args.model_id}")
+    else:
+        print(f"Using checkpoint/adapter: {args.adapter_path}")
 
     args = apply_generation_defaults(args)
     print(
@@ -684,10 +824,12 @@ def main() -> None:
         )
         if args.metric:
             tag = f"grpo_{args.metric}"
-        else:
+        elif args.adapter_path:
             adapter_clean = args.adapter_path.rstrip("/")
             parts = adapter_clean.split("/")
             tag = parts[-2] if parts[-1] in ("actor", "final") else parts[-1]
+        else:
+            tag = os.path.basename(os.path.normpath(args.model_id))
         output_dir = os.path.join("results", "grpo_gen")
         os.makedirs(output_dir, exist_ok=True)
         output_path = os.path.join(output_dir, f"{tag}{conditioning_suffix}_gen{args.gen_num}.pkl")
@@ -712,27 +854,42 @@ def main() -> None:
             persona_map=persona_map,
         )
 
-    results = generate_for_user_results_vllm(
-        user_results=user_results,
-        model_id=args.model_id,
-        adapter_path=args.adapter_path,
-        temperature=args.temperature,
-        top_p=args.top_p,
-        top_k=args.top_k,
-        min_p=args.min_p,
-        presence_penalty=args.presence_penalty,
-        repetition_penalty=args.repetition_penalty,
-        batch_size=args.batch_size,
-        max_tokens=args.max_tokens,
-        gen_num=args.gen_num,
-        vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
-        vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
-        vllm_max_model_len=args.vllm_max_model_len,
-        vllm_max_num_seqs=args.vllm_max_num_seqs,
-        vllm_enforce_eager=args.vllm_enforce_eager,
-        vllm_disable_custom_all_reduce=args.vllm_disable_custom_all_reduce,
-        vllm_truncate_prompt_tokens=args.vllm_truncate_prompt_tokens,
-    )
+    if args.backend == "hf":
+        results = generate_for_user_results_hf(
+            user_results=user_results,
+            model_id=args.model_id,
+            adapter_path=args.adapter_path,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            min_p=args.min_p,
+            repetition_penalty=args.repetition_penalty,
+            batch_size=args.batch_size,
+            max_tokens=args.max_tokens,
+            gen_num=args.gen_num,
+        )
+    else:
+        results = generate_for_user_results_vllm(
+            user_results=user_results,
+            model_id=args.model_id,
+            adapter_path=args.adapter_path,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            min_p=args.min_p,
+            presence_penalty=args.presence_penalty,
+            repetition_penalty=args.repetition_penalty,
+            batch_size=args.batch_size,
+            max_tokens=args.max_tokens,
+            gen_num=args.gen_num,
+            vllm_tensor_parallel_size=args.vllm_tensor_parallel_size,
+            vllm_gpu_memory_utilization=args.vllm_gpu_memory_utilization,
+            vllm_max_model_len=args.vllm_max_model_len,
+            vllm_max_num_seqs=args.vllm_max_num_seqs,
+            vllm_enforce_eager=args.vllm_enforce_eager,
+            vllm_disable_custom_all_reduce=args.vllm_disable_custom_all_reduce,
+            vllm_truncate_prompt_tokens=args.vllm_truncate_prompt_tokens,
+        )
 
     generation_tasks = _build_generation_task_list(user_results)
 

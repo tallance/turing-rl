@@ -2,19 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import importlib
 import importlib.util
+import inspect
 import json
 import logging
 import os
 from pathlib import Path
+import textwrap
 from collections.abc import Mapping
-from functools import lru_cache
+from functools import lru_cache, wraps
 from typing import Any
 from uuid import uuid4
 
 logger = logging.getLogger(__name__)
 _SINGLE_TURN_SAMPLING_PARAMS_LOGGED = False
 _SINGLE_TURN_PROMPT_PREFILL_STRIP_LOGGED = False
+_ENABLE_THINKING_RESOLVED_LOGGED = False
 _SINGLE_TURN_THINK_CLOSE_STRIP_LOGGED = False
 
 _PROPAGATED_RUNTIME_ENV_VARS = (
@@ -67,6 +71,8 @@ _PROPAGATED_RUNTIME_ENV_VARS = (
     "LOGPROB_CLIP_MIN",
     "LOGPROB_CLIP_MAX",
     "PERSONA_ELBO_SFT_MAX_LENGTH",
+    "B0_ROLLOUT_SYNC",
+    "RL_RUN_DIR",
 )
 _PERSONA_WORKER_PROCESS_SETUP_HOOK = "training.grpo.ray_worker_setup.persona_worker_process_setup"
 _UPSTREAM_WORKER_PROCESS_SETUP_HOOK_ENV = "PERSONA_UPSTREAM_WORKER_PROCESS_SETUP_HOOK"
@@ -106,9 +112,163 @@ def _bool_env(name: str, default: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _find_optional_module_spec(module_name: str) -> Any:
+    """Return a module spec, treating a missing parent package as unavailable."""
+    try:
+        return importlib.util.find_spec(module_name)
+    except ModuleNotFoundError:
+        return None
+
+
+def _patch_verl_attention_utils_without_flash_attn() -> bool:
+    """Use Transformers' padding helpers when the standalone flash-attn package is absent."""
+    try:
+        import flash_attn.bert_padding  # noqa: F401
+        return False
+    except ImportError:
+        pass
+
+    try:
+        from einops import rearrange
+        from transformers.modeling_flash_attention_utils import _index_first_axis, _pad_input, _unpad_input
+        from verl.utils import attention_utils
+    except ImportError:
+        return False
+
+    def get_attention_functions():
+        return _index_first_axis, _pad_input, rearrange, _unpad_input
+
+    attention_utils._get_attention_functions = get_attention_functions
+    attention_utils._index_first_axis = _index_first_axis
+    attention_utils._pad_input = _pad_input
+    attention_utils._rearrange = rearrange
+    attention_utils._unpad_input = _unpad_input
+    return True
+
+
+def _insert_qwen35_fused_vocab_weight_device_transfer(source: str) -> str:
+    """Move a reconstructed FSDP2 DTensor lm-head weight onto the hidden-state device."""
+    unsafe = "vocab_weights = vocab_weights.full_tensor()"
+    safe = "vocab_weights = vocab_weights.full_tensor().to(hidden_states.device)"
+    if safe in source:
+        return source
+    if unsafe not in source:
+        raise RuntimeError("Unrecognized Qwen3.5 fused vocab-weight source; refusing an unsafe compatibility rewrite")
+    return source.replace(unsafe, safe)
+
+
+def _patch_qwen35_fused_vocab_weight_device() -> bool:
+    """Patch veRL's Qwen3.5 fused PPO forwards in this process before model construction."""
+    spec = _find_optional_module_spec("verl.models.transformers.qwen3_5")
+    if spec is None:
+        return False
+    try:
+        module = importlib.import_module("verl.models.transformers.qwen3_5")
+    except ImportError:
+        return False
+    marker = "_persona_fused_offload_device_patch_applied"
+    if getattr(module, marker, False):
+        return False
+    changed = False
+    for function_name in ("forward_with_torch_backend", "forward_with_triton_backend"):
+        original = getattr(module, function_name)
+        source = textwrap.dedent(inspect.getsource(original))
+        patched = _insert_qwen35_fused_vocab_weight_device_transfer(source)
+        if patched == source:
+            continue
+        namespace = dict(vars(module))
+        exec(patched, namespace)
+        setattr(module, function_name, namespace[function_name])
+        changed = True
+    if changed:
+        setattr(module, marker, True)
+        print("PERSONA_QWEN35_FUSED_OFFLOAD_PATCH: installed=1", flush=True)
+    return changed
+
+
+def _patch_fsdp2_missing_unsharded_param_guard() -> bool:
+    """Make FSDP2's no-sync post-backward path safe for parameters unused in forward."""
+    module_name = "torch.distributed.fsdp._fully_shard._fsdp_param"
+    if _find_optional_module_spec(module_name) is None:
+        return False
+    try:
+        module = importlib.import_module(module_name)
+    except ImportError:
+        return False
+    fsdp_param_cls = module.FSDPParam
+    marker = "_persona_missing_unsharded_param_guard_applied"
+    if getattr(fsdp_param_cls, marker, False):
+        return False
+
+    original = fsdp_param_cls.to_accumulated_grad_if_needed
+    reported = False
+
+    @wraps(original)
+    def guarded_to_accumulated_grad_if_needed(self):
+        nonlocal reported
+        if not hasattr(self, "_unsharded_param"):
+            if getattr(self.sharded_param, "requires_grad", False):
+                raise RuntimeError(
+                    "FSDP2 is missing _unsharded_param for a trainable FSDP parameter; "
+                    "refusing to discard a possible gradient"
+                )
+            if not reported:
+                print(
+                    "PERSONA_FSDP2_UNUSED_PARAM_GUARD: "
+                    f"skipped_missing_unsharded_param=1 fqn={getattr(self, '_param_fqn', None)!r}",
+                    flush=True,
+                )
+                reported = True
+            return None
+        return original(self)
+
+    fsdp_param_cls.to_accumulated_grad_if_needed = guarded_to_accumulated_grad_if_needed
+    setattr(fsdp_param_cls, marker, True)
+    print("PERSONA_FSDP2_UNUSED_PARAM_GUARD: installed=1", flush=True)
+    return True
+
+
+def _insert_pre_resume_cache_clear(text: str) -> str:
+    marker = "# Persona compatibility: release trainer allocator cache before rollout wake-up."
+    if marker in text:
+        return text
+    anchor = (
+        "        set_expandable_segments(False)\n"
+        '        log_gpu_memory_usage("Before resume weights", logger=logger)\n'
+    )
+    if anchor not in text:
+        return text
+    return text.replace(
+        anchor,
+        anchor
+        + f"        {marker}\n"
+        + "        aggressive_empty_cache(force_sync=True)\n",
+        1,
+    )
+
+
+def _patch_engine_worker_pre_resume_cache_clear_source() -> None:
+    """Patch veRL's colocated sync order so offloaded actor cache cannot block vLLM wake-up."""
+    spec = _find_optional_module_spec("verl.workers.engine_workers")
+    if spec is None or spec.origin is None:
+        return
+    path = Path(spec.origin)
+    try:
+        text = path.read_text()
+    except OSError:
+        return
+    patched = _insert_pre_resume_cache_clear(text)
+    if patched == text:
+        return
+    try:
+        path.write_text(patched)
+    except OSError:
+        logger.warning("Failed to patch veRL pre-resume cache clear at %s", path, exc_info=True)
+
+
 def _patch_actor_elbo_sft_source() -> None:
     """Patch veRL actor config for optional ELBO/SFT loss."""
-    spec = importlib.util.find_spec("verl.workers.actor.dp_actor")
+    spec = _find_optional_module_spec("verl.workers.actor.dp_actor")
     if spec is None or spec.origin is None:
         return
     path = Path(spec.origin)
@@ -175,7 +335,7 @@ def _patch_actor_elbo_sft_source() -> None:
 
 
 def _patch_actor_config_elbo_sft_source() -> None:
-    spec = importlib.util.find_spec("verl.workers.config.actor")
+    spec = _find_optional_module_spec("verl.workers.config.actor")
     if spec is None or spec.origin is None:
         return
     path = Path(spec.origin)
@@ -202,7 +362,7 @@ def _patch_actor_config_elbo_sft_source() -> None:
 
 def _patch_peft_meta_adapter_load_source() -> None:
     """Patch PEFT adapter loading on meta tensors."""
-    spec = importlib.util.find_spec("verl.workers.fsdp_workers")
+    spec = _find_optional_module_spec("verl.workers.fsdp_workers")
     if spec is None or spec.origin is None:
         return
     path = Path(spec.origin)
@@ -263,6 +423,97 @@ def _runtime_env_propagation_enabled() -> bool:
 
 def _worker_process_setup_hook_enabled() -> bool:
     return _bool_env("PERSONA_ENABLE_WORKER_PROCESS_SETUP_HOOK", True)
+
+
+def _enable_thinking_env_name() -> str:
+    # Read the name from shared.prompt_utils rather than re-spelling it: a second copy of the
+    # literal is how PERSONA_JUDGE_ENABLE_THINKING came to look like it controlled training.
+    from shared.prompt_utils import ENABLE_THINKING_OVERRIDE_ENV
+
+    return ENABLE_THINKING_OVERRIDE_ENV
+
+
+def _coerce_enable_thinking(value: Any, source: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"Cannot interpret {source}={value!r} as a boolean enable_thinking value.")
+
+
+def _resolve_config_enable_thinking(config: Any) -> bool:
+    """Resolve data.apply_chat_template_kwargs.enable_thinking, failing closed.
+
+    This function exists because the value was previously never read at all. The judge config
+    asked for thinking ON, `get_chat_template_kwargs_for_prompt_mode` consulted only
+    PERSONA_ENABLE_THINKING (unset), and four judge runs trained for ~9h each against an empty
+    `<think></think>` block with nothing in the log to say so. Every failure mode here therefore
+    raises: a crashed job costs minutes, a silently wrong-mode job costs a day and a conclusion.
+    """
+    env_name = _enable_thinking_env_name()
+    hint = f"Set {env_name}=0|1 explicitly to override."
+
+    if config is None:
+        raise RuntimeError(
+            "veRL did not pass a config to get_ppo_ray_runtime_env, so "
+            f"data.apply_chat_template_kwargs.enable_thinking cannot be resolved. {hint}"
+        )
+    data_cfg = _config_get(config, "data", None)
+    if data_cfg is None:
+        raise RuntimeError(f"veRL config has no `data` section. {hint}")
+    apply_kwargs = _config_get(data_cfg, "apply_chat_template_kwargs", None)
+    if apply_kwargs is None:
+        raise RuntimeError(f"veRL config has no `data.apply_chat_template_kwargs`. {hint}")
+    value = _config_get(apply_kwargs, "enable_thinking", None)
+    if value is None:
+        raise RuntimeError(
+            f"`data.apply_chat_template_kwargs.enable_thinking` is unset. {hint}"
+        )
+    return _coerce_enable_thinking(value, "data.apply_chat_template_kwargs.enable_thinking")
+
+
+def _seed_enable_thinking_env_from_config(config: Any) -> None:
+    """Make the config the source of truth for thinking mode, with env as an explicit override."""
+    env_name = _enable_thinking_env_name()
+    explicit = os.environ.get(env_name, "").strip()
+    if explicit:
+        # Validate it now rather than letting a typo resolve to False deep in a Ray worker.
+        resolved = _coerce_enable_thinking(explicit, env_name)
+        print(
+            f"PERSONA_DEBUG_AGENT_LOOP: enable_thinking={resolved} source={env_name} (explicit override)",
+            flush=True,
+        )
+        return
+
+    resolved = _resolve_config_enable_thinking(config)
+    os.environ[env_name] = "1" if resolved else "0"
+    print(
+        "PERSONA_DEBUG_AGENT_LOOP: enable_thinking="
+        f"{resolved} source=data.apply_chat_template_kwargs.enable_thinking",
+        flush=True,
+    )
+
+
+def _assert_enable_thinking_propagated() -> bool:
+    """Abort in a worker whose thinking mode never arrived, instead of defaulting to OFF.
+
+    Called OUTSIDE the broad `except Exception` around prompt rendering in
+    patched_single_turn_run: that handler falls back to veRL's own apply_chat_template, which
+    would swallow this and silently restore exactly the bug being fixed.
+    """
+    env_name = _enable_thinking_env_name()
+    raw = os.environ.get(env_name, "").strip()
+    if not raw:
+        raise RuntimeError(
+            f"{env_name} is unset in this rollout worker, so the chat template would silently "
+            "render with enable_thinking=False. The driver seeds it from "
+            "data.apply_chat_template_kwargs.enable_thinking and propagates it through the Ray "
+            "runtime env; that propagation failed."
+        )
+    return _coerce_enable_thinking(raw, env_name)
 
 
 def _ray_loopback_advertise_enabled() -> bool:
@@ -1126,7 +1377,7 @@ def _worker_process_setup_hook_path() -> str:
 def _with_repo_root_pythonpath(env_vars: dict[str, str]) -> dict[str, str]:
     repo_root = os.environ.get("REPO_ROOT", "").strip()
     if not repo_root:
-        return env_vars
+        repo_root = str(Path(__file__).resolve().parents[2])
 
     existing_pythonpath = env_vars.get("PYTHONPATH")
     if existing_pythonpath is None:
@@ -1138,8 +1389,38 @@ def _with_repo_root_pythonpath(env_vars: dict[str, str]) -> dict[str, str]:
     return env_vars
 
 
+def _agent_loop_score_context(args: tuple[Any, ...], call_kwargs: Mapping[str, Any]) -> tuple[Any, Mapping[str, Any]]:
+    """Extract the final output and sample kwargs across veRL agent-loop APIs."""
+    if not args:
+        raise TypeError("AgentLoopWorker._compute_score called without an output")
+
+    first_arg = args[0]
+    if isinstance(first_arg, (list, tuple)):
+        if not first_arg:
+            raise ValueError("AgentLoopWorker._compute_score called with no trajectory outputs")
+        output = first_arg[-1]
+        score_kwargs = call_kwargs.get("kwargs", args[1] if len(args) > 1 else {})
+    else:
+        # Legacy veRL passed output plus five tensors and the sample kwargs mapping.
+        output = first_arg
+        score_kwargs = args[6] if len(args) > 6 else call_kwargs.get("kwargs", {})
+
+    return output, _coerce_mapping(score_kwargs)
+
+
 def _merge_propagated_runtime_env_vars(runtime_env: Mapping[str, Any] | None) -> dict[str, Any]:
     merged_runtime_env = dict(runtime_env or {})
+
+    # Thinking mode propagates unconditionally, outside both the _runtime_env_propagation_enabled
+    # gate (default False, so that path is inert) and the worker-setup-hook gate (default True,
+    # but flippable). A rollout worker that renders with the wrong thinking mode produces a run
+    # that looks healthy and measures the wrong model, so this must not depend on a feature flag.
+    thinking_env_name = _enable_thinking_env_name()
+    if os.environ.get(thinking_env_name, "").strip():
+        env_vars = dict(merged_runtime_env.get("env_vars") or {})
+        env_vars[thinking_env_name] = os.environ[thinking_env_name]
+        merged_runtime_env["env_vars"] = env_vars
+
     propagated_env_vars = _collect_propagated_runtime_env_vars()
     if propagated_env_vars:
         env_vars = dict(merged_runtime_env.get("env_vars") or {})
@@ -1148,6 +1429,9 @@ def _merge_propagated_runtime_env_vars(runtime_env: Mapping[str, Any] | None) ->
 
     if _worker_process_setup_hook_enabled():
         env_vars = dict(merged_runtime_env.get("env_vars") or {})
+        for name in ("B0_ROLLOUT_SYNC", "RL_RUN_DIR"):
+            if os.environ.get(name) is not None:
+                env_vars[name] = os.environ[name]
         existing_hook = merged_runtime_env.get("worker_process_setup_hook")
         if existing_hook and existing_hook != _worker_process_setup_hook_path():
             if isinstance(existing_hook, str):
@@ -1169,8 +1453,11 @@ def _patch_ppo_ray_runtime_env(constants_ppo_mod: Any) -> None:
 
     original_get_ppo_ray_runtime_env = constants_ppo_mod.get_ppo_ray_runtime_env
 
-    def patched_get_ppo_ray_runtime_env():
-        return _merge_propagated_runtime_env_vars(original_get_ppo_ray_runtime_env())
+    def patched_get_ppo_ray_runtime_env(*args, **kwargs):
+        # veRL 0.9 passes the resolved config here (preflight check 18); this is the earliest
+        # point where the config and the Ray runtime env are both in hand.
+        _seed_enable_thinking_env_from_config(args[0] if args else kwargs.get("config"))
+        return _merge_propagated_runtime_env_vars(original_get_ppo_ray_runtime_env(*args, **kwargs))
 
     constants_ppo_mod.get_ppo_ray_runtime_env = patched_get_ppo_ray_runtime_env
     constants_ppo_mod._persona_runtime_env_vars_patch_applied = True
@@ -1590,11 +1877,30 @@ def _render_text_prompt_ids(
 ) -> tuple[list[int], bool]:
     from shared.prompt_utils import get_chat_template_kwargs_for_prompt_mode
 
-    prompt_text = tokenizer.apply_chat_template(
-        messages,
-        **get_chat_template_kwargs_for_prompt_mode(prompt_mode),
-    )
+    apply_kwargs = get_chat_template_kwargs_for_prompt_mode(prompt_mode)
+    prompt_text = tokenizer.apply_chat_template(messages, **apply_kwargs)
+    _log_rendered_thinking_once(apply_kwargs, prompt_text)
     return _tokenize_without_specials(tokenizer, prompt_text), False
+
+
+def _log_rendered_thinking_once(apply_kwargs: Mapping[str, Any], prompt_text: Any) -> None:
+    """Print the resolved thinking mode and the rendered prompt tail, once per process.
+
+    The tail is the only direct observable for the bug: thinking ON ends the prompt with an open
+    `<think>`, while thinking OFF ends it with an already-closed empty `<think></think>` block.
+    A shell banner cannot show this, because the value is resolved from Hydra config long after
+    the job script has run.
+    """
+    global _ENABLE_THINKING_RESOLVED_LOGGED
+    if _ENABLE_THINKING_RESOLVED_LOGGED:
+        return
+    _ENABLE_THINKING_RESOLVED_LOGGED = True
+    tail = repr(prompt_text[-80:]) if isinstance(prompt_text, str) else repr(prompt_text)[:120]
+    print(
+        "PERSONA_DEBUG_AGENT_LOOP: rendered_enable_thinking="
+        f"{apply_kwargs.get('enable_thinking')} prompt_tail={tail}",
+        flush=True,
+    )
 
 
 def _log_prompt_prefill_preserve_once(stripped: bool) -> None:
@@ -1653,6 +1959,10 @@ def _should_route_grouped_sim_rewards(config: Any, num_workers: int) -> bool:
 
 def apply_verl_runtime_patch() -> bool:
     _patch_ray_loopback_advertise()
+    _patch_verl_attention_utils_without_flash_attn()
+    _patch_qwen35_fused_vocab_weight_device()
+    _patch_fsdp2_missing_unsharded_param_guard()
+    _patch_engine_worker_pre_resume_cache_clear_source()
     _patch_peft_meta_adapter_load_source()
     _patch_fsdp1_lora_checkpointing()
     _patch_actor_config_elbo_sft_source()
@@ -1858,6 +2168,9 @@ def apply_verl_runtime_patch() -> bool:
     async def patched_single_turn_run(self, sampling_params: dict[str, Any], **kwargs) -> AgentLoopOutput:
         sampling_params = _apply_presence_penalty_to_sampling_params(sampling_params)
         _log_single_turn_sampling_params_once(sampling_params)
+        # Deliberately OUTSIDE the try/except around prompt rendering below: that handler falls
+        # back to veRL's apply_chat_template on ANY exception, which would swallow this abort.
+        _assert_enable_thinking_propagated()
         _suppress_fast_tokenizer_pad_advisory(self.tokenizer)
         extra_info = _coerce_mapping(kwargs.get("extra_info"))
         rewritten_messages, extra_info = _maybe_override_prompt_messages_for_runtime_conditioning(extra_info)
@@ -2032,11 +2345,15 @@ def apply_verl_runtime_patch() -> bool:
         finally:
             self.server_class = original_server_class
 
-    async def patched_compute_score(self, output, prompts, responses, attention_mask, input_ids, position_ids, kwargs):
+    async def patched_compute_score(self, *args, **call_kwargs):
         metric = os.environ.get("REWARD_METRIC", "turing")
+        if metric != "logprob" or not _current_policy_logprob_enabled():
+            return await original_compute_score(self, *args, **call_kwargs)
+
+        output, score_kwargs = _agent_loop_score_context(args, call_kwargs)
         output.extra_fields = dict(output.extra_fields or {})
 
-        if output.reward_score is None and metric == "logprob" and _current_policy_logprob_enabled():
+        if output.reward_score is None:
             from shared.prompt_utils import (
                 build_messages_for_prompt_mode,
                 get_chat_template_kwargs_for_prompt_mode,
@@ -2049,9 +2366,9 @@ def apply_verl_runtime_patch() -> bool:
                 parse_response_for_prompt_mode,
             )
 
-            extra_info = _coerce_mapping(kwargs.get("extra_info"))
+            extra_info = _coerce_mapping(score_kwargs.get("extra_info"))
             _rewritten_messages, extra_info = _maybe_override_prompt_messages_for_runtime_conditioning(extra_info)
-            ground_truth = _extract_logprob_ground_truth(kwargs, extra_info)
+            ground_truth = _extract_logprob_ground_truth(score_kwargs, extra_info)
             context = str(extra_info.get("context", "") or "")
             user_history = str(extra_info.get("user_history", "") or "")
             persona = str(extra_info.get("persona", extra_info.get("persona_memory", "")) or "")
@@ -2126,16 +2443,7 @@ def apply_verl_runtime_patch() -> bool:
             output.extra_fields.setdefault("server_sticky_request_id", sticky_request_id)
             return
 
-        return await original_compute_score(
-            self,
-            output,
-            prompts,
-            responses,
-            attention_mask,
-            input_ids,
-            position_ids,
-            kwargs,
-        )
+        return await original_compute_score(self, *args, **call_kwargs)
 
     def patched_compute_rm_score(self, data):
         if not _should_route_grouped_sim_rewards(self.config, len(self.reward_loop_workers)):
@@ -2215,9 +2523,9 @@ def apply_verl_runtime_patch() -> bool:
             if self.reward_model_manager is not None:
                 self.reward_model_manager.sleep()
 
-    def patched_postprocess(self, inputs, input_non_tensor_batch=None):
+    def patched_postprocess(self, inputs, *args, **kwargs):
         _normalize_reward_extra_info_keys(inputs)
-        return original_postprocess(self, inputs, input_non_tensor_batch=input_non_tensor_batch)
+        return original_postprocess(self, inputs, *args, **kwargs)
 
     SingleTurnAgentLoop.run = patched_single_turn_run
     RayPPOTrainer.__init__ = patched_trainer_init

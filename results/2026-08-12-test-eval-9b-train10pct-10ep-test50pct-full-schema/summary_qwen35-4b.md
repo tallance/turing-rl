@@ -1,0 +1,15 @@
+# split: PASS expect=heldout rows=440 users=123 parquet=/storage/home/lancewicki/projects/turing-rl/data/prism/full_s42_history_sft40_grpo60_test10/eval_subsets/test_seed42_n440.parquet
+
+| checkpoint | n_scored | n_unique_pairs | n_likert | likert_mean | win_rate_ge5 | pct_7 | judge_accuracy | gen_win_rate | n_nontie | n_tie | n_parse_error |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| 9b-train10pct-step0 | 440 | 440 | 440 | 4.1045 | 0.5136 | 2.5 | 0.4769 | 0.5231 | 432 | 8 | 0 |
+| 9b-train10pct-step6 | 440 | 440 | 440 | 4.0818 | 0.4795 | 3.64 | 0.5047 | 0.4953 | 426 | 14 | 0 |
+| 9b-train10pct-step12 | 440 | 440 | 440 | 4.2795 | 0.5614 | 2.95 | 0.4242 | 0.5758 | 429 | 11 | 0 |
+| 9b-train10pct-step18 | 440 | 440 | 440 | 4.4545 | 0.6023 | 2.05 | 0.3735 | 0.6265 | 423 | 17 | 0 |
+| 9b-train10pct-step24 | 440 | 440 | 439 | 4.6128 | 0.6538 | 5.01 | 0.3356 | 0.6644 | 432 | 7 | 1 |
+| 9b-train10pct-step30 | 440 | 440 | 439 | 4.713 | 0.6902 | 4.1 | 0.2904 | 0.7096 | 427 | 12 | 1 |
+| 9b-train10pct-step36 | 440 | 440 | 440 | 4.8182 | 0.7318 | 3.86 | 0.2459 | 0.7541 | 427 | 13 | 0 |
+| 9b-train10pct-step42 | 440 | 440 | 440 | 4.9045 | 0.7727 | 3.64 | 0.2056 | 0.7944 | 428 | 12 | 0 |
+| 9b-train10pct-step48 | 440 | 440 | 438 | 4.9361 | 0.7648 | 3.65 | 0.2155 | 0.7845 | 427 | 11 | 2 |
+| 9b-train10pct-step54 | 440 | 440 | 439 | 4.8292 | 0.7358 | 3.19 | 0.2523 | 0.7477 | 432 | 7 | 1 |
+| 9b-train10pct-step60 | 440 | 440 | 440 | 4.9523 | 0.7659 | 5.68 | 0.2217 | 0.7783 | 433 | 7 | 0 |
