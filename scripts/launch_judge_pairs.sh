@@ -21,8 +21,16 @@
 # --env PROMPT_STYLE=<full|single_token> selects the judge prompt template baked into the
 # pair rows: "full" (default, rubric and JSON schema) or one-letter. It reaches
 # build_judge_train_pairs.py --prompt-style and is recorded in the sibling .meta.json.
-# Two styles built into the same OUT_DIR overwrite each other -- the filename does not carry
-# the style, so point non-default styles at their own --env OUT_DIR=.
+#
+# The style is folded into the default OUT_DIR as a nested segment, and a single_token
+# OUT_DIR must name the style:
+#     full          -> $TURING_RL_GENERATED_DATA_ROOT/prism/judge/iter1
+#     single_token  -> $TURING_RL_GENERATED_DATA_ROOT/prism/judge/iter1/single_token
+# The filename does not carry the style, so two styles built into one OUT_DIR overwrite each
+# other -- and they overwrite the .meta.json alongside, which is the only thing recording
+# which style a parquet holds. The overwrite therefore destroys its own evidence. The guard
+# fires on the path the caller typed rather than silently redirecting, because the mistake
+# being caught is reusing the iter1 path out of habit.
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -32,15 +40,29 @@ cd "$REPO" || exit 2
 
 SPLITS=${SPLITS:-"train val"}
 DRY=${DRY:-0}
-# $REPO/data is the immutable source snapshot inside a job; generated data belongs in the
-# state root, which is what TURING_RL_GENERATED_DATA_ROOT points at.
-OUT_DIR=${OUT_DIR:-${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1}
 
+# Validated before OUT_DIR because the default path depends on the style.
 PROMPT_STYLE=${PROMPT_STYLE:-full}
 case "$PROMPT_STYLE" in
   full|single_token) ;;
   *) echo "FATAL: PROMPT_STYLE must be full|single_token, got '$PROMPT_STYLE'" >&2; exit 2 ;;
 esac
+
+# $REPO/data is the immutable source snapshot inside a job; generated data belongs in the
+# state root, which is what TURING_RL_GENERATED_DATA_ROOT points at. Resolved lazily: a
+# caller who passes OUT_DIR must not also need TURING_RL_GENERATED_DATA_ROOT set.
+if [ -z "${OUT_DIR:-}" ]; then
+  OUT_DIR=${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1
+  # Nested for non-default styles only, matching launch_judge_eval_matrix.sh's reward_dir.
+  [ "$PROMPT_STYLE" = "full" ] || OUT_DIR=$OUT_DIR/$PROMPT_STYLE
+fi
+
+if [ "$PROMPT_STYLE" = "single_token" ]; then
+  case "$OUT_DIR" in
+    *single_token*|*single-token*) ;;
+    *) echo "FATAL: a single_token OUT_DIR must name the style: $OUT_DIR" >&2; exit 2 ;;
+  esac
+fi
 
 echo "=== judge pair build: splits='$SPLITS' style=$PROMPT_STYLE out_dir=$OUT_DIR ==="
 
