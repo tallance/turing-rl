@@ -1,10 +1,13 @@
 """Merge judge-eval cells into the published comparison table.
 
 Concatenates one or more per-run CSVs into the single table the protocol-switch
-decision is read from. Rows written before the single-token prompt style existed
-have no ``prompt_style`` column; those default to ``"full"`` without ever
-overwriting a row that already declares one (so re-merging a single-token CSV
-twice cannot silently relabel it). Refuses to merge if two rows collide on
+decision is read from. The inputs are not guaranteed to share a column set --
+e.g. one predates the thinking-mode comparison and has no ``thinking_mode``
+column at all. Columns absent from a given input are left ``NaN`` for its rows;
+only ``prompt_style`` gets a backfill (missing values default to ``"full"``,
+the pre-single-token style), and only where absent -- a row that already
+declares one is never overwritten (so re-merging a single-token CSV twice
+cannot silently relabel it). Refuses to merge if two rows collide on
 ``(model, kind, thinking_mode, prompt_style)`` rather than silently keeping the
 last one -- these keys back a published comparison table, and a duplicate would
 corrupt it in a way that looks like a result.

@@ -59,6 +59,27 @@ def test_non_colliding_rows_with_different_keys_are_kept_distinct():
     assert len(out) == 2
 
 
+def test_missing_thinking_mode_column_is_not_invented():
+    """The two published CSVs this merges have genuinely different column
+    sets -- one predates the thinking-mode comparison and has no
+    thinking_mode column at all. Only prompt_style gets a backfill; a row
+    from a frame lacking thinking_mode must come out NaN, never defaulted to
+    "on" or "off"."""
+    with_mode = pd.DataFrame([
+        {"model": "qwen35-9b", "kind": "zero-shot", "thinking_mode": "off", "accuracy": 0.4477},
+    ])
+    without_mode_column = pd.DataFrame([
+        {"model": "qwen35-9b", "kind": "zero-shot", "accuracy": 0.5182},
+    ])
+
+    out = merge_cells([with_mode, without_mode_column])
+
+    assert len(out) == 2
+    modes = out.set_index("accuracy")["thinking_mode"]
+    assert modes.loc[0.4477] == "off"
+    assert pd.isna(modes.loc[0.5182])
+
+
 def test_merge_is_compatible_with_the_published_comparison_csv():
     """Guards against the merge silently choking on -- or dropping rows from
     -- the real published table this function is meant to extend."""
