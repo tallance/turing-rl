@@ -17,6 +17,12 @@
 # SPLITS selects which splits to build (default "train val"). The train split takes the
 # [0.0,0.1) hash slice capped at 416 contexts with k=4 generations; the val split takes all
 # 352 contexts at k=1. Those per-split parameters live in judge_train_gen.sh, not here.
+#
+# --env PROMPT_STYLE=<full|single_token> selects the judge prompt template baked into the
+# pair rows: "full" (default, rubric and JSON schema) or one-letter. It reaches
+# build_judge_train_pairs.py --prompt-style and is recorded in the sibling .meta.json.
+# Two styles built into the same OUT_DIR overwrite each other -- the filename does not carry
+# the style, so point non-default styles at their own --env OUT_DIR=.
 set -uo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -30,7 +36,13 @@ DRY=${DRY:-0}
 # state root, which is what TURING_RL_GENERATED_DATA_ROOT points at.
 OUT_DIR=${OUT_DIR:-${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1}
 
-echo "=== judge pair build: splits='$SPLITS' out_dir=$OUT_DIR ==="
+PROMPT_STYLE=${PROMPT_STYLE:-full}
+case "$PROMPT_STYLE" in
+  full|single_token) ;;
+  *) echo "FATAL: PROMPT_STYLE must be full|single_token, got '$PROMPT_STYLE'" >&2; exit 2 ;;
+esac
+
+echo "=== judge pair build: splits='$SPLITS' style=$PROMPT_STYLE out_dir=$OUT_DIR ==="
 
 for split in $SPLITS; do
   case "$split" in
@@ -39,7 +51,7 @@ for split in $SPLITS; do
   esac
 
   # Slurm splits --export on commas, so every value here must be comma-free. Paths are.
-  EXPORTS="ALL,SPLIT=$split,OUT_DIR=$OUT_DIR"
+  EXPORTS="ALL,SPLIT=$split,OUT_DIR=$OUT_DIR,PROMPT_STYLE=$PROMPT_STYLE"
 
   if [ "$DRY" = "1" ]; then
     echo "[DRY] $SBATCH --parsable --export=$EXPORTS -- scripts/slurm/judge_train_gen.sh"

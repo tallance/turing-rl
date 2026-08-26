@@ -2,8 +2,10 @@
 
 import os
 import re
+import subprocess
+import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT =os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PROBE = os.path.join(ROOT, "scripts", "slurm", "judge_format_probe.sh")
 GEN = os.path.join(ROOT, "scripts", "slurm", "judge_train_gen.sh")
 TRAIN = os.path.join(ROOT, "scripts", "slurm", "judge_grpo_train.sh")
@@ -65,6 +67,41 @@ def test_generation_slices_the_source_before_generating():
 def test_generation_records_the_prompt_budget_measurement():
     """The .meta.json prompt-length fields are what data.max_prompt_length must be set from."""
     assert "--prompt_budget_tokens" in _text(GEN)
+
+
+def _builder_invocation(text: str) -> str:
+    """The `$PY ... build_judge_train_pairs.py` command, joined across its backslashes."""
+    lines = text.splitlines()
+    for index, line in enumerate(lines):
+        if "build_judge_train_pairs.py" in line and not line.strip().startswith("#"):
+            block = [line]
+            while block[-1].rstrip().endswith("\\") and index + len(block) < len(lines):
+                block.append(lines[index + len(block)])
+            return "\n".join(block)
+    raise AssertionError("judge_train_gen.sh no longer invokes build_judge_train_pairs.py")
+
+
+def test_generation_threads_the_prompt_style_to_the_builder():
+    """--prompt-style is the only way to build single-token pairs, and the builder is
+    reachable on the cluster only through this job script."""
+    text = _text(GEN)
+    assert "PROMPT_STYLE=${PROMPT_STYLE:-full}" in text, "default must stay full"
+    assert '--prompt-style "$PROMPT_STYLE"' in _builder_invocation(text)
+
+
+def test_generation_spells_every_builder_flag_the_way_the_builder_declares_it():
+    """This invocation mixes dashes (--prompt-style) and underscores (--slice_lo) because
+    the builder's own parser does. Guessing the wrong separator is an unrecognized-argument
+    exit AFTER the 12h generation step has already run."""
+    flags = set(re.findall(r"--[A-Za-z0-9][A-Za-z0-9_-]*", _builder_invocation(_text(GEN))))
+    # LIMIT_ARG is expanded, not spelled, at the call site.
+    flags.add("--limit")
+    help_text = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "scripts", "build_judge_train_pairs.py"), "--help"],
+        capture_output=True, text=True, check=True, cwd=ROOT,
+    ).stdout
+    unknown = sorted(f for f in flags if f not in help_text)
+    assert not unknown, f"judge_train_gen.sh passes flags the builder does not declare: {unknown}"
 
 
 def test_probe_uses_the_freeform_capable_script():

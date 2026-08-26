@@ -33,6 +33,7 @@ SLICE_HI=${SLICE_HI:-0.1}
 LIMIT=${LIMIT:-416}
 GEN_NUM=${GEN_NUM:-4}
 OUT_DIR=${OUT_DIR:-${TURING_RL_GENERATED_DATA_ROOT:?}/prism/judge/iter1}
+PROMPT_STYLE=${PROMPT_STYLE:-full}
 
 DATA_BASE=$TURING_RL_INPUT_DATA_ROOT/prism/full_s42_history_sft40_grpo60_test10/grpo
 case "$SPLIT" in
@@ -51,7 +52,7 @@ PKL=$OUT_DIR/raw/${SPLIT}_generations.pkl
 SLICED_PARQUET=$OUT_DIR/raw/${SPLIT}_source_slice.parquet
 mkdir -p "$OUT_DIR/raw"
 
-echo "=== judge gen: split=$SPLIT slice=[$SLICE_LO,$SLICE_HI) limit=$LIMIT k=$GEN_NUM ==="
+echo "=== judge gen: split=$SPLIT slice=[$SLICE_LO,$SLICE_HI) limit=$LIMIT k=$GEN_NUM style=$PROMPT_STYLE ==="
 echo "=== model=$MERGED_EP3 sampling T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
 
 LIMIT_ARG=()
@@ -81,4 +82,5 @@ $PY -u scripts/build_judge_train_pairs.py \
   --inference_pkl "$PKL" --source_parquet "$SLICED_PARQUET" \
   --out "$OUT_DIR/$SPLIT.parquet" \
   --prompt_budget_tokens "${PROMPT_BUDGET_TOKENS:-10240}" \
-  --slice_lo "$SLICE_LO" --slice_hi "$SLICE_HI" --split "$SPLIT" "${LIMIT_ARG[@]}"
+  --slice_lo "$SLICE_LO" --slice_hi "$SLICE_HI" --split "$SPLIT" \
+  --prompt-style "$PROMPT_STYLE" "${LIMIT_ARG[@]}"
