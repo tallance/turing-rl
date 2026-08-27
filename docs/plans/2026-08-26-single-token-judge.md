@@ -1033,117 +1033,20 @@ git commit -m "judge-eval: single-token metrics with degeneracy detection"
 
 ---
 
-## Task 8: Paired comparison statistics
+## Task 8: Paired comparison statistics — WITHDRAWN
 
-The decision rule *is* a paired test, so an error here is an error in the switch/keep verdict.
+Built as `scripts/paired_judge_stats.py` (McNemar + a pair-clustered bootstrap), then
+deleted. It existed to execute an automated rule — *switch if the new judge is within
+0.02 of 0.7551 on a paired test* — which the user replaced with reading the table and
+plot directly. Nothing imported it outside its own test.
 
-**Files:**
-- Create: `scripts/paired_judge_stats.py`
-- Test: `tests/test_paired_judge_stats.py` (create)
+Two things learned that outlive the code, both recorded because they still constrain
+how the table is read:
 
-**Step 1: Write the failing test**
-
-```python
-import pytest
-
-from scripts.paired_judge_stats import clustered_ci, mcnemar
-
-
-def test_mcnemar_against_a_hand_computed_table():
-    # arm A right / arm B wrong: 20.  arm A wrong / arm B right: 5.  Concordant: 100.
-    a = [1] * 20 + [0] * 5 + [1] * 100
-    b = [0] * 20 + [1] * 5 + [1] * 100
-    r = mcnemar(a, b)
-    assert r["n_discordant"] == 25
-    assert r["b01"] == 20 and r["b10"] == 5
-    # chi2 with continuity correction = (|20-5|-1)^2 / 25 = 7.84
-    assert r["chi2"] == pytest.approx(7.84, abs=1e-2)
-    assert r["p_value"] < 0.01
-
-
-def test_mcnemar_is_symmetric_in_its_verdict():
-    a, b = [1, 0, 1, 1], [0, 1, 1, 1]
-    assert mcnemar(a, b)["p_value"] == pytest.approx(mcnemar(b, a)["p_value"])
-
-
-def test_no_discordant_pairs_is_not_significant():
-    assert mcnemar([1, 1, 0], [1, 1, 0])["p_value"] == 1.0
-
-
-def test_clustering_widens_the_interval_when_orders_agree():
-    """Both orders of each pair identical -> effective n is halved, so the clustered
-    interval must be materially wider. This widening is the whole reason the column
-    exists."""
-    correct = [1, 1, 0, 0] * 55          # 220 pairs x 2 orders = 440 rows
-    pair_ids = [f"p{i // 2}" for i in range(len(correct))]
-    naive = clustered_ci(correct, pair_ids=list(range(len(correct))), seed=0)
-    clustered = clustered_ci(correct, pair_ids=pair_ids, seed=0)
-    assert clustered["width"] > naive["width"] * 1.2
-```
-
-**Step 2: Run and watch fail. Step 3: Implement**
-
-```python
-"""Paired statistics for arm-vs-arm judge comparisons.
-
-Two arms score the SAME 880 rows, so comparing their marginal confidence intervals
-throws away the pairing and badly understates power. And those 880 rows are 440 pairs
-seen in two presentation orders, so a row-level interval understates the width.
-"""
-
-from __future__ import annotations
-
-import math
-import random
-
-
-def mcnemar(a_correct: list[int], b_correct: list[int]) -> dict:
-    """McNemar with continuity correction over paired per-row correctness."""
-    if len(a_correct) != len(b_correct):
-        raise ValueError("arms must score the same rows")
-    b01 = sum(1 for a, b in zip(a_correct, b_correct) if a == 1 and b == 0)
-    b10 = sum(1 for a, b in zip(a_correct, b_correct) if a == 0 and b == 1)
-    n = b01 + b10
-    if n == 0:
-        return {"n_discordant": 0, "b01": 0, "b10": 0, "chi2": 0.0, "p_value": 1.0}
-    chi2 = (abs(b01 - b10) - 1) ** 2 / n
-    p = math.erfc(math.sqrt(chi2 / 2.0))  # 1 - chi2_1.cdf(x) == erfc(sqrt(x/2))
-    return {"n_discordant": n, "b01": b01, "b10": b10, "chi2": chi2, "p_value": p}
-
-
-def clustered_ci(
-    correct: list[float], pair_ids: list, *, seed: int = 0, iters: int = 2000,
-    alpha: float = 0.05,
-) -> dict:
-    """Bootstrap CI resampling whole pair_id clusters, not rows."""
-    clusters: dict = {}
-    for c, pid in zip(correct, pair_ids):
-        clusters.setdefault(pid, []).append(c)
-    keys = list(clusters)
-    rng = random.Random(seed)
-
-    means = []
-    for _ in range(iters):
-        drawn = [v for _ in keys for v in clusters[rng.choice(keys)]]
-        means.append(sum(drawn) / len(drawn))
-    means.sort()
-    lo = means[int(alpha / 2 * iters)]
-    hi = means[int((1 - alpha / 2) * iters) - 1]
-    return {
-        "mean": sum(correct) / len(correct),
-        "lo": lo, "hi": hi, "width": hi - lo, "n_clusters": len(keys),
-    }
-```
-
-**Step 4: Run tests, then commit**
-
-```bash
-python -m pytest tests/test_paired_judge_stats.py -q
-git add scripts/paired_judge_stats.py tests/test_paired_judge_stats.py
-git commit -m "judge-eval: paired McNemar and pair-clustered bootstrap CI"
-```
-
----
+- McNemar silently drops ties, and the reference cell has 79 of 880. The single-token
+  arm never ties, so those are exactly the rows where the protocols differ most.
+- A pair-clustered bootstrap reduces to the naive one on this pair set: the 880 rows are
+  880 unique pairs seen once each, not 440 seen twice.
 
 ## Task 9: Leakage and pair-set gates
 
