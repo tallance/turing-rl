@@ -49,6 +49,9 @@ def _env(tmp_path: Path, *, mode: str | None = None, confirm: bool = False) -> d
         env["THINKING_MODE"] = mode
     if confirm:
         env["CONFIRM_THINKING_OFF"] = "1"
+    # This fixture stands for a default invocation, and it inherits os.environ. An ambient
+    # CELLS would silently narrow every matrix a test asserts on.
+    env.pop("CELLS", None)
     return env
 
 
@@ -450,3 +453,250 @@ def test_single_token_arm_checks_both_ce_models(tmp_path: Path) -> None:
         assert "trained judge model is incomplete" in result.stderr
         assert str(missing) in result.stderr
         assert not _planned(result)
+
+
+# --- CELLS: submitting a subset of the arm's matrix -------------------------------------
+
+FULL_CELLS = (
+    "judge-9b-graded-step52",
+    "judge-4b-graded-step52",
+    "judge-4b-directional-step52",
+    "qwen35-27b",
+    "gemma4-31b",
+    "gemma4-12b",
+    "qwen35-9b",
+    "qwen35-4b",
+    "judge-9b-directional-step52",
+)
+SINGLE_TOKEN_CELLS = (
+    "judge-9b-ce-st",
+    "judge-4b-ce-st",
+    "qwen35-27b-st",
+    "gemma4-31b-st",
+    "gemma4-12b-st",
+    "qwen35-9b-st",
+    "qwen35-4b-st",
+)
+
+
+def _cell_names(result: subprocess.CompletedProcess[str]) -> list[str]:
+    return [row.split(" ", 1)[0] for row in _planned_matrix(result)]
+
+
+def _claim_metadata(env: dict[str, str]) -> str:
+    claim = Path(env["EVAL_ROOT"]) / "provenance/judge_eval_matrix_submission.claim"
+    return (claim / "metadata.txt").read_text()
+
+
+def test_cells_unset_plans_the_whole_matrix_for_both_styles(tmp_path: Path) -> None:
+    """The property that matters most: the default is unchanged. Both arms plan their whole
+    matrix, in matrix order, and an explicitly empty CELLS means "no selection" rather than
+    "select nothing"."""
+    full_env = _env(tmp_path / "full")
+    single_env = _single_token_env(tmp_path / "single")
+    assert "CELLS" not in full_env and "CELLS" not in single_env
+
+    full = _run(full_env)
+    single = _run(single_env)
+
+    assert full.returncode == 0, full.stderr
+    assert single.returncode == 0, single.stderr
+    assert _cell_names(full) == list(FULL_CELLS)
+    assert _cell_names(single) == list(SINGLE_TOKEN_CELLS)
+
+    empty_full = _run({**_env(tmp_path / "full2"), "CELLS": ""})
+    empty_single = _run({**_single_token_env(tmp_path / "single2"), "CELLS": "  "})
+
+    assert empty_full.returncode == 0, empty_full.stderr
+    assert empty_single.returncode == 0, empty_single.stderr
+    assert _cell_names(empty_full) == list(FULL_CELLS)
+    assert _cell_names(empty_single) == list(SINGLE_TOKEN_CELLS)
+
+
+def test_cells_with_one_name_plans_exactly_that_cell(tmp_path: Path) -> None:
+    """The one-cell serving smoke. A lone cell has nothing to chain behind, so it must carry
+    no dependency."""
+    env = _single_token_env(tmp_path)
+    env["CELLS"] = "qwen35-4b-st"
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert _planned_matrix(result) == ["qwen35-4b-st Qwen/Qwen3.5-4B 1 8 32"]
+    assert "--dependency=" not in _planned(result)[0]
+    assert "THINKING_MODE=off" in _planned(result)[0]
+    assert "JUDGE_PROMPT_STYLE=single_token" in _planned(result)[0]
+
+
+def test_cells_selects_within_the_full_arm_too(tmp_path: Path) -> None:
+    """CELLS is a property of the launcher, not of one arm. Dropping the GRPO overrides
+    leaves the hardcoded cluster defaults, which do not exist here, so this also shows the
+    model check following the selection rather than the arm."""
+    env = _env(tmp_path)
+    env["CELLS"] = "gemma4-12b qwen35-27b"
+    for key in GRPO_MODEL_KEYS:
+        env.pop(key, None)
+    for default in (
+        "/home/lancewicki/projects/turing-rl/results/2026-08-14-judge-4b-eval-v2",
+        "/home/lancewicki/projects/turing-rl/results/2026-08-17-judge-9b-eval",
+    ):
+        assert not Path(default).exists(), f"cluster path present locally, test is vacuous: {default}"
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert _planned_matrix(result) == [
+        "qwen35-27b Qwen/Qwen3.5-27B 8 1 32",
+        "gemma4-12b google/gemma-4-12B-it 1 8 4",
+    ]
+
+
+def test_cells_keeps_matrix_order_and_serving_shape(tmp_path: Path) -> None:
+    """The caller picks which cells run, never their order or their shape. Requested here in
+    reverse matrix order and with a duplicate, so a filter that walked the caller's list
+    instead of the matrix would plan a visibly different chain. gemma4-31b-st must keep its
+    TP=8 / concurrency=4 node constraint."""
+    env = _single_token_env(tmp_path)
+    env["CELLS"] = "qwen35-4b-st gemma4-31b-st judge-9b-ce-st gemma4-31b-st"
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert _planned_matrix(result) == [
+        f"judge-9b-ce-st {env['JUDGE_9B_CE_MODEL']} 1 8 32",
+        "gemma4-31b-st google/gemma-4-31B-it 8 1 4",
+        "qwen35-4b-st Qwen/Qwen3.5-4B 1 8 32",
+    ]
+    assert sum("--dependency=afterok:" in line for line in _planned(result)) == 2
+
+
+def test_cells_rejects_a_name_that_is_not_in_the_resolved_matrix(tmp_path: Path) -> None:
+    """A typo must be fatal. Submitting the recognised subset and dropping the rest would
+    read as a successful partial run, which is far harder to notice than a refusal."""
+    env = _single_token_env(tmp_path)
+    env["CELLS"] = "qwen35-4b-st qwen35-4b-ts"
+
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "unknown cell 'qwen35-4b-ts'" in result.stderr
+    assert not _planned(result)
+    # The valid names are listed, so the caller can fix the typo from the message alone.
+    valid = result.stderr.partition("valid cells:")[2]
+    assert valid, result.stderr
+    for cell in SINGLE_TOKEN_CELLS:
+        assert cell in valid
+
+
+def test_cells_rejects_a_name_belonging_to_the_other_arm(tmp_path: Path) -> None:
+    """The matrix is resolved per style before CELLS is applied, so the full arm's
+    ``qwen35-4b`` is simply not a cell of the single_token arm."""
+    env = _single_token_env(tmp_path)
+    env["CELLS"] = "qwen35-4b"
+
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "unknown cell 'qwen35-4b'" in result.stderr
+    assert "JUDGE_PROMPT_STYLE=single_token" in result.stderr
+    assert not _planned(result)
+
+
+def test_a_zero_shot_cell_under_single_token_does_not_require_the_ce_models(
+    tmp_path: Path,
+) -> None:
+    """The point of the change for the serving smoke: a zero-shot cell serves a HuggingFace
+    id, so it must be submittable before this arm's CE checkpoints have been trained."""
+    env = _single_token_env(tmp_path)
+    for key in CE_MODEL_KEYS:
+        absent = tmp_path / f"absent-{key.lower()}"
+        env[key] = str(absent)
+        assert not absent.exists()
+    env["CELLS"] = "qwen35-4b-st"
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert _planned_matrix(result) == ["qwen35-4b-st Qwen/Qwen3.5-4B 1 8 32"]
+
+
+def test_a_selected_trained_cell_still_requires_its_own_checkpoint(tmp_path: Path) -> None:
+    """The other half: the check is scoped to the selected cells, not switched off. Selecting
+    the 9B CE cell must still fail on a missing 9B CE checkpoint -- while an absent 4B CE
+    checkpoint, whose cell is not selected, must not interfere."""
+    env = _single_token_env(tmp_path)
+    absent_4b = tmp_path / "absent-judge-4b-ce"
+    missing_9b = tmp_path / "absent-judge-9b-ce"
+    env["JUDGE_4B_CE_MODEL"] = str(absent_4b)
+    env["JUDGE_9B_CE_MODEL"] = str(missing_9b)
+    assert not absent_4b.exists() and not missing_9b.exists()
+    env["CELLS"] = "judge-9b-ce-st"
+
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "trained judge model is incomplete" in result.stderr
+    assert str(missing_9b) in result.stderr
+    assert str(absent_4b) not in result.stderr
+    assert not _planned(result)
+
+
+def test_cells_scopes_the_stale_output_guard_to_the_selected_cells(tmp_path: Path) -> None:
+    """Output belonging to a cell this submission does not run cannot collide with it, so it
+    must not block the subset."""
+    env = _single_token_env(tmp_path)
+    env["CELLS"] = "qwen35-4b-st"
+    unselected = Path(env["EVAL_ROOT"]) / "raw/sweep/gemma4-12b-st/off/single_token/reward"
+    unselected.mkdir(parents=True)
+    (unselected / "stale.jsonl").write_text("{}\n")
+
+    result = _run(env)
+
+    assert result.returncode == 0, result.stderr
+    assert len(_planned(result)) == 1
+
+
+def test_cells_still_guards_stale_output_for_a_selected_cell(tmp_path: Path) -> None:
+    env = _single_token_env(tmp_path)
+    env["CELLS"] = "qwen35-4b-st"
+    selected = Path(env["EVAL_ROOT"]) / "raw/sweep/qwen35-4b-st/off/single_token/reward"
+    selected.mkdir(parents=True)
+    (selected / "stale.jsonl").write_text("{}\n")
+
+    result = _run(env)
+
+    assert result.returncode != 0
+    assert "refusing stale output" in result.stderr
+    assert not _planned(result)
+
+
+def test_a_subset_claims_the_whole_run_root(tmp_path: Path) -> None:
+    """Deliberate, and the reason a smoke needs its own run root: the claim answers "has a
+    matrix been submitted into this root". A one-cell smoke followed by the whole matrix into
+    the same root would re-run the smoke cell and append to its JSONL, so the second
+    submission is refused."""
+    env = _single_token_env(tmp_path)
+
+    smoke = _run({**env, "CELLS": "qwen35-4b-st"})
+    whole = _run(env)
+
+    assert smoke.returncode == 0, smoke.stderr
+    assert len(_planned(smoke)) == 1
+    assert whole.returncode != 0
+    assert "already claimed for submission" in whole.stderr
+    assert not _planned(whole)
+
+
+def test_the_claim_records_the_cell_selection(tmp_path: Path) -> None:
+    """A subset run root must not later be mistaken for a whole-matrix one."""
+    subset_env = _single_token_env(tmp_path / "subset")
+    subset_env["CELLS"] = "qwen35-4b-st"
+    whole_env = _single_token_env(tmp_path / "whole")
+
+    subset = _run(subset_env)
+    whole = _run(whole_env)
+
+    assert subset.returncode == 0, subset.stderr
+    assert whole.returncode == 0, whole.stderr
+    assert "cells=qwen35-4b-st\n" in _claim_metadata(subset_env)
+    assert "cells=all\n" in _claim_metadata(whole_env)

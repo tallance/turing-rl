@@ -4,6 +4,8 @@
 #   full          -> the four round-1 GRPO judges + five zero-shot models (nine cells)
 #   single_token  -> the two cross-entropy judges + the same five models (seven cells)
 # Each arm names and checks only its own trained models; see the MATRIX selection below.
+# CELLS="<name> ..." submits only those cells of the arm's matrix, in the matrix's own order
+# and with its serving shapes; unset (the default) submits the whole matrix.
 set -euo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -120,7 +122,42 @@ EOF
 )
 fi
 
+# Optional subset selection: CELLS is a space-separated list of cell names, empty (the
+# default) meaning the whole matrix. The subset is taken by *filtering* the resolved MATRIX,
+# so a caller chooses which cells run but never their order nor their serving shape --
+# tp/replicas/concurrency encode node-level constraints, not preferences, and the submission
+# order is what keeps a failure from stranding the cells that matter most.
+CELLS=${CELLS:-}
+if [ -n "${CELLS// /}" ]; then
+  matrix_cells=$(while read -r cell _; do [ -n "$cell" ] && printf '%s\n' "$cell"; done <<< "$MATRIX")
+  for want in $CELLS; do
+    # Fatal, not skipped. A typo that quietly submitted fewer cells than were asked for
+    # would read as a successful partial run, which is the failure worth avoiding here.
+    grep -qxF -- "$want" <<< "$matrix_cells" || {
+      echo "FATAL: unknown cell '$want' for JUDGE_PROMPT_STYLE=$JUDGE_PROMPT_STYLE" >&2
+      echo "       valid cells: $(printf '%s ' $matrix_cells)" >&2
+      exit 2
+    }
+  done
+  selected=""
+  while read -r cell rest; do
+    [ -n "$cell" ] || continue
+    for want in $CELLS; do
+      [ "$cell" = "$want" ] || continue
+      selected+="$cell $rest"$'\n'
+      break
+    done
+  done <<< "$MATRIX"
+  MATRIX=${selected%$'\n'}
+fi
+
+# Only the checkpoints actually served are required to exist. This is what lets the
+# one-cell serving smoke run a zero-shot cell before this arm's trained judges have been
+# produced; under the default (whole-matrix) selection every arm model is served, so the
+# check is exactly the pre-existing one.
+SELECTED_MODELS=$(while read -r cell model _; do [ -n "$cell" ] && printf '%s\n' "$model"; done <<< "$MATRIX")
 for model in "${CHECKED_MODELS[@]}"; do
+  grep -qxF -- "$model" <<< "$SELECTED_MODELS" || continue
   [ -f "$model/config.json" ] || { echo "FATAL: trained judge model is incomplete: $model" >&2; exit 2; }
 done
 
@@ -137,18 +174,30 @@ done <<< "$MATRIX"
 # Claim the run root atomically before the first sbatch. Reward-file guards cannot detect a
 # duplicate invocation while the first chain is still pending, which would make both chains append
 # to the same JSONL files. A retained retry must use a fresh run root after investigating the claim.
+#
+# A CELLS subset still claims the whole EVAL_ROOT. The claim answers "has a matrix been
+# submitted into this run root", and the sequence it must refuse is exactly a one-cell smoke
+# followed by the full matrix into the same root: the second submission would re-run the smoke
+# cell and append to its JSONL. Narrowing the claim to the selected cells would permit that.
+# A smoke therefore gets its own run root, which is also what keeps its provenance and its
+# merged tables from being read as the real matrix's.
 claim=$EVAL_ROOT/provenance/judge_eval_matrix_submission.claim
 mkdir -p "$EVAL_ROOT/provenance"
 if ! mkdir "$claim" 2>/dev/null; then
   echo "FATAL: EVAL_ROOT is already claimed for submission: $claim" >&2
   exit 2
 fi
-printf 'thinking_mode=%s\nsource_sha=%s\nclaimed_at_utc=%s\n' \
-  "$THINKING_MODE" "${TURING_RL_SOURCE_SHA:-unknown}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+# cells= records the selection so a subset run root is not later mistaken for a whole-matrix
+# one; it reads "all" for the default.
+printf 'thinking_mode=%s\ncells=%s\nsource_sha=%s\nclaimed_at_utc=%s\n' \
+  "$THINKING_MODE" "${CELLS:-all}" "${TURING_RL_SOURCE_SHA:-unknown}" \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   > "$claim/metadata.txt"
 mkdir -p "$SWEEP_ROOT"
 
 echo "=== judge held-out matrix: THINKING_MODE=$THINKING_MODE ==="
+# Only printed for a subset, so the whole-matrix log stays byte-identical to before.
+[ -z "${CELLS// /}" ] || echo "=== cells=$CELLS (subset of the $JUDGE_PROMPT_STYLE matrix) ==="
 echo "=== pairs=$PAIRS ==="
 echo "=== output=$SWEEP_ROOT ==="
 
