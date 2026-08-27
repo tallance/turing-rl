@@ -256,6 +256,143 @@ def test_unknown_model_is_still_rejected():
 
 
 # --------------------------------------------------------------------------------------
+# EPOCHS / MAX_TRAIN_EXAMPLES passthroughs
+# --------------------------------------------------------------------------------------
+
+# Spelled out rather than derived from the script: a derived expectation would agree with
+# any drift, which is exactly what "byte-identical to today" has to rule out.
+BASELINE_ARGS = {
+    ("qwen3-8b", "bf16_fsdp"): [
+        "--model", "qwen3-8b",
+        "--data_path", GENERATOR_DATA,
+        "--output_dir", "/repo/checkpoints/sft/qwen3_8b_prism_full_s42_bf16_fsdp",
+        "--max_seq_length", "8192",
+        "--resume_from_checkpoint", "auto",
+        "--report_to", "wandb",
+        "--no_torch_compile",
+        "--no_qlora",
+        "--attn_implementation", "sdpa",
+        "--fsdp", "full_shard auto_wrap",
+        "--fsdp_transformer_layer_cls", "Qwen3DecoderLayer",
+    ],
+    ("qwen35-4b-judge", "bf16_fsdp"): [
+        "--model", "qwen35-4b-judge",
+        "--data_path", GENERATOR_DATA,
+        "--output_dir", "/repo/checkpoints/sft/judge_qwen35_4b_prism_full_s42_bf16_fsdp_nopack",
+        "--max_seq_length", "8192",
+        "--resume_from_checkpoint", "auto",
+        "--report_to", "wandb",
+        "--no_torch_compile",
+        "--no_qlora",
+        "--attn_implementation", "sdpa",
+        "--fsdp", "full_shard auto_wrap",
+        "--fsdp_transformer_layer_cls", QWEN35_LAYER_CLS,
+        "--no_packing",
+    ],
+}
+
+GENERATOR_PAIR = ("qwen3-8b", "bf16_fsdp")
+JUDGE_PAIR = ("qwen35-4b-judge", "bf16_fsdp")
+
+# Nothing that shells out to a GPU node should accept these.
+BAD_INT_VALUES = ("3O", "0", "-1", "1.5", "3 4", " 3", "+3", "1e3", "3;echo pwned", "abc")
+
+
+def test_unset_overrides_leave_the_arg_list_byte_identical():
+    """The whole point of the passthrough is that it is invisible until asked for."""
+    for pair, expected in BASELINE_ARGS.items():
+        model, variant = pair
+        assert _resolve(MODEL=model, VARIANT=variant)["ARGS"] == expected, pair
+
+
+def test_smoke_alone_still_emits_its_own_cap():
+    """Splitting the SMOKE append in two must not change what SMOKE=1 produces."""
+    resolved = _resolve(MODEL=GENERATOR_PAIR[0], VARIANT=GENERATOR_PAIR[1], SMOKE="1")
+    assert resolved["ARGS"] == BASELINE_ARGS[GENERATOR_PAIR] + [
+        "--exit_after_trainer_build", "--max_train_examples", "64",
+    ]
+
+
+def test_smoke_still_precedes_no_packing_on_a_judge_alias():
+    """--no_packing was appended after the SMOKE flags; keep that order."""
+    base = BASELINE_ARGS[JUDGE_PAIR]
+    assert base[-1] == "--no_packing"
+    resolved = _resolve(MODEL=JUDGE_PAIR[0], VARIANT=JUDGE_PAIR[1], SMOKE="1")
+    assert resolved["ARGS"] == base[:-1] + [
+        "--exit_after_trainer_build", "--max_train_examples", "64", "--no_packing",
+    ]
+
+
+def test_epochs_appends_exactly_num_epochs():
+    resolved = _resolve(MODEL=GENERATOR_PAIR[0], VARIANT=GENERATOR_PAIR[1], EPOCHS="40")
+    assert resolved["ARGS"] == BASELINE_ARGS[GENERATOR_PAIR] + ["--num_epochs", "40"]
+
+
+def test_max_train_examples_appends_exactly():
+    resolved = _resolve(MODEL=GENERATOR_PAIR[0], VARIANT=GENERATOR_PAIR[1],
+                        MAX_TRAIN_EXAMPLES="16")
+    assert resolved["ARGS"] == BASELINE_ARGS[GENERATOR_PAIR] + ["--max_train_examples", "16"]
+
+
+def test_the_overfit_gate_invocation_resolves_end_to_end():
+    """MODEL=qwen35-4b-judge EPOCHS=40 MAX_TRAIN_EXAMPLES=16: many epochs over a handful of
+    examples, still with packing off so no example can read its neighbour's answer."""
+    resolved = _resolve(MODEL=JUDGE_PAIR[0], VARIANT=JUDGE_PAIR[1], EPOCHS="40",
+                        MAX_TRAIN_EXAMPLES="16")
+    assert resolved["ARGS"] == BASELINE_ARGS[JUDGE_PAIR] + [
+        "--num_epochs", "40", "--max_train_examples", "16",
+    ]
+
+
+def test_max_train_examples_wins_over_smoke_and_is_passed_once():
+    """argparse would take the last of a duplicated flag, but a job whose log shows the cap
+    twice is unreadable. The explicit value wins; SMOKE keeps its early exit."""
+    resolved = _resolve(MODEL=GENERATOR_PAIR[0], VARIANT=GENERATOR_PAIR[1], SMOKE="1",
+                        MAX_TRAIN_EXAMPLES="16")
+    args: list[str] = resolved["ARGS"]  # type: ignore[assignment]
+    assert args.count("--max_train_examples") == 1
+    assert _arg_value(resolved, "--max_train_examples") == "16"
+    assert "64" not in args
+    assert "--exit_after_trainer_build" in args
+
+
+def test_non_positive_integers_are_rejected_before_the_gpus_are_allocated():
+    """EPOCHS=3O (letter O) must die at submit, not after a node allocation, and must never
+    be silently dropped."""
+    for name in ("EPOCHS", "MAX_TRAIN_EXAMPLES"):
+        for value in BAD_INT_VALUES:
+            try:
+                _resolve(MODEL=GENERATOR_PAIR[0], VARIANT=GENERATOR_PAIR[1], **{name: value})
+            except ResolveError as exc:
+                assert exc.result.returncode == 2, (name, value, exc.result.stdout)
+                assert name in exc.result.stdout, (name, value)
+            else:
+                raise AssertionError(f"{name}={value!r} was accepted")
+
+
+def test_one_epoch_and_one_example_are_accepted():
+    """The lower bound is 1, not 2 — an off-by-one in the guard would bite the smallest gate."""
+    resolved = _resolve(MODEL=GENERATOR_PAIR[0], VARIANT=GENERATOR_PAIR[1], EPOCHS="1",
+                        MAX_TRAIN_EXAMPLES="1")
+    assert resolved["ARGS"] == BASELINE_ARGS[GENERATOR_PAIR] + [
+        "--num_epochs", "1", "--max_train_examples", "1",
+    ]
+
+
+def test_the_new_flags_are_ones_lora_sft_actually_accepts():
+    """Same failure mode as an invented --model: argparse rejects it after the allocation."""
+    source = (ROOT / "training" / "sft" / "lora_sft.py").read_text()
+    for flag in ("--num_epochs", "--max_train_examples"):
+        assert f'"{flag}"' in source, flag
+
+
+def test_the_new_env_vars_are_documented_in_the_header():
+    header = _text(SCRIPT).split(BEGIN)[0]
+    for name in ("EPOCHS", "MAX_TRAIN_EXAMPLES"):
+        assert name in header, name
+
+
+# --------------------------------------------------------------------------------------
 # Shared invariants
 # --------------------------------------------------------------------------------------
 
@@ -277,7 +414,8 @@ def test_the_bf16_fsdp_variant_wraps_the_resolved_decoder_class():
 
 
 RESOLVED_NAMES = ("DATA", "OUT", "DEFAULT_OUT", "PY", "STEM", "FSDP_LAYER_CLS", "NOPACK",
-                  "RUN_TAG", "WANDB_NAME", "ARGS", "MODEL", "VARIANT", "SMOKE")
+                  "RUN_TAG", "WANDB_NAME", "ARGS", "MODEL", "VARIANT", "SMOKE", "EPOCHS",
+                  "MAX_TRAIN_EXAMPLES")
 
 
 def test_the_fence_is_well_formed_and_covers_the_whole_invocation():

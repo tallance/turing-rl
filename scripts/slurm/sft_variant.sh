@@ -16,6 +16,15 @@
 #   Pass VARIANT=bf16_fsdp through scripts/cluster_launch.sh and submit_snapshot_job.sh.
 # SMOKE=1 does a fast config check (--exit_after_trainer_build --max_train_examples 64).
 #
+# Optional overrides, all unset by default (unset = the yaml / full dataset decides, i.e.
+# today's exact arg list):
+#   DATA, OUT, RUN_TAG      - see the inline comments below.
+#   NOPACK=1                - --no_packing (forced on for the judge aliases).
+#   EPOCHS=<n>              - --num_epochs <n>. The yaml says 3; an overfit gate needs many
+#                             more over its handful of examples.
+#   MAX_TRAIN_EXAMPLES=<n>  - --max_train_examples <n>. Takes precedence over the 64 that
+#                             SMOKE=1 would otherwise pass, so the flag is never duplicated.
+#
 # Also trains the judge discriminator's cross-entropy run: MODEL=qwen35-4b-judge or
 # qwen35-9b-judge, with DATA pointed at the judge CE jsonl and OUT at a judge checkpoint
 # dir. Both judge aliases force NOPACK=1 (see the MODEL case) — the CE target is a single
@@ -59,6 +68,22 @@ SMOKE=${SMOKE:-0}
 # "_nopack" output dir so it never resumes a packed run. DELIBERATE deviation from
 # upstream (which packs) — documented in our_patches.md.
 NOPACK=${NOPACK:-0}
+
+# EPOCHS / MAX_TRAIN_EXAMPLES: lora_sft.py overrides the launcher could not previously reach.
+# Empty = unset = not passed at all, so every existing invocation keeps its exact arg list.
+# Validated here rather than left to argparse: these reach a multi-hour GPU job, and a
+# typo'd EPOCHS=3O (letter O) must fail at submit, not minutes into a node allocation.
+EPOCHS=${EPOCHS:-}
+MAX_TRAIN_EXAMPLES=${MAX_TRAIN_EXAMPLES:-}
+_positive_int_or_die() {  # name value; empty value = unset, accepted
+  case "$2" in
+    "") ;;
+    *[!0-9]*) echo "bad $1=$2 (expected a positive integer)"; exit 2 ;;
+    *) [ "$2" -gt 0 ] || { echo "bad $1=$2 (expected a positive integer)"; exit 2; } ;;
+  esac
+}
+_positive_int_or_die EPOCHS "$EPOCHS"
+_positive_int_or_die MAX_TRAIN_EXAMPLES "$MAX_TRAIN_EXAMPLES"
 
 MODEL=${MODEL:-qwen3-8b}   # qwen3-8b | qwen35-9b | qwen35-4b-judge | qwen35-9b-judge
 # Per-model: output stem, python env, and the FSDP auto-wrap decoder class.
@@ -141,8 +166,13 @@ case "$VARIANT" in
   bf16_fa2)  ARGS+=(--no_qlora --attn_implementation flash_attention_2) ;;
 esac
 
-[ "$SMOKE" = "1" ] && ARGS+=(--exit_after_trainer_build --max_train_examples 64)
+[ "$SMOKE" = "1" ] && ARGS+=(--exit_after_trainer_build)
+# SMOKE's own cap yields to an explicit MAX_TRAIN_EXAMPLES so --max_train_examples is never
+# passed twice; SMOKE=1 on its own still emits the same 64 it always did.
+[ "$SMOKE" = "1" ] && [ -z "$MAX_TRAIN_EXAMPLES" ] && ARGS+=(--max_train_examples 64)
 [ "$NOPACK" = "1" ] && ARGS+=(--no_packing)
+[ -n "$EPOCHS" ] && ARGS+=(--num_epochs "$EPOCHS")
+[ -n "$MAX_TRAIN_EXAMPLES" ] && ARGS+=(--max_train_examples "$MAX_TRAIN_EXAMPLES")
 # <<< resolve-config <<<
 
 mkdir -p "$OUT"
@@ -159,6 +189,8 @@ echo "Data:    $DATA"
 echo "Output:  $OUT"
 echo "Smoke:   $SMOKE"
 echo "NoPack:  $NOPACK"
+echo "Epochs:  ${EPOCHS:-<yaml>}"
+echo "MaxEx:   ${MAX_TRAIN_EXAMPLES:-<all>}"
 nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader | head -1
 echo "============================================"
 
