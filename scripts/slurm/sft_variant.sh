@@ -24,6 +24,7 @@
 #                             more over its handful of examples.
 #   MAX_TRAIN_EXAMPLES=<n>  - --max_train_examples <n>. Takes precedence over the 64 that
 #                             SMOKE=1 would otherwise pass, so the flag is never duplicated.
+#   HF_HUB_OFFLINE=0        - allow a Hub round-trip. Defaults to 1; see the hf-env block.
 #
 # Also trains the judge discriminator's cross-entropy run: MODEL=qwen35-4b-judge or
 # qwen35-9b-judge, with DATA pointed at the judge CE jsonl and OUT at a judge checkpoint
@@ -45,9 +46,27 @@ if [ -f "$REPO/.env" ]; then
   set +a
 fi
 
+# >>> hf-env: extracted verbatim and executed by tests/test_sft_variant_launcher.py, so
+# keep it to environment exports with no cluster calls. >>>
 export HF_HOME=/home/lancewicki/data/hf_cache
 export HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1
+# HF_HUB_OFFLINE defaults ON deliberately. Do NOT "clean this line up".
+# This cache stores the Qwen3.5 weights under a NONSTANDARD shard name —
+# model.safetensors-00001-of-00002.safetensors — where the Hub's own convention is
+# model-00001-of-00002.safetensors. The cached model.safetensors.index.json references the
+# nonstandard names consistently, so an OFFLINE load of a fully-present model succeeds.
+# ONLINE, transformers resolves the file list from the Hub, does not find the indexed shard
+# name among the real (standard-named) files, and dies with
+#   OSError: Qwen/Qwen3.5-4B does not appear to have a file named
+#            model.safetensors-00001-of-00002.safetensors
+# on a model that is 100% cached with zero *.incomplete blobs (job 19315, dead one minute
+# into an 8-GPU allocation; 19316 passed straight through with this set). Qwen3.5-9B has the
+# same layout, so this is not 4B-specific.
+# Overridable for a genuine first-download run; ON by default because every model this
+# launcher trains is pre-cached, and failing fast beats pulling 10 GB mid-allocation.
+export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
+# <<< hf-env <<<
 export PYTHONUNBUFFERED=1
 export WANDB_MODE=online
 export WANDB_PROJECT=turing-rl-sft

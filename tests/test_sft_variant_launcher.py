@@ -21,6 +21,11 @@ SCRIPT = ROOT / "scripts" / "slurm" / "sft_variant.sh"
 BEGIN = "# >>> resolve-config"
 END = "# <<< resolve-config"
 
+# The HF exports sit OUTSIDE the resolve-config fence (they are side effects, which that
+# block excludes by construction), so they carry their own fence and their own harness.
+HF_BEGIN = "# >>> hf-env"
+HF_END = "# <<< hf-env"
+
 REPO = "/repo"
 GEN_ROOT = "/generated"
 GENERATOR_DATA = f"{GEN_ROOT}/sft/prism_full_s42_sft_cot.jsonl"
@@ -441,6 +446,92 @@ def test_nothing_outside_the_fence_resolves_configuration():
             if stripped.startswith(f"{name}=") or stripped.startswith(f"{name}+="):
                 stray.append(f"sft_variant.sh:{number}: {line.strip()}")
     assert not stray, f"resolution outside the tested fence: {stray}"
+
+
+# --------------------------------------------------------------------------------------
+# HF hub environment
+# --------------------------------------------------------------------------------------
+
+
+def _hf_env_block() -> str:
+    text = _text(SCRIPT)
+    start, end = text.index(HF_BEGIN), text.index(HF_END)
+    assert start < end
+    block = text[start:end]
+    # A block that stopped setting this would make every assertion below vacuous.
+    assert "HF_HUB_OFFLINE=" in block, "hf-env block no longer sets HF_HUB_OFFLINE"
+    return block
+
+
+def _resolve_hf_env(**env: str) -> dict[str, str]:
+    """Execute the launcher's real HF export block and report what the job would see.
+
+    The probe reads the values back from a CHILD process, not from the block's own shell:
+    training runs in `$PY -m torch.distributed.run`, so a bare assignment that lost its
+    `export` would leave transformers online while the parent shell still looked correct.
+    """
+    probe = (
+        "\nbash -c 'printf \"%s\\n\" \"HF_HOME=${HF_HOME:-<unset>}\" "
+        '"HF_HUB_CACHE=${HF_HUB_CACHE:-<unset>}" '
+        '"HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-<unset>}"\'\n'
+    )
+    result = subprocess.run(
+        ["bash", "-c", "set -uo pipefail\n" + _hf_env_block() + probe],
+        # Minimal env for the same reason as _resolve: a stray HF_HUB_OFFLINE inherited from
+        # the caller would make the default look right no matter what the script does.
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), **env},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ResolveError(result)
+    return dict(line.partition("=")[::2] for line in result.stdout.splitlines())
+
+
+def test_hf_hub_offline_defaults_on_and_reaches_the_training_process():
+    """Job 19315 died one minute into an 8-GPU allocation because an ONLINE resolve of a
+    fully-cached Qwen3.5 failed: the cache uses nonstandard shard names that the Hub's file
+    list does not contain. Every model this launcher trains is pre-cached."""
+    resolved = _resolve_hf_env()
+    assert resolved["HF_HUB_OFFLINE"] == "1"
+    # The cache location is what makes the offline default safe; it must stay put.
+    assert resolved["HF_HOME"] == "/home/lancewicki/data/hf_cache"
+    assert resolved["HF_HUB_CACHE"] == "/home/lancewicki/data/hf_cache"
+
+
+def test_hf_hub_offline_is_overridable_for_a_genuine_first_download():
+    for value in ("0", "1"):
+        assert _resolve_hf_env(HF_HUB_OFFLINE=value)["HF_HUB_OFFLINE"] == value
+
+
+def test_hf_hub_offline_is_set_only_inside_its_fence_and_before_the_training_call():
+    """A later unconditional `export HF_HUB_OFFLINE=` would override both the default and
+    the caller's value while the tests above kept passing."""
+    text = _text(SCRIPT)
+    assert text.count(HF_BEGIN) == 1 and text.count(HF_END) == 1
+    inside = range(text.index(HF_BEGIN), text.index(HF_END))
+    assert text.index(HF_END) < text.index("torch.distributed.run")
+    offset = 0
+    stray = []
+    for number, line in enumerate(text.splitlines(keepends=True), 1):
+        start, offset = offset, offset + len(line)
+        stripped = line.strip().removeprefix("export ")
+        if start in inside or stripped.startswith("#"):
+            continue
+        if stripped.startswith("HF_HUB_OFFLINE="):
+            stray.append(f"sft_variant.sh:{number}: {line.strip()}")
+    assert not stray, f"HF_HUB_OFFLINE set outside the tested fence: {stray}"
+
+
+def test_the_offline_default_records_why_it_cannot_be_removed():
+    """Without the nonstandard shard name written down, this reads like a stray line that a
+    future reader deletes, and the next judge run dies in its allocation again."""
+    assert "model.safetensors-00001-of-00002.safetensors" in _hf_env_block()
+    # Split at HF_BEGIN, not at BEGIN: the hf-env fence itself precedes the resolve-config
+    # one, so `split(BEGIN)[0]` would be satisfied by the export and never fail.
+    header = _text(SCRIPT).split(HF_BEGIN)[0]
+    assert "HF_HUB_OFFLINE" in header, "the override is undocumented in the header"
 
 
 def test_launcher_clears_the_stale_v2_proxy_vars():
