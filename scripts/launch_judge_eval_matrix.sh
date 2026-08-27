@@ -1,6 +1,9 @@
 #!/bin/bash
-# Score the four round-1 trained judges and five zero-shot baselines on one pinned
-# thinking policy over the frozen 880-pair held-out set.
+# Score the trained judges of one prompt-style arm plus five zero-shot baselines on one
+# pinned thinking policy over the frozen 880-pair held-out set.
+#   full          -> the four round-1 GRPO judges + five zero-shot models (nine cells)
+#   single_token  -> the two cross-entropy judges + the same five models (seven cells)
+# Each arm names and checks only its own trained models; see the MATRIX selection below.
 set -euo pipefail
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 
@@ -20,6 +23,12 @@ JUDGE_4B_GRADED_MODEL=${JUDGE_4B_GRADED_MODEL:-/home/lancewicki/projects/turing-
 JUDGE_4B_DIRECTIONAL_MODEL=${JUDGE_4B_DIRECTIONAL_MODEL:-/home/lancewicki/projects/turing-rl/results/2026-08-14-judge-4b-eval-v2/models/judge-4b-directional-step52/hf_dense}
 JUDGE_9B_GRADED_MODEL=${JUDGE_9B_GRADED_MODEL:-/home/lancewicki/projects/turing-rl/results/2026-08-17-judge-9b-eval/models/judge-9b-graded-step52/hf_dense}
 JUDGE_9B_DIRECTIONAL_MODEL=${JUDGE_9B_DIRECTIONAL_MODEL:-/home/lancewicki/projects/turing-rl/results/2026-08-17-judge-9b-eval/models/judge-9b-directional-step52/hf_dense}
+
+# The single_token arm's trained judges. Merged dense checkpoints, same convention as above;
+# the defaults are where this experiment's merge step writes them, and Task 17 passes them
+# explicitly. They are only consulted -- and only required to exist -- for that arm.
+JUDGE_4B_CE_MODEL=${JUDGE_4B_CE_MODEL:-/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge/models/judge-4b-ce/hf_dense}
+JUDGE_9B_CE_MODEL=${JUDGE_9B_CE_MODEL:-/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge/models/judge-9b-ce/hf_dense}
 
 case "$THINKING_MODE" in
   on) ;;
@@ -65,16 +74,39 @@ export JUDGE_PROMPT_STYLE
 
 case "$EVAL_ROOT" in /*) ;; *) echo "FATAL: EVAL_ROOT must be absolute: $EVAL_ROOT" >&2; exit 2 ;; esac
 [ -f "$PAIRS" ] || { echo "FATAL: pair set not found: $PAIRS" >&2; exit 2; }
-for model in \
-  "$JUDGE_4B_GRADED_MODEL" "$JUDGE_4B_DIRECTIONAL_MODEL" \
-  "$JUDGE_9B_GRADED_MODEL" "$JUDGE_9B_DIRECTIONAL_MODEL"; do
-  [ -f "$model/config.json" ] || { echo "FATAL: trained judge model is incomplete: $model" >&2; exit 2; }
-done
-
+# Each arm serves its own trained judges, so each checks only its own. Requiring the other
+# arm's checkpoints would block a run on models it never loads.
+#
 # cell_name, model, tensor parallelism, replicas, and concurrency per endpoint.
-# Every row occupies one eight-A100 node. The known high-retry directional 9B cell is
-# deliberately last so a failure there cannot block the other comparison cells.
-MATRIX=$(cat <<EOF
+# Every row occupies one eight-A100 node.
+if [ "$JUDGE_PROMPT_STYLE" = "single_token" ]; then
+  CHECKED_MODELS=("$JUDGE_4B_CE_MODEL" "$JUDGE_9B_CE_MODEL")
+  # Cell names carry a -st suffix. Both arms land in one merged table where prompt_style is
+  # a column rather than part of the cell name, so a name shared with the full arm would
+  # leave the row unattributable to an arm by name alone.
+  # Serving shapes for the five zero-shot rows are copied verbatim from the full arm below:
+  # they encode node-level serving constraints (gemma4-31b only fits at TP=8, and at low
+  # concurrency), which the prompt style does not change. The two CE rows mirror the full
+  # arm's 4B and 9B trained-judge rows. The trained cells lead the chain because a failure
+  # in an afterok chain strands everything after it, and they are what this arm measures.
+  MATRIX=$(cat <<EOF
+judge-9b-ce-st $JUDGE_9B_CE_MODEL 1 8 32
+judge-4b-ce-st $JUDGE_4B_CE_MODEL 1 8 32
+qwen35-27b-st Qwen/Qwen3.5-27B 8 1 32
+gemma4-31b-st google/gemma-4-31B-it 8 1 4
+gemma4-12b-st google/gemma-4-12B-it 1 8 4
+qwen35-9b-st Qwen/Qwen3.5-9B 1 8 32
+qwen35-4b-st Qwen/Qwen3.5-4B 1 8 32
+EOF
+)
+else
+  CHECKED_MODELS=(
+    "$JUDGE_4B_GRADED_MODEL" "$JUDGE_4B_DIRECTIONAL_MODEL"
+    "$JUDGE_9B_GRADED_MODEL" "$JUDGE_9B_DIRECTIONAL_MODEL"
+  )
+  # The known high-retry directional 9B cell is deliberately last so a failure there cannot
+  # block the other comparison cells.
+  MATRIX=$(cat <<EOF
 judge-9b-graded-step52 $JUDGE_9B_GRADED_MODEL 1 8 32
 judge-4b-graded-step52 $JUDGE_4B_GRADED_MODEL 1 8 32
 judge-4b-directional-step52 $JUDGE_4B_DIRECTIONAL_MODEL 1 8 32
@@ -86,6 +118,11 @@ qwen35-4b Qwen/Qwen3.5-4B 1 8 32
 judge-9b-directional-step52 $JUDGE_9B_DIRECTIONAL_MODEL 1 8 32
 EOF
 )
+fi
+
+for model in "${CHECKED_MODELS[@]}"; do
+  [ -f "$model/config.json" ] || { echo "FATAL: trained judge model is incomplete: $model" >&2; exit 2; }
+done
 
 SWEEP_ROOT=$EVAL_ROOT/raw/sweep
 while read -r cell _model _tp _replicas _concurrency; do

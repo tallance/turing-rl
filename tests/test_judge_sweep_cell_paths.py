@@ -119,15 +119,29 @@ def _thinking_mode(style: str) -> str:
     return "off" if style == "single_token" else "on"
 
 
+def _guard_cell(style: str) -> str:
+    """A cell name the launcher's matrix actually contains for ``style``.
+
+    The two arms deliberately share no cell name -- prompt_style is a column in the merged
+    table, not part of the name -- so seeding the full arm's ``qwen35-4b`` under the
+    single_token arm would leave the guard with nothing to find.
+    """
+    return "qwen35-4b-st" if style == "single_token" else "qwen35-4b"
+
+
 def _launcher_env(tmp_path: Path, style: str) -> dict[str, str]:
     pairs = tmp_path / "pairs.parquet"
     pairs.write_text("pairs\n")
     models: dict[str, str] = {}
+    # Each arm's trained judges: the launcher requires only its own arm's to exist, but
+    # supplying both keeps this fixture indifferent to which arm is under test.
     for key in (
         "JUDGE_4B_DIRECTIONAL_MODEL",
         "JUDGE_4B_GRADED_MODEL",
         "JUDGE_9B_DIRECTIONAL_MODEL",
         "JUDGE_9B_GRADED_MODEL",
+        "JUDGE_4B_CE_MODEL",
+        "JUDGE_9B_CE_MODEL",
     ):
         model = tmp_path / key.lower()
         model.mkdir()
@@ -161,7 +175,7 @@ def test_the_guard_inspects_the_directory_the_cell_actually_writes(
     real launcher decide. If the two ever drift apart the launcher happily proceeds."""
     env = _launcher_env(tmp_path, style)
     sweep_root = os.path.join(env["EVAL_ROOT"], "raw", "sweep")
-    mode_dir = Path(_mode_dir(sweep_root, "qwen35-4b", _thinking_mode(style), style))
+    mode_dir = Path(_mode_dir(sweep_root, _guard_cell(style), _thinking_mode(style), style))
     (mode_dir / "reward").mkdir(parents=True)
     (mode_dir / "reward" / "stale.jsonl").write_text("{}\n")
 
@@ -171,6 +185,9 @@ def test_the_guard_inspects_the_directory_the_cell_actually_writes(
 
     assert result.returncode != 0, result.stdout
     assert "refusing stale output" in result.stderr
+    # Naming the directory: a rejection triggered by some other cell, or by a guard that
+    # looked somewhere else entirely, would otherwise read as agreement.
+    assert str(mode_dir / "reward") in result.stderr
 
 
 def test_the_cell_script_rejects_an_unknown_style() -> None:
