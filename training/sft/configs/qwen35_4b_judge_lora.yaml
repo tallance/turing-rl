@@ -13,6 +13,12 @@ use_qlora: false
 packing: false
 supervise_stop_token: false
 
+# Qwen3.5's template PREFILLS an empty "<think>\n\n</think>\n\n" into the assistant turn
+# under enable_thinking=False, and the judge is served with thinking OFF, so that prefill
+# is already in the prompt at eval. Keep it in the masked prompt: supervising it would put
+# 4 fixed filler tokens in the loss alongside the 1 verdict token that decides the run.
+supervise_think_prefill: false
+
 num_epochs: 3
 batch_size: 2
 gradient_accumulation_steps: 8

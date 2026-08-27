@@ -148,12 +148,26 @@ def _assistant_target_end_char(
 
 
 def build_chat_template_sft_features(
-    tokenizer: Any, messages: Any, *, supervise_stop_token: bool = False
+    tokenizer: Any,
+    messages: Any,
+    *,
+    supervise_stop_token: bool = False,
+    supervise_think_prefill: bool = True,
 ) -> dict[str, list[int]]:
     """Tokenize one SFT row and mask the assistant target span.
 
     supervise_stop_token=True includes the trailing <|im_end|> in the loss so the model
-    learns to terminate its turn (default off preserves the prior shared behavior)."""
+    learns to terminate its turn (default off preserves the prior shared behavior).
+
+    supervise_think_prefill controls what happens to the empty think block that Qwen3.5's
+    chat template PREFILLS into the assistant turn under enable_thinking=False (the
+    generation prompt ends with "<think>\\n\\n</think>\\n\\n"; the template does not omit
+    the block, it closes it immediately). True (default) strips that prefill off the masked
+    prefix, so it lands INSIDE the supervised span — correct for the generator, which is
+    served with thinking ON and must emit the block itself. False keeps the prefill in the
+    masked prompt, so the supervised span is just the answer — correct for the judge, which
+    is served with thinking OFF, so the prefill is already in the prompt at eval time and
+    supervising it would spend most of the loss on a fixed deterministic string."""
     normalized_messages = _normalize_messages(messages)
     if not normalized_messages:
         raise ValueError("messages must be non-empty")
@@ -174,7 +188,10 @@ def build_chat_template_sft_features(
         enable_thinking=False,
     )
 
-    masked_prefix_text, _think_prefill = strip_empty_think_prefill(prompt_text)
+    if supervise_think_prefill:
+        masked_prefix_text, _think_prefill = strip_empty_think_prefill(prompt_text)
+    else:
+        masked_prefix_text = prompt_text
     if not full_text.startswith(masked_prefix_text):
         raise ValueError(
             "Rendered full chat template does not start with the rendered prompt prefix. "
@@ -208,6 +225,27 @@ def build_chat_template_sft_features(
         "input_ids": input_ids,
         "completion_mask": completion_mask,
     }
+
+
+def resolve_mask_options(config: dict) -> dict[str, bool]:
+    """Resolve the completion-mask options build_chat_template_sft_features accepts.
+
+    Defaults reproduce the generator behaviour, so a config that sets neither key trains
+    exactly as before."""
+    return {
+        "supervise_stop_token": bool(config.get("supervise_stop_token", False)),
+        "supervise_think_prefill": bool(config.get("supervise_think_prefill", True)),
+    }
+
+
+def build_completion_mask_mapper(tokenizer: Any, config: dict):
+    """Build the dataset.map() fn that tokenizes a row and masks all but the target span."""
+    options = resolve_mask_options(config)
+
+    def tokenize_with_completion_mask(example):
+        return build_chat_template_sft_features(tokenizer, example["messages"], **options)
+
+    return tokenize_with_completion_mask
 
 
 def parse_args() -> argparse.Namespace:
@@ -405,17 +443,11 @@ def main():
         log(f"Selected {len(dataset)} / {original_len} examples for smoke run")
     log(f"Training examples: {len(dataset)}")
 
-    supervise_stop_token = bool(config.get("supervise_stop_token", False))
-    log(f"supervise_stop_token: {supervise_stop_token}")
-
-    def tokenize_with_completion_mask(example):
-        return build_chat_template_sft_features(
-            tokenizer, example["messages"], supervise_stop_token=supervise_stop_token
-        )
+    log(f"completion-mask options: {resolve_mask_options(config)}")
 
     log("Tokenizing chat templates with explicit assistant completion masks")
     dataset = dataset.map(
-        tokenize_with_completion_mask,
+        build_completion_mask_mapper(tokenizer, config),
         remove_columns=dataset.column_names,
     )
     log("Tokenized chat templates with explicit assistant completion masks")
