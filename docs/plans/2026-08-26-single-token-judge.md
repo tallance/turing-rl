@@ -1710,7 +1710,19 @@ label — that is what the timing summary is for.
 
 ## Task 18: Analysis and results package
 
-**Step 1** — merge the new cells with the reused CSVs via `scripts/merge_judge_comparison.py`.
+**Step 1** — build the per-cell table from the raw JSONL, then merge. The cells emit
+per-call rows and nothing else; `scripts/analyze_single_token_cells.py` is the step that
+turns them into a table (`scripts/analyze_judge_sweep.py` cannot: it globs one level too
+shallow for the `<style>` segment and skips every cell absent from `SIZE_MAP`, including
+the reference cell):
+
+```bash
+python scripts/analyze_single_token_cells.py \
+  --sweep_root $EVAL_ROOT/raw/sweep \
+  --out $EVAL_ROOT/derived/single_token_cells.csv
+```
+
+Then merge the new cells with the reused CSVs via `scripts/merge_judge_comparison.py`.
 Beware the duplicate-key hole: `NaN == NaN` but `NaN != "on"`, so a CSV lacking a
 `thinking_mode` column can merge the *same* cell twice with different accuracies and no
 collision raised. Supply the missing dimension per input, or refuse an input lacking a key

@@ -238,14 +238,15 @@ async def async_main() -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     if style == "single_token" and args.thinking_mode == "on":
-        # Not fatal: the server-side reasoning parser is what THINKING_MODE selects, and
-        # the request is pinned thinking-off either way. Loud because the path segment
-        # will still read ".../on/single_token" while no chain of thought was requested.
-        print(
-            "[sweep-cell] WARNING: thinking_mode=on with the single_token style; the "
-            "request pins enable_thinking=False (a 1-token budget cannot hold a chain of "
-            "thought), so this cell's 'on' path segment describes the server only.",
-            flush=True,
+        # Fatal, matching launch_judge_eval_matrix.sh and scripts/slurm/judge_sweep_cell.sh.
+        # This process is what creates ``.../on/single_token/`` and writes thinking_mode=on
+        # into run_metadata.json, so a warning here still leaves a full cell of artifacts
+        # attributed to the thinking-on arm for a run whose every request pinned
+        # enable_thinking=False (a 1-token budget cannot hold a chain of thought).
+        raise SystemExit(
+            "thinking_mode=on is not valid with the single_token style: the scorer pins "
+            "enable_thinking=False on every request, so the 'on' label would misattribute "
+            "every artifact. Re-run with --thinking_mode off."
         )
 
     dirs = cell_output_dirs(args.out_dir, cell_name, args.thinking_mode, style)

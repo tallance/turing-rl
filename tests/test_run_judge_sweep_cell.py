@@ -154,7 +154,7 @@ def _pair_set(tmp_path):
     return path
 
 
-def _run_cell(monkeypatch, tmp_path, style):
+def _run_cell(monkeypatch, tmp_path, style, mode="off"):
     """Run one shard end-to-end with both scorers stubbed; return which one was called."""
     import asyncio
 
@@ -182,7 +182,7 @@ def _run_cell(monkeypatch, tmp_path, style):
             "--pairs", str(_pair_set(tmp_path)),
             "--endpoints", "http://localhost:8123/v1",
             "--model", "Qwen/Qwen3.5-9B",
-            "--thinking_mode", "off",
+            "--thinking_mode", mode,
             "--out_dir", str(tmp_path / "sweep"),
             "--cell_name", "qwen35-9b",
         ],
@@ -207,6 +207,20 @@ def test_default_style_still_reaches_the_reward_path(monkeypatch, tmp_path):
     assert [name for name, _ in called] == ["full"]
     assert "pair_id" not in called[0][1]
     assert (tmp_path / "sweep/qwen35-9b/off/run_metadata.json").is_file()
+
+
+def test_single_token_with_thinking_on_is_refused_before_anything_is_written(
+    monkeypatch, tmp_path
+):
+    """This process creates the mode/style directory and stamps thinking_mode into
+    run_metadata.json, so warning and continuing still leaves a whole cell of artifacts
+    attributed to the thinking-on arm for a run whose every request pinned
+    enable_thinking=False. The launcher's guard does not cover a cell submitted straight
+    through snapshot_sbatch.sh."""
+    with pytest.raises(SystemExit, match="thinking_mode=on"):
+        _run_cell(monkeypatch, tmp_path, "single_token", mode="on")
+
+    assert not (tmp_path / "sweep").exists()
 
 
 def test_the_metadata_records_the_style_and_the_request_it_describes(monkeypatch, tmp_path):

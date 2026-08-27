@@ -31,6 +31,23 @@ case "$JUDGE_PROMPT_STYLE" in
   full|single_token) ;;
   *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token, got '$JUDGE_PROMPT_STYLE'" >&2; exit 2 ;;
 esac
+# --- BEGIN style-mode guard ---
+# Also enforced in launch_judge_eval_matrix.sh, and deliberately duplicated here: a single
+# cell (the design's one-cell smoke, or any targeted re-run) is naturally submitted straight
+# through snapshot_sbatch.sh -- this script -- which never touches that launcher. The
+# single-token scorer pins enable_thinking=False on every request, so THINKING_MODE only
+# LABELS the artifacts: without this guard the run writes .../on/single_token/ and stamps
+# thinking_mode=on into timing.json and run_metadata.json for a thinking-off request.
+# Rejected rather than silently rewritten -- an altered submission is as hard to notice as
+# the mislabel it fixes. tests/test_judge_sweep_cell_paths.py executes this block.
+if [ "$JUDGE_PROMPT_STYLE" = "single_token" ] && [ "$THINKING_MODE" != "off" ]; then
+  echo "ERROR: JUDGE_PROMPT_STYLE=single_token requires THINKING_MODE=off, got THINKING_MODE=$THINKING_MODE" >&2
+  echo "       The single-token judge always serves with thinking disabled, so every" >&2
+  echo "       artifact would be attributed to the thinking-on arm. Re-submit with" >&2
+  echo "       THINKING_MODE=off." >&2
+  exit 2
+fi
+# --- END style-mode guard ---
 export JUDGE_PROMPT_STYLE
 # Unique per-job default port base: this cluster does NOT isolate the network
 # namespace per Slurm job, so co-scheduled gpu:1 cells on one node would collide

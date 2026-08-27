@@ -33,6 +33,15 @@ class HardFail(Exception):
 # Deliberately a module constant plus a keyword-only override, NOT an environment
 # variable: env-configured numerics are how two cells in one run end up scored under
 # different rules with nothing in the artifacts recording it.
+#
+# PREMISE, and the one that would break silently: the supplied logprobs are RAW model
+# outputs, taken BEFORE temperature/top_k/top_p. The cluster serves vLLM 0.18.0, whose
+# ``--logprobs-mode`` defaults to ``raw_logprobs``, and neither serve invocation in
+# ``scripts/slurm/judge_sweep_cell.sh`` overrides it. That is what keeps ab_mass and p_a
+# comparable across cells even though each cell samples at its own generation_config
+# defaults (~temperature 0.7 for Qwen3.5). Serving with ``--logprobs-mode
+# processed_logprobs`` would rescale every number gated here, with nothing in the
+# artifacts saying so -- if that flag is ever added, re-measure this floor.
 MIN_AB_MASS = 0.01
 
 
@@ -70,29 +79,47 @@ def _classify(token: str) -> str | None:
     return cleaned if cleaned in ("A", "B") else None
 
 
+def is_ab_token(token: str | None) -> bool | None:
+    """Is ``token`` itself an A/B verdict variant? ``None`` when no token was reported.
+
+    A RECORDED DIAGNOSTIC, not a gate. The emitted token is a DRAW from the distribution
+    -- the cells serve at each model's generation_config defaults (~temperature 0.7 for
+    Qwen3.5), no wire override -- so a judge with a healthy 95% A/B mass still samples
+    off-A/B on roughly 5% of rows. Failing those would record ~5% abstentions in every
+    cell and produce a different abstention set on every re-run, which is why the A/B mass
+    floor alone owns abstention and this only rides along in the dump.
+    """
+    if token is None:
+        return None
+    return _classify(token) is not None
+
+
 def extract_verdict(
     top_logprobs: list[dict],
     *,
-    sampled_token: str | None = None,
     min_ab_mass: float = MIN_AB_MASS,
 ) -> Verdict:
     """Sum probability mass per letter across tokenizer variants, then renormalize.
 
-    ``sampled_token`` is the token the model actually emitted at this position. When
-    supplied it is a structural check: if it is not itself an A/B variant then the
-    position is not a verdict position at all, which is near-proof and independent of any
-    mass threshold. It stays optional so callers holding only top_logprobs still work.
+    The verdict is read from the distribution, not from the sampled token; see
+    ``is_ab_token`` for why the sampled token is recorded rather than gated on.
     """
-    if sampled_token is not None and _classify(sampled_token) is None:
-        raise HardFail(
-            f"sampled token {sampled_token!r} is not an A/B verdict; this position is "
-            "not a verdict position"
-        )
-
     mass = {"A": 0.0, "B": 0.0}
     total = 0.0
     for entry in top_logprobs:
-        p = math.exp(entry["logprob"])
+        try:
+            p = math.exp(entry["logprob"])
+        except OverflowError:
+            p = math.inf
+        # A non-finite probability poisons everything downstream QUIETLY: NaN propagates
+        # into ab_mass, `nan < min_ab_mass` is False so the floor waves it through, the
+        # tie-to-B branch absorbs `nan > 0.5`, and the row lands in the table as a
+        # confident B with p_a=nan -- which then makes the cell's brier nan.
+        if not math.isfinite(p):
+            raise HardFail(
+                f"token {entry['token']!r} has a non-finite probability "
+                f"(logprob={entry['logprob']!r}); the distribution is unusable"
+            )
         total += p
         letter = _classify(entry["token"])
         if letter is not None:

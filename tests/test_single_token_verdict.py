@@ -4,7 +4,12 @@ import math
 
 import pytest
 
-from shared.single_token_verdict import MIN_AB_MASS, HardFail, extract_verdict
+from shared.single_token_verdict import (
+    MIN_AB_MASS,
+    HardFail,
+    extract_verdict,
+    is_ab_token,
+)
 
 def _payload(pairs):
     """OpenAI-shaped top_logprobs: [(token, logprob), ...] for the single position."""
@@ -168,27 +173,55 @@ def test_the_floor_is_overridable_per_call_but_defaults_to_the_constant():
     assert v.letter == "A"
 
 
-# --- the structural check on the sampled token ------------------------------------
+# --- non-finite probabilities ------------------------------------------------------
 
-def test_sampled_token_that_is_not_a_verdict_hard_fails():
-    # The top-k carries a clean, high-mass A -- but the model actually emitted "<think>",
-    # so this position is not a verdict position at all and no mass threshold can tell.
-    with pytest.raises(HardFail, match="not an A/B verdict"):
+@pytest.mark.parametrize("logprob", [float("nan"), float("inf"), 1e6])
+def test_a_non_finite_probability_hard_fails_instead_of_poisoning_p_a(logprob):
+    # NaN is the dangerous one and it bypasses every later check on its own: ab_mass
+    # becomes nan, `nan < MIN_AB_MASS` is False so the floor waves it through, the
+    # tie-to-B branch absorbs `nan > 0.5`, and the row enters the table as a confident B
+    # whose p_a is nan -- which makes the whole cell's brier nan. +inf (and a logprob so
+    # large exp overflows) take the same path.
+    with pytest.raises(HardFail, match="non-finite"):
+        extract_verdict(_payload([("A", logprob), ("B", -2.0)]))
+
+
+def test_a_minus_infinity_logprob_is_a_finite_zero_and_is_kept():
+    # -inf is exp -> 0.0, which is finite and a perfectly ordinary "this token is
+    # impossible". It must not be swept up by the guard above.
+    v = extract_verdict(_payload([("A", math.log(0.5)), ("B", float("-inf"))]))
+    assert v.letter == "A"
+    assert v.p_a == pytest.approx(1.0)
+
+
+# --- the sampled token: recorded, never gated on -----------------------------------
+
+def test_the_sampled_token_is_not_an_argument_to_extract_verdict():
+    # It was, and it raised HardFail on any non-A/B draw. Under default sampling
+    # (~T=0.7, no wire override) that fails ~5% of rows on an honest judge and makes the
+    # abstention set differ on every re-run. Keeping the parameter around as a no-op
+    # would be worse than removing it, so removal is what is pinned here.
+    with pytest.raises(TypeError):
         extract_verdict(_payload([("A", -0.1), ("B", -2.0)]), sampled_token="<think>")
 
 
-def test_sampled_token_that_is_a_verdict_variant_passes():
-    v = extract_verdict(_payload([("A", -0.1), ("B", -2.0)]), sampled_token="ĠA")
-    assert v.letter == "A"
-
-
-def test_sampled_token_may_disagree_with_the_argmax():
-    # Sampling can land on the minority letter. That is a real verdict, not a structural
-    # failure -- the check is "is this a verdict position", not "did it pick the top token".
-    v = extract_verdict(_payload([("A", -0.1), ("B", -2.0)]), sampled_token="B")
-    assert v.letter == "A"
-
-
-def test_omitting_the_sampled_token_skips_the_structural_check():
+def test_an_off_ab_sampled_token_no_longer_blocks_a_high_mass_verdict():
     v = extract_verdict(_payload([("A", -0.1), ("B", -2.0)]))
     assert v.letter == "A"
+    assert is_ab_token("<think>") is False
+
+
+@pytest.mark.parametrize("token", ["A", " A", "ĠA", "▁B", "b", "\nA"])
+def test_verdict_variants_classify_as_ab(token):
+    assert is_ab_token(token) is True
+
+
+@pytest.mark.parametrize("token", ["<think>", "Answer", "\n", " ", "AB", ""])
+def test_non_verdict_tokens_classify_as_not_ab(token):
+    assert is_ab_token(token) is False
+
+
+def test_a_missing_sampled_token_is_unknown_not_false():
+    # vLLM reports the token, but a server that omits it must not be recorded as having
+    # emitted a non-verdict token -- that is a different fact.
+    assert is_ab_token(None) is None

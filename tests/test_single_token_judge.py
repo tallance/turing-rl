@@ -293,13 +293,47 @@ def test_a_hard_failed_row_abstains_in_the_analyzer_rather_than_counting_as_wron
     assert per_call_features(row)["picked_human"] is None
 
 
-def test_the_sampled_token_is_threaded_into_the_structural_check(monkeypatch):
-    """The top-k below is a clean, high-mass A. Only the sampled token reveals that the
-    model was emitting a think tag and this is not a verdict position at all."""
+def test_an_off_ab_sampled_token_is_recorded_as_a_diagnostic_not_an_abstention(monkeypatch):
+    """The cells serve at each model's generation_config defaults (~T=0.7), so the emitted
+    token is a DRAW, not the argmax: an honest judge with 95% A/B mass lands off-A/B on
+    ~5% of rows. Failing those would invent an abstention rate and make it differ on every
+    re-run. The A/B mass floor alone owns abstention; this only rides along in the dump."""
     row, _ = _run(monkeypatch, _choice([("A", -0.1), ("B", -2.0)], sampled="<think>"))
 
+    assert row["hard_fail"] is False
+    assert row["hard_fail_reason"] is None
+    assert row["letter"] == "A"
+    assert row["sampled_token"] == "<think>"
+    assert row["sampled_token_is_ab"] is False
+
+
+def test_an_ab_sampled_token_is_recorded_too(monkeypatch):
+    row, _ = _run(monkeypatch, _choice([("A", -0.1), ("B", -2.0)], sampled=" a"))
+
+    assert row["sampled_token_is_ab"] is True
+    assert row["hard_fail"] is False
+
+
+def test_the_mass_floor_still_abstains_under_a_sampled_ab_token(monkeypatch):
+    """Demoting the structural check must not weaken the floor: the only A/B token here
+    is a stray indefinite article at 1e-9, which renormalizes to a CERTAIN A."""
+    row, _ = _run(
+        monkeypatch,
+        _choice(
+            [("<think>", math.log(0.60)), ("Answer", math.log(0.399)), (" a", math.log(1e-9))],
+            sampled=" a",
+        ),
+    )
+
     assert row["hard_fail"] is True
-    assert "not an A/B verdict" in row["hard_fail_reason"]
+    assert row["sampled_token_is_ab"] is True  # recorded, and it changed nothing
+
+
+def test_a_missing_sampled_token_is_recorded_as_unknown(monkeypatch):
+    row, _ = _run(monkeypatch, _choice([("A", -0.1), ("B", -2.0)], sampled=None))
+
+    assert row["sampled_token_is_ab"] is None
+    assert row["hard_fail"] is False
 
 
 def test_the_verdict_is_not_retried(monkeypatch):
@@ -321,3 +355,35 @@ def test_a_response_without_logprobs_fails_the_shard(monkeypatch):
     that would otherwise produce a 100%-hard-fail cell that still exits 0."""
     with pytest.raises(RuntimeError, match="no logprobs"):
         _run(monkeypatch, {"message": {"content": "A"}})
+
+
+@pytest.mark.parametrize(
+    "position",
+    [
+        {"token": "A"},                      # top_logprobs key absent
+        {"token": "A", "top_logprobs": []},  # present and empty
+        {"token": "A", "top_logprobs": None},
+    ],
+)
+def test_a_position_without_a_top_k_fails_the_shard(monkeypatch, position):
+    """The live case, not a hypothetical: top_logprobs=20 sits exactly at vLLM's default
+    --max-logprobs ceiling and has never been sent to this deployment. If the top-k comes
+    back missing, every row is a RECORDED hard fail, err stays 0, the shard exits 0, and
+    the table reads accuracy 0.0 over n_scored 0 -- a number, not a crash."""
+    with pytest.raises(RuntimeError, match="no top_logprobs"):
+        _run(monkeypatch, {"logprobs": {"content": [position]}})
+
+
+# --------------------------------------------------------------------------- dump row
+
+
+def test_an_unknown_dump_field_is_refused_rather_than_dropped():
+    """A typo'd field name used to vanish silently, deleting a column from the results."""
+    with pytest.raises(ValueError, match="sampled_token_is_ba"):
+        stj.build_dump_row(letter="A", sampled_token_is_ba=True)
+
+
+def test_every_known_dump_field_is_still_accepted():
+    row = stj.build_dump_row(**{key: key for key in stj._DUMP_KEYS})
+
+    assert set(row) == set(stj._DUMP_KEYS)

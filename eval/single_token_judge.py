@@ -42,7 +42,7 @@ from shared.judge_utils import (
     format_source_copy_watchlist,
     sanitize_prompt_text,
 )
-from shared.single_token_verdict import HardFail, extract_verdict
+from shared.single_token_verdict import HardFail, extract_verdict, is_ab_token
 
 # vLLM's ceiling for an OpenAI-compatible request. The A/B mass is spread across
 # tokenizer variants ("A", " A", "▁A", "a", ...), so a small k can truncate real verdict
@@ -123,17 +123,29 @@ _BASE_DUMP_KEYS = (
 
 # Single-token extras. ``hard_fail``/``hard_fail_reason`` and ``sampled_token`` are what
 # make an abstention auditable: without them a hard-failed row is indistinguishable from
-# a row the judge simply never reached.
+# a row the judge simply never reached. ``sampled_token_is_ab`` is the demoted structural
+# check -- recorded on every row, gating nothing (see ``shared.single_token_verdict``).
 _SINGLE_TOKEN_DUMP_KEYS = (
     "judge_prompt_style", "pair_id", "human_is_b", "hard_fail", "hard_fail_reason",
-    "letter", "p_a", "ab_mass", "off_ab_mass", "sampled_token", "enable_thinking",
+    "letter", "p_a", "ab_mass", "off_ab_mass", "sampled_token", "sampled_token_is_ab",
+    "enable_thinking",
 )
 
 _DUMP_KEYS = _BASE_DUMP_KEYS + _SINGLE_TOKEN_DUMP_KEYS
 
 
 def build_dump_row(**fields: Any) -> dict:
-    """One per-call dump row, in the shape ``scripts/analyze_judge_sweep.py`` reads."""
+    """One per-call dump row, in the shape ``scripts/analyze_judge_sweep.py`` reads.
+
+    An unknown kwarg is refused rather than dropped. Every field here is read by an
+    analyzer, so silently discarding a typo'd name would delete a column from the results
+    with nothing raising anywhere -- a wrong number rather than a crash.
+    """
+    unknown = sorted(set(fields) - set(_DUMP_KEYS))
+    if unknown:
+        raise ValueError(
+            f"unknown dump field(s) {unknown}; allowed keys: {list(_DUMP_KEYS)}"
+        )
     return {k: fields.get(k) for k in _DUMP_KEYS}
 
 
@@ -163,12 +175,19 @@ def dump_call(row: dict) -> None:
 
 
 def _read_verdict_position(choice: dict) -> dict:
-    """Return the single decoded position, or raise if the server returned no logprobs.
+    """Return the single decoded position, or raise if it carries no usable top-k.
 
     Distinct from a HardFail on purpose. A HardFail is a property of one input and is
-    recorded as an abstention; a response with no logprobs at all means the request or
+    recorded as an abstention; a response with no top_logprobs at all means the request or
     the server is misconfigured, which would otherwise show up as a 100% hard-fail cell
-    that still exits 0.
+    that still exits 0 (every row recorded, ``err`` never incremented, so
+    ``_raise_on_scoring_errors`` never fires and the analyzer reports accuracy 0.0 over
+    n_scored 0).
+
+    Both halves matter. ``content`` empty means logprobs were not returned at all; a
+    ``content[0]`` with a missing or empty ``top_logprobs`` is the LIVE case -- 20 sits
+    exactly at vLLM's default ``--max-logprobs`` ceiling and has never been sent to this
+    deployment.
     """
     logprobs = (choice or {}).get("logprobs")
     content = (logprobs or {}).get("content")
@@ -177,7 +196,15 @@ def _read_verdict_position(choice: dict) -> dict:
             "judge response carries no logprobs content; single-token scoring requires "
             f"logprobs=True and a server that honours it (got choice keys: {sorted((choice or {}).keys())})"
         )
-    return content[0]
+    position = content[0] or {}
+    if not position.get("top_logprobs"):
+        raise RuntimeError(
+            f"judge response position carries no top_logprobs; single-token scoring "
+            f"requires top_logprobs={TOP_LOGPROBS} and a server that honours it "
+            f"(vLLM rejects or truncates above its --max-logprobs, default 20). "
+            f"Got position keys: {sorted(position)}"
+        )
+    return position
 
 
 async def score_single_token_with_info(
@@ -275,16 +302,16 @@ async def score_single_token_with_info(
 
     position = _read_verdict_position(choice)
     sampled_token = position.get("token")
+    # Recorded, never gated on. The cells serve at each model's generation_config defaults
+    # (~temperature 0.7 for Qwen3.5), so this token is a DRAW, not the argmax: an honest
+    # judge with 95% A/B mass lands off-A/B on ~5% of rows, and failing those would both
+    # invent an abstention rate and make it irreproducible across re-runs. The A/B mass
+    # floor owns abstention; this column is what makes the sampling visible afterwards.
+    sampled_token_is_ab = is_ab_token(sampled_token)
     verdict = None
     hard_fail_reason = None
     try:
-        verdict = extract_verdict(
-            position.get("top_logprobs") or [],
-            # The token the model actually emitted. If it is not an A/B variant then the
-            # position is not a verdict position, whatever mass the top-k carries -- a
-            # structural check, independent of any threshold.
-            sampled_token=sampled_token,
-        )
+        verdict = extract_verdict(position.get("top_logprobs") or [])
     except HardFail as exc:
         hard_fail_reason = str(exc)
 
@@ -327,6 +354,7 @@ async def score_single_token_with_info(
         ab_mass=verdict.ab_mass if verdict else None,
         off_ab_mass=verdict.off_ab_mass if verdict else None,
         sampled_token=sampled_token,
+        sampled_token_is_ab=sampled_token_is_ab,
         enable_thinking=False,
         user_id=user_id,
         post_id=post_id,
