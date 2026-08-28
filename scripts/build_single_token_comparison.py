@@ -42,7 +42,7 @@ from scripts.analyze_judge_sweep import per_call_features  # noqa: E402
 FIELDS = [
     "cell", "prompt_style", "thinking_mode", "n_pairs",
     "accuracy_half_tie", "accuracy_parse_ok",
-    "tie_rate", "failure_rate", "pick_a_rate", "run_root",
+    "tie_rate", "failure_rate", "pick_a_rate", "pair_source", "run_root",
 ]
 
 
@@ -136,7 +136,8 @@ def discover(sweep_root: Path) -> list[dict]:
             "cell": cell,
             "prompt_style": style,
             "thinking_mode": metadata.get("thinking_mode") or mode,
-            "run_root": str(sweep_root.parent.parent),
+            "pair_source": metadata.get("pair_source"),
+            "run_root": str(sweep_root),
             **summary,
         })
     return records
@@ -149,6 +150,8 @@ def main() -> int:
     parser.add_argument("--sweep-root", action="append", required=True, type=Path,
                         help="raw/sweep directory of a run; repeatable")
     parser.add_argument("--out", type=Path, required=True, help="destination CSV")
+    parser.add_argument("--allow-mixed-pairs", action="store_true",
+                        help="permit cells scored on different pair sets (off by default)")
     args = parser.parse_args()
 
     records: list[dict] = []
@@ -163,6 +166,23 @@ def main() -> int:
     if not records:
         print("FATAL: no cells found in any sweep root", file=sys.stderr)
         return 2
+
+    # Accuracies from different pair sets are not comparable, and nothing downstream can
+    # tell them apart once they are rows in the same table. Some runs hold one sweep per
+    # generator checkpoint, each with its OWN 880-pair file (gen_..._step0 vs _step320),
+    # so pointing at the wrong sibling directory silently produces a plausible table.
+    sources = {r["pair_source"] for r in records}
+    if len(sources) > 1:
+        print("FATAL: cells span more than one pair set; refusing to build one table:",
+              file=sys.stderr)
+        for source in sorted(sources, key=lambda s: (s is None, s)):
+            cells = [f'{r["cell"]}/{r["thinking_mode"]}' for r in records
+                     if r["pair_source"] == source]
+            print(f"  {source}\n    {' '.join(cells)}", file=sys.stderr)
+        print("  pass --allow-mixed-pairs only if you have a reason they are comparable",
+              file=sys.stderr)
+        if not args.allow_mixed_pairs:
+            return 2
 
     records.sort(key=lambda r: (r["prompt_style"], r["thinking_mode"], -(r["accuracy_half_tie"] or 0)))
     args.out.parent.mkdir(parents=True, exist_ok=True)

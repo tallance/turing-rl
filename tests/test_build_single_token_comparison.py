@@ -69,6 +69,31 @@ def _write(reward_dir: Path, rows: list[dict]) -> None:
     )
 
 
+def test_mixed_pair_sets_are_refused_by_default(tmp_path: Path, capsys) -> None:
+    # A run can hold one sweep per generator checkpoint, each with its own 880-pair file.
+    # Pointing at the wrong sibling yields a plausible-looking but incomparable table.
+    from scripts.build_single_token_comparison import main
+
+    sweep = tmp_path / "run" / "raw" / "sweep"
+    for cell, pairs in (("a", "gen_step0_880.parquet"), ("b", "gen_step320_880.parquet")):
+        reward = sweep / cell / "on" / "reward"
+        _write(reward, [{"rating_gt_first": 1, "generated_is_b": True}])
+        (reward.parent / "run_metadata.json").write_text(
+            json.dumps({"thinking_mode": "on", "pair_source": pairs})
+        )
+
+    out = tmp_path / "t.csv"
+    argv = ["prog", "--sweep-root", str(sweep), "--out", str(out)]
+    sys.argv = argv
+    assert main() == 2
+    assert not out.exists()
+    assert "more than one pair set" in capsys.readouterr().err
+
+    sys.argv = argv + ["--allow-mixed-pairs"]
+    assert main() == 0
+    assert out.exists()
+
+
 def test_discover_reads_both_layouts_and_trusts_metadata_for_style(tmp_path: Path) -> None:
     sweep = tmp_path / "run" / "raw" / "sweep"
     # full-schema layout: <cell>/<mode>/reward
