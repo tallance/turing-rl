@@ -42,7 +42,7 @@ from scripts.analyze_judge_sweep import per_call_features  # noqa: E402
 FIELDS = [
     "cell", "prompt_style", "thinking_mode", "n_pairs",
     "accuracy_half_tie", "accuracy_parse_ok",
-    "tie_rate", "failure_rate", "pick_a_rate", "pair_source", "run_root",
+    "tie_rate", "failure_rate", "pick_a_rate", "a_rate_half_tie", "pair_source", "run_root",
 ]
 
 
@@ -78,6 +78,9 @@ def summarize_single_token(rows: list[dict]) -> dict:
         "tie_rate": 0.0,
         "failure_rate": failures / n if n else None,
         "pick_a_rate": picks_a / scored if scored else None,
+        # No ties exist here, so this equals pick_a_rate; kept so the column means the
+        # same thing in both arms.
+        "a_rate_half_tie": picks_a / scored if scored else None,
     }
 
 
@@ -100,6 +103,11 @@ def summarize_full_schema(rows: list[dict]) -> dict:
         "tie_rate": ties / n if n else None,
         "failure_rate": parse_errors / n if n else None,
         "pick_a_rate": picks_a / scored if scored else None,
+        # How often the judge said A, with a tie worth half an A. A parse failure is not a
+        # vote at all, so it leaves the denominator rather than counting as half.
+        "a_rate_half_tie": (
+            (picks_a + 0.5 * ties) / (n - parse_errors) if (n - parse_errors) else None
+        ),
     }
 
 

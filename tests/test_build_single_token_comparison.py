@@ -50,6 +50,30 @@ def test_full_schema_counts_a_tie_as_half_right() -> None:
     assert got["accuracy_parse_ok"] == 2 / 3   # tie excluded from this one
 
 
+def test_a_rate_counts_a_tie_as_half_an_a_and_drops_failures() -> None:
+    rows = [
+        {"rating_gt_first": 1, "generated_is_b": True},    # picks A
+        {"rating_gt_first": 7, "generated_is_b": True},    # picks B
+        {"rating_gt_first": 4, "generated_is_b": True},    # tie -> half an A
+        {"judge_raw_content": "no rating"},                # not a vote
+    ]
+    got = summarize_full_schema(rows)
+    # (1 + 0.5) / 3 votes, the parse failure excluded from the denominator entirely.
+    assert got["a_rate_half_tie"] == 0.5
+    assert got["pick_a_rate"] == 0.5   # ties also excluded from this one
+
+
+def test_single_token_a_rate_has_no_ties_to_split() -> None:
+    rows = [
+        {"letter": "A", "human_is_b": False},
+        {"letter": "B", "human_is_b": True},
+        {"hard_fail": True, "letter": None, "human_is_b": False},
+    ]
+    got = summarize_single_token(rows)
+    assert got["a_rate_half_tie"] == 0.5   # 1 of the 2 real votes
+    assert got["tie_rate"] == 0.0
+
+
 def test_full_schema_unparseable_response_scores_zero_and_is_not_a_tie() -> None:
     rows = [
         {"rating_gt_first": 1, "generated_is_b": True},    # correct
