@@ -1578,9 +1578,42 @@ keep all three checkpoints, and pick the best by scoring each on `ce_val.jsonl` 
 single-token eval path. Record all three scores — the selection is then an explicit,
 reproducible step rather than an implicit "last checkpoint".
 
-Merge each adapter with `scripts/merge_sft_adapter.py` and validate before evaluating.
-Expected wall-clock is minutes to low hours. **If it looks like a multi-hour GRPO job,
-something is wrong** — most likely packing, or the target span is the whole prompt.
+Expected training wall-clock is minutes to low hours. **If it looks like a multi-hour GRPO
+job, something is wrong** — most likely packing, or the target span is the whole prompt.
+
+### Merging: use `merge_grpo_adapter.py`, not `merge_sft_adapter.py`
+
+`merge_sft_adapter.py` instantiates the model through `AutoModelForCausalLM`, which on
+Qwen3.5 produces a **text-only** re-save: the vision tower is dropped (738 → 426 tensors on
+4B) and `architectures` becomes `Qwen3_5ForCausalLM`. vLLM 0.18.0 in `turing-rl-train`
+registers only `Qwen3_5ForConditionalGeneration`, so such a model **cannot be served** — the
+trained cells die at model load. That path also downcasts the 24 float32 Gated-DeltaNet
+tensors to bf16, perturbing the trained arm relative to the zero-shot arm.
+
+Fold the adapter into the base HF snapshot instead — pure safetensors math, container copied
+verbatim, per-tensor dtypes preserved:
+
+```bash
+BASE=$(ls -d /home/lancewicki/data/hf_cache/models--Qwen--Qwen3.5-4B/snapshots/*/ | head -1)
+python scripts/merge_grpo_adapter.py \
+  --base "$BASE" \
+  --adapter checkpoints/sft/judge_qwen35_4b_ce_nopack/checkpoint-72 \
+  --out    checkpoints/sft/judge_qwen35_4b_ce_dense \
+  --expect_targets 128 \
+  --key-prefix-rewrite 'model.layers.=model.language_model.layers.'
+```
+
+The rewrite is required: the adapter is trained through the text-only view and records
+`model.layers.<...>`, while the container stores `model.language_model.layers.<...>`.
+Without it every target misses and the merge hard-fails.
+
+Using the base snapshot as the container is also what makes the arms comparable — the
+trained model is byte-identical to the zero-shot model except the adapted projections.
+
+**Validate before evaluating** (both models passed): architecture is
+`Qwen3_5ForConditionalGeneration`, keyset equals the base's, and exactly 128 tensors differ,
+all LoRA targets (`down/gate/up_proj` ×32, `q/k/v/o_proj` ×8), with 48 float32 tensors
+preserved and zero dtype mismatches.
 
 ---
 
@@ -1592,8 +1625,8 @@ Requires Task B0. `EVAL_ROOT` must name both arms.
 EVAL_ROOT=/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge-thinking-off \
 JUDGE_PROMPT_STYLE=single_token \
 THINKING_MODE=off CONFIRM_THINKING_OFF=1 \
-JUDGE_4B_CE_MODEL=<merged 4B CE dense model> \
-JUDGE_9B_CE_MODEL=<merged 9B CE dense model> \
+JUDGE_4B_CE_MODEL=/home/lancewicki/projects/turing-rl/checkpoints/sft/judge_qwen35_4b_ce_dense \
+JUDGE_9B_CE_MODEL=/home/lancewicki/projects/turing-rl/checkpoints/sft/judge_qwen35_9b_ce_dense \
 scripts/cluster_launch.sh --dependency-profile eval \
   --run-root $EVAL_ROOT scripts/launch_judge_eval_matrix.sh
 ```
