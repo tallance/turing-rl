@@ -61,8 +61,16 @@ def _module_path(key: str) -> str:
     return stem
 
 
-def load_adapter(adapter_dir: Path) -> tuple[dict[str, tuple[torch.Tensor, torch.Tensor]], float]:
-    """Return ``{base_weight_key: (A, B)}`` and the LoRA scaling ``alpha / r``."""
+def load_adapter(
+    adapter_dir: Path, key_rewrite: tuple[str, str] | None = None
+) -> tuple[dict[str, tuple[torch.Tensor, torch.Tensor]], float]:
+    """Return ``{base_weight_key: (A, B)}`` and the LoRA scaling ``alpha / r``.
+
+    ``key_rewrite`` applies ``old -> new`` once to each derived base key. An adapter trained
+    against the text-only view of a multimodal checkpoint records ``model.layers.<...>`` while
+    the multimodal container stores ``model.language_model.layers.<...>``; the rewrite bridges
+    that without touching the tensor math.
+    """
     cfg = json.loads((adapter_dir / "adapter_config.json").read_text())
     r = int(cfg["r"])
     alpha = int(cfg["lora_alpha"])
@@ -92,7 +100,18 @@ def load_adapter(adapter_dir: Path) -> tuple[dict[str, tuple[torch.Tensor, torch
     if only_a or only_b:
         raise ValueError(f"unpaired LoRA tensors: A-only={sorted(only_a)} B-only={sorted(only_b)}")
 
-    pairs = {f"{mod}.weight": (a_by_mod[mod], b_by_mod[mod]) for mod in a_by_mod}
+    def _key(mod: str) -> str:
+        key = f"{mod}.weight"
+        if key_rewrite is None:
+            return key
+        old, new = key_rewrite
+        if not key.startswith(old):
+            raise ValueError(f"--key-prefix-rewrite {old}={new} does not apply to adapter key {key}")
+        return new + key[len(old) :]
+
+    pairs = {_key(mod): (a_by_mod[mod], b_by_mod[mod]) for mod in a_by_mod}
+    if len(pairs) != len(a_by_mod):
+        raise ValueError("key rewrite collapsed distinct LoRA targets onto the same base key")
     return pairs, scaling
 
 
@@ -103,12 +122,25 @@ def main() -> None:
     ap.add_argument("--out", required=True, help="Destination dense model dir")
     ap.add_argument("--expect_targets", type=int, default=128,
                     help="Expected LoRA target count (Qwen3.5-9B: 32*mlp3 + 8*attn4 = 128)")
+    ap.add_argument("--key-prefix-rewrite", default=None, metavar="OLD=NEW",
+                    help="Rewrite the adapter-derived base key prefix, e.g. "
+                         "'model.layers.=model.language_model.layers.' when folding a text-only "
+                         "adapter into a multimodal container.")
     a = ap.parse_args()
+
+    key_rewrite = None
+    if a.key_prefix_rewrite is not None:
+        if "=" not in a.key_prefix_rewrite:
+            raise SystemExit(f"FAIL: --key-prefix-rewrite must be OLD=NEW, got {a.key_prefix_rewrite!r}")
+        old, new = a.key_prefix_rewrite.split("=", 1)
+        if not old:
+            raise SystemExit("FAIL: --key-prefix-rewrite OLD must be non-empty")
+        key_rewrite = (old, new)
 
     base_dir, adapter_dir, out_dir = Path(a.base), Path(a.adapter), Path(a.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    pairs, scaling = load_adapter(adapter_dir)
+    pairs, scaling = load_adapter(adapter_dir, key_rewrite)
     print(f"adapter: {len(pairs)} LoRA targets, scaling=alpha/r={scaling}")
     if len(pairs) != a.expect_targets:
         raise SystemExit(f"FAIL: expected {a.expect_targets} LoRA targets, found {len(pairs)}")
@@ -167,6 +199,7 @@ def main() -> None:
         "adapter": str(adapter_dir),
         "out": str(out_dir),
         "scaling": scaling,
+        "key_prefix_rewrite": a.key_prefix_rewrite,
         "n_targets": len(applied),
         "targets": applied,
         "copied_files": copied,
