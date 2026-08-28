@@ -1,0 +1,49 @@
+{
+  "cell_tree_sha256": {
+    "gemma4-12b": "baf27697bdf394db04d443445d1f03b902720f76cccdfcff6e76e90065397611",
+    "gemma4-31b": "dbe848f56878065f4a5491308c585f86f59b840fbb9ad9c8eceab75de9d38067",
+    "qwen35-9b": "df0dec765966e1881bee14a4d4202715867c4b047e46d5595df1208e3cecc887"
+  },
+  "cells": [
+    "gemma4-12b",
+    "gemma4-31b",
+    "qwen35-9b"
+  ],
+  "created_at_utc": "2026-08-25T22:27:09.086866+00:00",
+  "destination_cell_tree_sha256": {
+    "gemma4-12b": "baf27697bdf394db04d443445d1f03b902720f76cccdfcff6e76e90065397611",
+    "gemma4-31b": "dbe848f56878065f4a5491308c585f86f59b840fbb9ad9c8eceab75de9d38067",
+    "qwen35-9b": "df0dec765966e1881bee14a4d4202715867c4b047e46d5595df1208e3cecc887"
+  },
+  "destination_gen_key": "9b-qwen08btrain-step0",
+  "destination_pair_sha256": "8dc1f53a9fd9c14df88945b5808c4a1001b9174622d99124bb010840909de040",
+  "destination_root": "/storage/home/lancewicki/projects/turing-rl/results/2026-08-25-test-eval-9b-train10pct-20ep-qwen08b-reward-test50pct-full-schema",
+  "expected_pairs": 440,
+  "format_version": 1,
+  "generation_metadata": {
+    "backend": "vllm",
+    "base_model": true,
+    "checkpoint_dir": "",
+    "eval_expect": "heldout",
+    "gen_key": "9b-train10pct-step0",
+    "gen_num": 1,
+    "model_id": "/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/work/launcher-435136-b30ab581a7af/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3",
+    "output": "/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/raw/generator/9b-train10pct-step0/heldout_inference.pkl",
+    "sampling_overrides": "--temperature 0.7 --top_p 0.8 --top_k 20 --max_tokens 1024 --vllm_truncate_prompt_tokens 12500 --vllm_max_model_len 13524",
+    "slurm_job_id": "15805",
+    "test_parquet": "/home/lancewicki/projects/turing-rl/data/prism/full_s42_history_sft40_grpo60_test10/eval_subsets/test_seed42_n440.parquet"
+  },
+  "generation_metadata_sha256": "667f9c2ef9ebb38247272c9f83b0767a9cdb1384df17a97487ca49a5b9da689d",
+  "generation_metadata_source": "/storage/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/raw/generator/9b-train10pct-step0/gen_metadata.json",
+  "mode": "on",
+  "pair_destination": "/storage/home/lancewicki/projects/turing-rl/results/2026-08-25-test-eval-9b-train10pct-20ep-qwen08b-reward-test50pct-full-schema/raw/pairs/gen_9b-qwen08btrain-step0_440.parquet",
+  "pair_sha256": "8dc1f53a9fd9c14df88945b5808c4a1001b9174622d99124bb010840909de040",
+  "pair_source": "/storage/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step0_440.parquet",
+  "source_gen_key": "9b-train10pct-step0",
+  "source_job_ids": {
+    "gemma4-12b": "15974",
+    "gemma4-31b": "16007",
+    "qwen35-9b": "15880"
+  },
+  "source_root": "/storage/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema"
+}
