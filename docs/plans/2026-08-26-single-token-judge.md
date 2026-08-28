@@ -1621,15 +1621,32 @@ preserved and zero dtype mismatches.
 
 Requires Task B0. `EVAL_ROOT` must name both arms.
 
+**Every launcher variable must go through `--env`.** `cluster_launch.py` builds the remote
+environment from `--env` pairs plus its own `TURING_RL_*`; a leading `VAR=value` shell
+assignment sets it only in the *local* process and never reaches the launcher. Written that
+way, `JUDGE_PROMPT_STYLE` and `THINKING_MODE` would silently fall back to `full`/`on` — the
+wrong arm, into a run root named for this one.
+
+`EVAL_ROOT` is the one exception: it defaults to `TURING_RL_RUN_ROOT`, which `cluster_launch`
+sets from `--run-root`.
+
 ```bash
-EVAL_ROOT=/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge-thinking-off \
-JUDGE_PROMPT_STYLE=single_token \
-THINKING_MODE=off CONFIRM_THINKING_OFF=1 \
-JUDGE_4B_CE_MODEL=/home/lancewicki/projects/turing-rl/checkpoints/sft/judge_qwen35_4b_ce_dense \
-JUDGE_9B_CE_MODEL=/home/lancewicki/projects/turing-rl/checkpoints/sft/judge_qwen35_9b_ce_dense \
-scripts/cluster_launch.sh --dependency-profile eval \
-  --run-root $EVAL_ROOT scripts/launch_judge_eval_matrix.sh
+RUN_ROOT=/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge-thinking-off
+CKPT=/home/lancewicki/projects/turing-rl/checkpoints/sft
+
+scripts/cluster_launch.sh \
+  --dependency-profile eval \
+  --run-root "$RUN_ROOT" \
+  --env JUDGE_PROMPT_STYLE=single_token \
+  --env THINKING_MODE=off \
+  --env CONFIRM_THINKING_OFF=1 \
+  --env JUDGE_4B_CE_MODEL=$CKPT/judge_qwen35_4b_ce_dense \
+  --env JUDGE_9B_CE_MODEL=$CKPT/judge_qwen35_9b_ce_dense \
+  scripts/launch_judge_eval_matrix.sh
 ```
+
+`DRY=1` needs its own run root: the submission claim (`provenance/…​.claim`) is taken before
+the dry-run branch, so a dry run into the real root locks it against the real submission.
 
 `single_token` with `THINKING_MODE=on` is now rejected at submit: the scorer pins
 `enable_thinking=False` regardless, so a thinking-on run would attribute every artifact to
