@@ -16,6 +16,7 @@ MODEL_MAP = {
     "qwen35-9b": "Qwen/Qwen3.5-9B",
     "qwen35-4b-judge": "Qwen/Qwen3.5-4B",
     "qwen35-9b-judge": "Qwen/Qwen3.5-9B",
+    "gemma4-12b-judge": "google/gemma-4-12B-it",
 }
 
 LORA_TARGET_MODULES = {
@@ -29,6 +30,15 @@ LORA_TARGET_MODULES = {
     # matches the working qwen3-8B recipe and leaves the recurrent mixer at its base weights.
     "qwen3.5": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     "llama": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+    # Gemma 4 Unified is a multimodal container, but the modality inputs are projected
+    # straight into the shared LM rather than through a separate tower, so these seven names
+    # match ONLY text-stack Linears (verified on 12B: 328 hits, all under
+    # model.language_model., none elsewhere). 328 = 48*(q,k,o,gate,up,down) + 40*v: the 8
+    # full-attention layers set attention_k_eq_v and carry no v_proj, reusing keys as values.
+    # PEFT 0.19.1 maps model_type "gemma4" but NOT "gemma4_unified", so leaving target_modules
+    # unset raises "Please specify `target_modules`" — naming them is mandatory, not a
+    # preference.
+    "gemma4": ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
 }
 
 QWEN_EMPTY_THINK_PREFILLS = (
@@ -43,6 +53,8 @@ CHAT_TEMPLATE_END_TOKENS = ("<|im_end|>",)
 
 def get_lora_targets(model_name: str) -> list[str]:
     """Get LoRA target modules for the model family."""
+    if "gemma" in model_name:
+        return LORA_TARGET_MODULES["gemma4"]
     if "qwen35" in model_name or "qwen3.5" in model_name:
         return LORA_TARGET_MODULES["qwen3.5"]
     if "qwen" in model_name:
@@ -227,6 +239,74 @@ def build_chat_template_sft_features(
     }
 
 
+def build_generation_prefix_sft_features(
+    tokenizer: Any,
+    messages: Any,
+) -> dict[str, list[int]]:
+    """Tokenize one SFT row as served_generation_prefix + target, supervising the target.
+
+    Renders ONLY the generation prefix and appends the assistant content, instead of
+    rendering the completed conversation and diffing it against the prefix.
+
+    Required for Gemma 4, whose template makes the diff approach impossible: under
+    add_generation_prompt=True it appends an empty, already-closed thought channel
+    ("<|channel>thought\\n<channel|>", the analogue of Qwen's empty <think></think>), but
+    rendering a completed assistant turn omits that channel entirely. The full render
+    therefore does not start with the prompt render and no prefix boundary exists. No
+    template kwarg restores it: preserve_thinking, enable_thinking and reasoning="" all
+    leave the completed turn without the channel (an empty primer was added to the shipped
+    template and then deliberately removed).
+
+    Beyond making Gemma trainable, this removes a train/serve skew: the supervised context
+    is byte-for-byte what the judge is asked at eval, so the model learns the distribution
+    it is actually queried on rather than one a turn-closer away from it.
+
+    There is no supervise_stop_token option here. The judge is decoded with max_tokens=1 and
+    is never asked to terminate, so the turn closer is deliberately out of the span. (On
+    Gemma that closer is "<turn|>", token 106, which is in eos_token_id.)"""
+    normalized_messages = _normalize_messages(messages)
+    if not normalized_messages:
+        raise ValueError("messages must be non-empty")
+    if normalized_messages[-1]["role"] != "assistant":
+        raise ValueError("The last SFT message must be the assistant target")
+
+    target_text = normalized_messages[-1]["content"]
+    if not target_text:
+        raise ValueError("The assistant target is empty")
+
+    prefix_text = tokenizer.apply_chat_template(
+        normalized_messages[:-1],
+        tokenize=False,
+        add_generation_prompt=True,
+        enable_thinking=False,
+    )
+    full_text = prefix_text + target_text
+
+    input_ids, target_start_token = tokenize_with_prefix_boundary(
+        tokenizer,
+        prefix_text,
+        full_text,
+    )
+    if target_start_token >= len(input_ids):
+        raise ValueError("Computed an empty assistant target token span")
+
+    completion_mask = [0] * len(input_ids)
+    for token_idx in range(target_start_token, len(input_ids)):
+        completion_mask[token_idx] = 1
+    return {
+        "input_ids": input_ids,
+        "completion_mask": completion_mask,
+    }
+
+
+def uses_generation_prefix_masking(model_name: str | None) -> bool:
+    """Whether this model needs the prefix+target builder rather than the diff builder.
+
+    Keyed on the model, not on config: which builder is correct is a property of the chat
+    template, so it must not be settable to the wrong value in a YAML."""
+    return bool(model_name) and "gemma" in model_name
+
+
 def resolve_mask_options(config: dict) -> dict[str, bool]:
     """Resolve the completion-mask options build_chat_template_sft_features accepts.
 
@@ -238,8 +318,16 @@ def resolve_mask_options(config: dict) -> dict[str, bool]:
     }
 
 
-def build_completion_mask_mapper(tokenizer: Any, config: dict):
-    """Build the dataset.map() fn that tokenizes a row and masks all but the target span."""
+def build_completion_mask_mapper(tokenizer: Any, config: dict, model: str | None = None):
+    """Build the dataset.map() fn that tokenizes a row and masks all but the target span.
+
+    model selects the builder; omitting it keeps the diff-based Qwen/Llama path."""
+    if uses_generation_prefix_masking(model):
+        def tokenize_with_completion_mask(example):
+            return build_generation_prefix_sft_features(tokenizer, example["messages"])
+
+        return tokenize_with_completion_mask
+
     options = resolve_mask_options(config)
 
     def tokenize_with_completion_mask(example):
@@ -443,11 +531,14 @@ def main():
         log(f"Selected {len(dataset)} / {original_len} examples for smoke run")
     log(f"Training examples: {len(dataset)}")
 
-    log(f"completion-mask options: {resolve_mask_options(config)}")
+    if uses_generation_prefix_masking(args.model):
+        log("completion-mask builder: generation-prefix (supervises the target only)")
+    else:
+        log(f"completion-mask options: {resolve_mask_options(config)}")
 
     log("Tokenizing chat templates with explicit assistant completion masks")
     dataset = dataset.map(
-        build_completion_mask_mapper(tokenizer, config),
+        build_completion_mask_mapper(tokenizer, config, args.model),
         remove_columns=dataset.column_names,
     )
     log("Tokenized chat templates with explicit assistant completion masks")
