@@ -48,7 +48,9 @@ def test_output_paths_are_mode_scoped(name):
     text = (SCRIPTS / name).read_text()
 
     assert "/on/reward" not in text, f"{name} has a mode-blind stale-output guard"
-    assert "$THINKING_MODE/reward" in text
+    assert any(fragment in text for fragment in ("$THINKING_MODE/reward", "$mode/reward")), (
+        f"{name} must scope stale-output checks by its selected thinking mode"
+    )
 
 
 def test_full_schema_eval_exports_the_mode_to_its_continuation():

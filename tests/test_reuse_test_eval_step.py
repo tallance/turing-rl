@@ -8,9 +8,14 @@ from pathlib import Path
 from scripts.reuse_test_eval_step import reuse_step
 
 
-CELLS = ("gemma4-12b", "qwen35-9b")
-MODELS = {"gemma4-12b": "google/gemma-4-12B-it", "qwen35-9b": "Qwen/Qwen3.5-9B"}
-CONCURRENCY = {"gemma4-12b": 4, "qwen35-9b": 32}
+CELLS = ("gemma4-12b", "gemma4-31b", "qwen35-9b")
+MODELS = {
+    "gemma4-12b": "google/gemma-4-12B-it",
+    "gemma4-31b": "google/gemma-4-31B-it",
+    "qwen35-9b": "Qwen/Qwen3.5-9B",
+}
+CONCURRENCY = {"gemma4-12b": 4, "gemma4-31b": 4, "qwen35-9b": 32}
+ENDPOINTS = {"gemma4-12b": 8, "gemma4-31b": 1, "qwen35-9b": 8}
 
 
 class ReuseTestEvalStepTest(unittest.TestCase):
@@ -70,7 +75,7 @@ class ReuseTestEvalStepTest(unittest.TestCase):
                         "cell_name": cell,
                         "model": MODELS[cell],
                         "thinking_mode": "on",
-                        "num_endpoints": 8,
+                        "num_endpoints": ENDPOINTS[cell],
                         "concurrency_per_endpoint": CONCURRENCY[cell],
                         "sampling": '{"repetition_penalty":1.1,"temperature":0.6}',
                         "slurm_job_id": "12345" if cell == CELLS[0] else "12346",
@@ -106,7 +111,10 @@ class ReuseTestEvalStepTest(unittest.TestCase):
         self.assertEqual(copied_pair.read_bytes(), self.pair_path.read_bytes())
         self.assertEqual(manifest["pair_sha256"], manifest["destination_pair_sha256"])
         self.assertEqual(manifest["expected_pairs"], 2)
-        self.assertEqual(manifest["source_job_ids"], {"gemma4-12b": "12345", "qwen35-9b": "12346"})
+        self.assertEqual(
+            manifest["source_job_ids"],
+            {"gemma4-12b": "12345", "gemma4-31b": "12346", "qwen35-9b": "12346"},
+        )
         for cell in CELLS:
             copied = self.destination / "raw" / self.destination_key / "sweep" / cell / "on"
             self.assertTrue((copied / "run_metadata.json").is_file())

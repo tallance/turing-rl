@@ -1,0 +1,28 @@
+{
+  "code_root": "/home/lancewicki/projects/turing-rl-sources/bbe8144a3f0d80fe5f3e06b033859eb646b31430",
+  "debug_label": null,
+  "dependency_profile": "eval",
+  "environment_keys": [
+    "BATCH_SIZE",
+    "EVAL_PARQUET",
+    "EVAL_ROOT",
+    "GEN_KEY_PREFIX",
+    "JOB_PREFIX",
+    "JUDGES",
+    "JUDGE_MODES",
+    "OFFSET",
+    "PAIRS_TAG",
+    "PERSONA_OPENAI_MAX_RETRIES",
+    "REUSED_STEP0_CELLS",
+    "STEPS"
+  ],
+  "format_version": 1,
+  "launched_at_utc": "2026-08-26T17:53:31.913599+00:00",
+  "launcher": "scripts/launch_full_schema_eval.sh",
+  "launcher_args": [],
+  "main_sha": "94bcee7df71758b579f6a13b4872aeff44f9f3fc",
+  "run_class": "retained",
+  "run_root": "/home/lancewicki/projects/turing-rl/results/2026-08-25-test-eval-9b-train10pct-20ep-qwen08b-reward-test50pct-full-schema",
+  "source_sha": "bbe8144a3f0d80fe5f3e06b033859eb646b31430",
+  "state_root": "/home/lancewicki/projects/turing-rl"
+}
