@@ -1314,7 +1314,25 @@ git commit -m "judge-ce: add judge model aliases and single-token CE configs"
 
 ---
 
-## Task 12: Merge new cells into the comparison table
+## Task 12: Merge new cells into the comparison table — SUPERSEDED
+
+> **Outcome: built, then deleted.** `scripts/merge_judge_comparison.py` was written as
+> specified below and never used. It concatenates published per-run CSVs, and those turned
+> out not to be concatenable: `judge_eval_880.csv` reports thinking-OFF rows under the
+> half-tie rule and zero-shot thinking-ON rows with ties excluded — two denominators in one
+> file, confirmed by recomputing both from the raw dumps. Merging them would have produced
+> a table whose rows were not mutually comparable.
+>
+> **Replaced by `scripts/build_single_token_comparison.py`**, which recomputes every cell
+> from the raw per-call JSONL under one rule and imports
+> `analyze_judge_sweep.per_call_features` so it cannot drift from the full arm's own
+> parser. It also refuses to mix pair sets, which matters because one contributing run
+> holds a separate 880-pair file per generator checkpoint.
+>
+> `merge_judge_comparison.py` and its test were deleted before the merge to `main`: nothing
+> called them, and two scripts both claiming to build "the comparison table" is exactly the
+> ambiguity that misleads a later reader. The original spec is kept below as the record of
+> what was tried.
 
 **Files:**
 - Create: `scripts/merge_judge_comparison.py`
@@ -1675,11 +1693,24 @@ python scripts/analyze_single_token_cells.py \
   --out $EVAL_ROOT/derived/single_token_cells.csv
 ```
 
-Then merge the new cells with the reused CSVs via `scripts/merge_judge_comparison.py`.
-Beware the duplicate-key hole: `NaN == NaN` but `NaN != "on"`, so a CSV lacking a
-`thinking_mode` column can merge the *same* cell twice with different accuracies and no
-collision raised. Supply the missing dimension per input, or refuse an input lacking a key
-column.
+Then build the cross-arm table with `scripts/build_single_token_comparison.py`, passing one
+`--sweep-root` per contributing run. It recomputes every cell from the raw JSONL rather
+than concatenating published CSVs — see Task 12 for why the CSVs are not concatenable —
+and hard-fails if the selected cells span more than one pair set.
+
+```bash
+python scripts/build_single_token_comparison.py \
+  --sweep-root <this run>/raw/sweep \
+  --sweep-root .../2026-08-19-judge-only-rlvr-thinking-off-eval/raw/sweep \
+  --sweep-root .../2026-08-14-judge-4b-eval-v2/raw/sweep \
+  --sweep-root .../2026-08-17-judge-9b-eval/raw/sweep \
+  --sweep-root .../2026-08-10-test-eval-9b-full5ep-full-schema/raw/9b-full5ep-step0/sweep \
+  --out <this run>/tables/comparison.csv
+```
+
+That last root is the zero-shot thinking-ON source, and it sits one directory level deeper
+than the others: the run holds one sweep per generator checkpoint, each with its OWN
+880-pair file. Only `9b-full5ep-step0` shares this pair set.
 
 **Step 2** — report, don't adjudicate. There is **no automated switch rule**; you read the
 table and the plot and decide. Produce:

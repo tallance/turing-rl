@@ -36,8 +36,8 @@ def meta_path_for(pairs_path: str | Path) -> Path:
 def recorded_prompt_style(pairs_path: str | Path) -> str | None:
     """prompt_style from the sibling .meta.json, or None if there is no sidecar.
 
-    A sidecar that exists but predates the prompt_style field means "full", matching the
-    backfill in merge_judge_comparison.py.
+    A sidecar that exists but predates the prompt_style field means "full", the
+    pre-single-token style.
     """
     meta = meta_path_for(pairs_path)
     if not meta.exists():
