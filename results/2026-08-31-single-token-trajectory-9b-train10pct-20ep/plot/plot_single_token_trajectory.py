@@ -126,8 +126,11 @@ def main() -> None:
         # Anchored LEFT, unlike the full-schema figure. These curves rise from below the
         # reference line to above it, so the right end is where the direct labels crowd
         # in and the strongest judge can finish sitting on 0.5 exactly.
+        # The surface-coloured bbox matters: these curves CROSS the reference line early,
+        # so without it a rising curve strikes straight through the text.
         ax.annotate(ref_note, xy=(steps[0], ref), xytext=(0, 5), textcoords="offset points",
-                    color=INK["muted"], fontsize=8.5, va="bottom", ha="left", zorder=1)
+                    color=INK["muted"], fontsize=8.5, va="bottom", ha="left", zorder=4,
+                    bbox=dict(facecolor=INK["surface"], edgecolor="none", pad=1.5))
 
         lo, hi = ax.get_ylim()
         placed = declutter([(y - lo) / (hi - lo) for y, _, _ in ends])

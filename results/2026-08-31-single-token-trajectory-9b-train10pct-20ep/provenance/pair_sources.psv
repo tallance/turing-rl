@@ -1,0 +1,12 @@
+step|source|sha256
+0|/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step0_440.parquet|8dc1f53a9fd9c14df88945b5808c4a1001b9174622d99124bb010840909de040
+12|/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step12_440.parquet|4fc4e6fdb4dc2118b93627e0b6be76d8e03488ddfacd9aefc7b725e1569e4267
+24|/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step24_440.parquet|2702d96afb2d9945f6eb3272852a2aa29a0c056aad172e5a97ad81a415c11921
+36|/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step36_440.parquet|5d09e677459ec0d192edd2d5341ae4bfef6c54c3d0629bd0a59fcde8992dcf0d
+48|/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step48_440.parquet|ea77e8ed71aaabf0fdb102f2605d07cea7ef98f8afbcefb7b6a9d8b6a4b3c3a6
+60|/home/lancewicki/projects/turing-rl/results/2026-08-12-test-eval-9b-train10pct-10ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step60_440.parquet|6b681b12df972ba3a5863602482a8840d52e89c15382d6ebd5041e703ac95ade
+72|/home/lancewicki/projects/turing-rl/results/2026-08-19-test-eval-9b-train10pct-20ep-every2ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step72_440.parquet|8f653ef328a4649f797caf29e691b5e1b6cb58cb486321864f76260c345fc492
+84|/home/lancewicki/projects/turing-rl/results/2026-08-19-test-eval-9b-train10pct-20ep-every2ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step84_440.parquet|894f975c868b68ac0e10c4a0e2075a5327c259ac9793b7029c6ef078538a3c91
+96|/home/lancewicki/projects/turing-rl/results/2026-08-19-test-eval-9b-train10pct-20ep-every2ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step96_440.parquet|469b295a563192e46fbeed47acfee8b5bb9f541e5700f7c7321d2a06edd3dcfa
+108|/home/lancewicki/projects/turing-rl/results/2026-08-19-test-eval-9b-train10pct-20ep-every2ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step108_440.parquet|91a24a6fb403442b14cb24a53a30a72c271d59a798f77930c0964f8a5685c3de
+120|/home/lancewicki/projects/turing-rl/results/2026-08-19-test-eval-9b-train10pct-20ep-every2ep-test50pct-full-schema/raw/pairs/gen_9b-train10pct-step120_440.parquet|4e458b406f6fb9ccba8e21d4fba14503606c532cfd7c6fc83a78bd070445799e
