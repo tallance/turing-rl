@@ -14,7 +14,8 @@
 # api_server with --data-parallel-size DP (TP per replica), so the single-base-URL
 # GRPO reward path (reward.py -> OPENAI_API_BASE) is load-balanced across all GPUs.
 # Writes the endpoint URL (node IP, cross-node) to JUDGE_ENDPOINT_FILE, then stays
-# up until walltime/scancel. thinking-on via --reasoning-parser (family-specific).
+# up until walltime/scancel. thinking-on via --reasoning-parser (family-specific); an EMPTY
+# REASONING_PARSER omits the flag, which is what the single-token judge protocol serves with.
 #
 # Qwen models serve via `python -m vllm.entrypoints.openai.api_server`; Gemma 4 serves via
 # the nightly env's `vllm serve` against a pinned offline snapshot. Either way exactly one
@@ -52,6 +53,12 @@ MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 TP=${TP:-1}
 DP=${DP:-8}
 REASONING_PARSER=${REASONING_PARSER:-qwen3}
+# Empty REASONING_PARSER => omit the flag entirely (thinking-off serving). The single-token
+# judge decodes ONE token with enable_thinking=False, so there is no <think> block to parse;
+# judge_sweep_cell.sh likewise only adds a parser for thinking-on cells, and that is the
+# configuration the seven-cell matrix actually ran against.
+RP=()
+[ -n "$REASONING_PARSER" ] && RP=(--reasoning-parser "$REASONING_PARSER")
 PORT=${PORT:-$((8300 + ${SLURM_JOB_ID:-0} % 400))}
 JUDGE_ENDPOINT_FILE=${JUDGE_ENDPOINT_FILE:-$REPO/logs/judge_endpoint-${SLURM_JOB_ID}.txt}
 
@@ -95,7 +102,7 @@ fi
 
 mkdir -p "$REPO/logs"
 echo "============================================"
-echo "DP judge server: MODEL=$MODEL TP=$TP DP=$DP port=$PORT parser=$REASONING_PARSER gpu_util=$GPU_MEMORY_UTILIZATION"
+echo "DP judge server: MODEL=$MODEL TP=$TP DP=$DP port=$PORT parser=${REASONING_PARSER:-<none>} gpu_util=$GPU_MEMORY_UTILIZATION"
 [ "$IS_GEMMA4" = "1" ] && echo "gemma_snapshot=$GEMMA_SNAPSHOT path=$GEMMA_MODEL_PATH"
 echo "date=$(date) host=$(hostname) endpoint_file=$JUDGE_ENDPOINT_FILE"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader
@@ -109,14 +116,14 @@ if [ "$IS_GEMMA4" = "1" ]; then
     --download-dir "$HF_HOME" \
     --tensor-parallel-size "$TP" "${DPFLAG[@]}" \
     --max-model-len 32768 --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" --dtype bfloat16 \
-    --reasoning-parser "$REASONING_PARSER" "${AR[@]}" "${GEMMA_ARGS[@]}" \
+    "${RP[@]}" "${AR[@]}" "${GEMMA_ARGS[@]}" \
     --host 0.0.0.0 --port "$PORT" &
 else
   $PY -m vllm.entrypoints.openai.api_server \
     --model "$MODEL" --download-dir "$HF_HOME" \
     --tensor-parallel-size "$TP" "${DPFLAG[@]}" \
     --max-model-len 32768 --gpu-memory-utilization "$GPU_MEMORY_UTILIZATION" --dtype bfloat16 \
-    --reasoning-parser "$REASONING_PARSER" "${AR[@]}" \
+    "${RP[@]}" "${AR[@]}" \
     --host 0.0.0.0 --port "$PORT" &
 fi
 SRV=$!

@@ -86,6 +86,20 @@ case "$JUDGE" in
   gemma4-12b) JUDGE_MODEL=google/gemma-4-12B-it;           TP=1; DP=8; REASONING_PARSER=gemma4 ;;
 esac
 
+# Judge protocol: "full" (37-field JSON verdict) or "single_token" (one A/B token, verdict
+# read from logprobs). Single-token decodes ONE token with thinking off, so there is no
+# <think> block: clear the parser (judge_serve_9b_replicas.sh omits the flag when empty,
+# matching judge_sweep_cell.sh, which only adds one for thinking-on cells) and turn thinking
+# off for the reward path too. The scorer pins enable_thinking=False in code regardless, but
+# leaving the env at 1 here would misreport what the run did.
+JUDGE_PROMPT_STYLE=${JUDGE_PROMPT_STYLE:-full}
+case "$JUDGE_PROMPT_STYLE" in
+  full) ;;
+  single_token) REASONING_PARSER=""; PERSONA_JUDGE_ENABLE_THINKING=0 ;;
+  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token, got '$JUDGE_PROMPT_STYLE'" >&2
+     exit 2 ;;
+esac
+
 # Two allocated nodes: node0 -> judge, node1 -> trainer.
 mapfile -t NODES < <(scontrol show hostnames "$SLURM_JOB_NODELIST")
 [ "${#NODES[@]}" -ge 2 ] || { echo "ERROR: need 2 nodes, got '${NODES[*]:-none}'" >&2; exit 2; }
@@ -101,7 +115,10 @@ rm -f "$ENDPOINT_FILE"
 
 echo ">> RL-gen atomic 9B run: JUDGE=$JUDGE MODEL=$JUDGE_MODEL MODE=$MODE job=$SLURM_JOB_ID"
 echo ">> nodes: judge=$NODE_JUDGE trainer=$NODE_TRAIN  run_dir=$RUN_DIR"
-echo "=== judge serving pinned: model=$JUDGE_MODEL tp=$TP dp=$DP parser=$REASONING_PARSER ==="
+# parser quoted, not defaulted: '' is the legitimate single-token value, and a ${VAR:-...}
+# here would be indistinguishable from reading REASONING_PARSER back from the environment,
+# which this script must never do (it is pinned per JUDGE family above).
+echo "=== judge serving pinned: model=$JUDGE_MODEL tp=$TP dp=$DP parser='$REASONING_PARSER' style=$JUDGE_PROMPT_STYLE ==="
 
 # --- judge step on node0 (concurrent, backgrounded; frozen judge) ---
 MODEL=$JUDGE_MODEL TP=$TP DP=$DP REASONING_PARSER=$REASONING_PARSER JUDGE_ENDPOINT_FILE=$ENDPOINT_FILE \
@@ -136,6 +153,7 @@ echo ">> judge endpoint: $ENDPOINT"
 
 # --- reward env for the trainer step (inherited via srun --export=ALL / default) ---
 export REWARD_METRIC=turing
+export JUDGE_PROMPT_STYLE
 export JUDGE_MODEL
 export OPENAI_API_BASE="$ENDPOINT"
 export TURING_JUDGE_SCORE_CLIP_MAX=7

@@ -530,3 +530,43 @@ def test_env_file_override_actually_reaches_the_loader():
         proc = subprocess.run([sys.executable, "-c", prog], capture_output=True, text=True)
         assert proc.returncode == 0, f"loader rejected ENV_FILE: {proc.stderr[-800:]}"
         assert "sk-test-value" in proc.stdout, proc.stdout
+
+
+# --- single-token judge protocol ---------------------------------------------------------
+
+
+def test_single_token_style_clears_the_reasoning_parser():
+    """The single-token judge decodes ONE token with thinking off, so there is no <think>
+    block to split. judge_sweep_cell.sh likewise adds a parser only for thinking-on cells,
+    and that is the configuration the seven-cell matrix actually ran."""
+    m = re.search(r"^  single_token\)(.*)$", RUN_2NODE, re.M)
+    assert m, "no case arm handles JUDGE_PROMPT_STYLE=single_token"
+    arm = m.group(1)
+    assert 'REASONING_PARSER=""' in arm
+    # ...and thinking is turned off for the reward path too, so the run reports what it did.
+    assert "PERSONA_JUDGE_ENABLE_THINKING=0" in arm
+
+
+def test_single_token_style_is_exported_to_the_trainer_step():
+    """reward.py reads JUDGE_PROMPT_STYLE; without the export the trainer silently scores
+    with the 37-field judge and the run measures the wrong protocol."""
+    assert "export JUDGE_PROMPT_STYLE" in RUN_2NODE
+
+
+def test_unknown_prompt_style_is_rejected_before_any_gpu_is_allocated():
+    assert "JUDGE_PROMPT_STYLE must be full|single_token" in RUN_2NODE
+
+
+def test_prompt_style_defaults_to_full():
+    assert "JUDGE_PROMPT_STYLE=${JUDGE_PROMPT_STYLE:-full}" in RUN_2NODE
+
+
+def test_serve_omits_the_parser_flag_when_it_is_empty():
+    """An empty REASONING_PARSER must drop --reasoning-parser entirely; passing the flag
+    with an empty value is a vLLM startup error, not a no-op."""
+    assert 'RP=()' in SERVE
+    assert '[ -n "$REASONING_PARSER" ] && RP=(--reasoning-parser "$REASONING_PARSER")' in SERVE
+    # The flag appears ONCE, building that array -- neither serve invocation (qwen, gemma)
+    # still passes it directly, and both consume the array instead.
+    assert SERVE.count('--reasoning-parser "$REASONING_PARSER"') == 1
+    assert SERVE.count('"${RP[@]}"') == 2

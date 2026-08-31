@@ -32,6 +32,7 @@ from shared.api_client import (
     resolve_judge_api_key,
 )
 from shared.judge_prompts import TURING_PROMPT, TURING_RESPONSE_SCHEMA
+from training.grpo.single_token_reward import score_turing_single_token_with_info
 from shared.judge_utils import (
     _coerce_turing_rating,
     _extract_turing_rating,
@@ -264,6 +265,26 @@ def build_logprob_reward_result(
     return result
 
 
+PROMPT_STYLE_FULL = "full"
+PROMPT_STYLE_SINGLE_TOKEN = "single_token"
+PROMPT_STYLES = (PROMPT_STYLE_FULL, PROMPT_STYLE_SINGLE_TOKEN)
+
+
+def resolve_judge_prompt_style() -> str:
+    """Which judge protocol scores this run. Same env name the eval sweep uses.
+
+    Fails on an unknown value rather than falling back to "full": a typo'd style that
+    silently scored with the 37-field judge would produce a complete, healthy-looking run
+    of the wrong experiment.
+    """
+    style = os.environ.get("JUDGE_PROMPT_STYLE", PROMPT_STYLE_FULL).strip() or PROMPT_STYLE_FULL
+    if style not in PROMPT_STYLES:
+        raise ValueError(
+            f"JUDGE_PROMPT_STYLE must be one of {list(PROMPT_STYLES)}, got {style!r}"
+        )
+    return style
+
+
 def adjust_turing_raw_reward(raw_reward: float) -> float:
     """Scale the Turing raw reward before adding format bonuses."""
     return float(raw_reward) * TURING_RAW_REWARD_SCALE
@@ -376,10 +397,25 @@ _REWARD_DUMP_KEYS = ("generated_is_b", "human_side", "rating_gt_first", "rating_
 _DUMP_SPLIT: "contextvars.ContextVar[str]" = contextvars.ContextVar("dump_split", default="train")
 
 
+# Single-token extras, appended to the base row ONLY for single-token calls. Kept out of
+# _REWARD_DUMP_KEYS on purpose: eval/single_token_judge.py holds a pinned hand-copy of that
+# tuple and tests/test_single_token_judge.py asserts the two are equal, so growing the base
+# list would break the eval arm. Names match that module's _SINGLE_TOKEN_DUMP_KEYS so both
+# arms' dumps stay readable by the same tooling.
+_SINGLE_TOKEN_DUMP_KEYS = (
+    "judge_prompt_style", "p_human", "p_a", "ab_mass", "off_ab_mass", "letter",
+    "human_is_b", "hard_fail", "hard_fail_reason", "sampled_token", "sampled_token_is_ab",
+    "enable_thinking",
+)
+
+
 def _build_reward_dump_row(**f) -> dict:
     """Reward-layer dump row matching scripts/dump_viewer.py. `rating` intentionally
     omitted — the viewer derives it from rating_gt_first/rating_gen_first."""
-    return {k: f.get(k) for k in _REWARD_DUMP_KEYS}
+    keys = _REWARD_DUMP_KEYS
+    if f.get("judge_prompt_style") == PROMPT_STYLE_SINGLE_TOKEN:
+        keys = keys + _SINGLE_TOKEN_DUMP_KEYS
+    return {k: f.get(k) for k in keys}
 
 
 def _dump_reward_call(row: dict) -> None:
@@ -957,6 +993,9 @@ async def compute_score(
     assistant_like_response = False
     wrong_target_or_role_response = False
     unsupported_adversarial_reframing_response = False
+    # Populated only by the single-token branch; empty elsewhere so the full-schema arm's
+    # metric set is unchanged rather than gaining a column of constant zeros.
+    single_token_info: dict[str, float] = {}
 
     if call_id <= 5:
         print(f"[reward #{call_id}] metric={metric} solution_str_len={len(solution_str)} response_len={len(response)} gt_len={len(ground_truth)} format={format_score}", flush=True)
@@ -1034,7 +1073,62 @@ async def compute_score(
 
     context = extra_info.get("context", "")
     user_history = extra_info.get("user_history", "")
-    if metric == "turing":
+    if metric == "turing" and resolve_judge_prompt_style() == PROMPT_STYLE_SINGLE_TOKEN:
+        session = _get_session()
+        api_key = resolve_judge_api_key()
+        st_result = await score_turing_single_token_with_info(
+            session,
+            api_key,
+            response,
+            ground_truth,
+            user_history,
+            context,
+            semaphore=_get_reward_judge_request_semaphore(),
+            user_id=extra_info.get("user_id", ""),
+            post_id=extra_info.get("post_id", ""),
+            target_idx=extra_info.get("target_idx", extra_info.get("prompt_idx", "")),
+        )
+        # Recorded for dump/viewer continuity only. The reward is p_human and does NOT go
+        # through the Likert transform: it is already in [0, 1], so clipping and (r-1)/6
+        # would rescale a probability as if it were a 1-7 rating.
+        turing_judge_score_raw = float(st_result["score"])
+        turing_judge_score_clipped = clip_turing_judge_score(turing_judge_score_raw)
+        unadjusted_raw_reward = float(st_result["p_human"])
+        adjusted_raw_reward = adjust_turing_raw_reward(unadjusted_raw_reward)
+        reward = adjusted_raw_reward
+        single_token_info = {
+            "p_human": unadjusted_raw_reward,
+            "hard_fail": 1.0 if st_result["hard_fail"] else 0.0,
+            "letter_is_a": 1.0 if st_result["letter"] == "A" else 0.0,
+        }
+        _dump_reward_call(_build_reward_dump_row(
+            **{k: st_result.get(k) for k in _SINGLE_TOKEN_DUMP_KEYS},
+            generated_is_b=st_result["generated_is_b"],
+            human_side="A" if st_result["generated_is_b"] else "B",
+            rating_gt_first=st_result["rating_gt_first"],
+            rating_gen_first=st_result["rating_gen_first"],
+            randomized_order=st_result["randomized_order"],
+            response=response,
+            ground_truth=ground_truth,
+            context=context,
+            user_history=user_history,
+            judge_prompt=st_result["judge_prompt"],
+            judge_raw_content=st_result["judge_raw_content"],
+            judge_latency_ms=st_result["judge_latency_ms"],
+            judge_finish_reason=st_result["judge_finish_reason"],
+            judge_model=os.environ.get("JUDGE_MODEL", JUDGE_MODEL),
+            judge_usage=st_result["judge_usage"],
+            turing_judge_score_raw=turing_judge_score_raw,
+            turing_judge_score_clipped=turing_judge_score_clipped,
+            call_id=call_id,
+            user_id=extra_info.get("user_id", ""),
+            post_id=extra_info.get("post_id", ""),
+            target_idx=extra_info.get("target_idx", extra_info.get("prompt_idx", "")),
+            ts=time.time(),
+            worker_pid=os.getpid(),
+            split=_DUMP_SPLIT.get(),
+        ))
+    elif metric == "turing":
         session = _get_session()
         api_key = resolve_judge_api_key()
         pairwise_result = await score_turing_with_info(
@@ -1096,6 +1190,7 @@ async def compute_score(
         **length_info,
         **format_reward_info,
         **logged_thinking_info,
+        **single_token_info,
         "total_score": total_score,
         "logprob_failure": None,
     })
@@ -1118,4 +1213,5 @@ async def compute_score(
     }
     result.update(format_reward_info)
     result.update(logged_thinking_info)
+    result.update(single_token_info)
     return result

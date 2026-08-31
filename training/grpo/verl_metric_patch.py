@@ -40,6 +40,12 @@ _BASE_TRACKING_METRICS = [
     "reward/format_reasoning_schema/mean",
     "reward/format_reasoning_schema/rate",
     "reward/total_score/mean",
+    # Single-token judge arm. p_human IS the reward there; hard_fail is the judge's
+    # abstention rate and letter_is_a its position drift -- the two ways the judge can
+    # degrade under a generator optimizing against it.
+    "reward/p_human/mean",
+    "reward/hard_fail/rate",
+    "reward/letter_is_a/rate",
     "reward/source_copy/mean",
     "reward/source_copy/rate",
     "reward/source_copy_rate/mean",
@@ -124,6 +130,9 @@ _REWARD_KEY_ALIASES: dict[str, tuple[str, ...]] = {
     "format_no_post_human_thinking": ("format_no_post_human_thinking",),
     "format_reasoning_schema": ("format_reasoning_schema",),
     "total_score": ("total_score", "score"),
+    "p_human": ("p_human",),
+    "hard_fail": ("hard_fail",),
+    "letter_is_a": ("letter_is_a",),
     "source_copy": ("source_copy",),
     "wrong_perspective": ("wrong_perspective",),
     "assistant_like_response": ("assistant_like_response",),
@@ -133,6 +142,8 @@ _REWARD_KEY_ALIASES: dict[str, tuple[str, ...]] = {
 }
 
 _RATE_METRIC_NAMES = {
+    "hard_fail",
+    "letter_is_a",
     "meaningful_thinking",
     "source_copy",
     "wrong_perspective",
