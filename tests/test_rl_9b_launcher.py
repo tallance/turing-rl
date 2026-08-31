@@ -564,6 +564,11 @@ def test_prompt_style_defaults_to_full():
 def test_serve_omits_the_parser_flag_when_it_is_empty():
     """An empty REASONING_PARSER must drop --reasoning-parser entirely; passing the flag
     with an empty value is a vLLM startup error, not a no-op."""
+    # ${VAR-default}, never ${VAR:-default}: the driver passes REASONING_PARSER="" to mean
+    # "no parser", and the colon form treats empty as unset and restores qwen3. Job 19418
+    # served with reasoning_parser='qwen3' while its driver printed parser='' two lines up.
+    assert "REASONING_PARSER=${REASONING_PARSER-qwen3}" in SERVE
+    assert "REASONING_PARSER=${REASONING_PARSER:-" not in SERVE
     assert 'RP=()' in SERVE
     assert '[ -n "$REASONING_PARSER" ] && RP=(--reasoning-parser "$REASONING_PARSER")' in SERVE
     # The flag appears ONCE, building that array -- neither serve invocation (qwen, gemma)

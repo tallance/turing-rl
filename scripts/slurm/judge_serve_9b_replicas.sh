@@ -52,7 +52,11 @@ REPO=${TURING_RL_WORK_ROOT:?}
 MODEL=${MODEL:-Qwen/Qwen3.5-9B}
 TP=${TP:-1}
 DP=${DP:-8}
-REASONING_PARSER=${REASONING_PARSER:-qwen3}
+# ${VAR-default}, NOT ${VAR:-default}: the caller passes REASONING_PARSER="" to mean "serve
+# without a parser", and the colon form treats empty as unset and silently restores qwen3.
+# That is not hypothetical -- job 19418 served with reasoning_parser='qwen3' while its own
+# driver had printed parser='' two lines earlier.
+REASONING_PARSER=${REASONING_PARSER-qwen3}
 # Empty REASONING_PARSER => omit the flag entirely (thinking-off serving). The single-token
 # judge decodes ONE token with enable_thinking=False, so there is no <think> block to parse;
 # judge_sweep_cell.sh likewise only adds a parser for thinking-on cells, and that is the
