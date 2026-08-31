@@ -41,8 +41,14 @@ from scripts.analyze_single_token_cells import (  # noqa: E402
 
 FIELDS = [
     "checkpoint", "step", "n_scored", "n_unique_pairs", "judge_accuracy",
-    "gen_win_rate", "p_gen_mean", "a_rate", "n_hard_fail",
+    "gen_win_rate", "p_gen_mean", "a_rate", "expected_a_rate", "a_rate_excess",
+    "n_hard_fail",
 ]
+
+# Same threshold as scripts/single_token_metrics.py. A judge past this is answering by
+# position, and its curve is readable, smooth and meaningless -- so the check has to be
+# mechanical rather than something to remember to run.
+DEGENERATE_EXCESS = 0.2
 
 DEFAULT_STEPS = (0, 12, 24, 36, 48, 60, 72, 84, 96, 108, 120)
 DEFAULT_PREFIX = "9b-train10pct-step"
@@ -76,6 +82,7 @@ def summarize(rows: list[dict]) -> dict:
 
     picked_generated = 0
     picked_a = 0
+    human_on_a = 0
     p_gen_total = 0.0
     for row in votes:
         for field in ("human_is_b", "letter", "p_a"):
@@ -88,17 +95,28 @@ def summarize(rows: list[dict]) -> dict:
             picked_generated += 1
         if letter == "A":
             picked_a += 1
+        if not human_is_b:
+            human_on_a += 1
         p_a = float(row["p_a"])
         p_gen_total += p_a if human_is_b else 1.0 - p_a
 
     scored = len(votes)
+    if not scored:
+        raise ValueError("no scored rows: every row hard-failed")
+
+    a_rate = picked_a / scored
+    # What an unbiased judge would score on THIS sample -- it answers A exactly when the
+    # human sits in slot A. Subtracting it separates letter-bias from sample imbalance.
+    expected_a_rate = human_on_a / scored
     return {
         "n_scored": n,
         "n_unique_pairs": len({_pair_key(r) for r in rows}),
-        "judge_accuracy": (scored - picked_generated) / scored if scored else None,
-        "gen_win_rate": picked_generated / scored if scored else None,
-        "p_gen_mean": p_gen_total / scored if scored else None,
-        "a_rate": picked_a / scored if scored else None,
+        "judge_accuracy": (scored - picked_generated) / scored,
+        "gen_win_rate": picked_generated / scored,
+        "p_gen_mean": p_gen_total / scored,
+        "a_rate": a_rate,
+        "expected_a_rate": expected_a_rate,
+        "a_rate_excess": a_rate - expected_a_rate,
         "n_hard_fail": hard_fail,
     }
 
@@ -231,6 +249,23 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{cell:16s} step{first['step']:>4} win={first['gen_win_rate']:.3f} "
               f"p_gen={first['p_gen_mean']:.3f}  ->  step{last['step']:>4} "
               f"win={last['gen_win_rate']:.3f} p_gen={last['p_gen_mean']:.3f}")
+
+    # Loud, and last, so it is the final thing on screen before anyone reads a curve.
+    degenerate = [
+        (cell, row) for cell, rows in tables.items() for row in rows
+        if abs(row["a_rate_excess"]) > DEGENERATE_EXCESS
+    ]
+    if degenerate:
+        print(f"\nWARNING: {len(degenerate)} checkpoint(s) exceed the "
+              f"|a_rate_excess| > {DEGENERATE_EXCESS} degeneracy threshold. These judges "
+              f"are answering by position; their curves are smooth and meaningless.",
+              file=sys.stderr)
+        for cell, row in degenerate:
+            print(f"  {cell} step{row['step']:>4} a_rate={row['a_rate']:.3f} "
+                  f"expected={row['expected_a_rate']:.3f} "
+                  f"excess={row['a_rate_excess']:+.3f}", file=sys.stderr)
+    else:
+        print(f"\nno checkpoint exceeds |a_rate_excess| > {DEGENERATE_EXCESS}")
     return 0
 
 

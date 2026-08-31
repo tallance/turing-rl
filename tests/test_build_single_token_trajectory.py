@@ -166,6 +166,33 @@ def test_a_hard_fail_leaves_both_denominators(tmp_path: Path) -> None:
     assert got["p_gen_mean"] == pytest.approx(0.9)
 
 
+def test_a_rate_excess_subtracts_the_samples_own_imbalance() -> None:
+    # Both rows have the human in slot B, so an unbiased judge answers B twice and A never.
+    # A judge that does exactly that is NOT biased, even though its a_rate is 0.0.
+    rows = [
+        _row(human_is_b=True, letter="B", p_a=0.1, pair_id="a"),
+        _row(human_is_b=True, letter="B", p_a=0.2, pair_id="b"),
+    ]
+    got = summarize(rows)
+    assert got["a_rate"] == 0.0
+    assert got["expected_a_rate"] == 0.0
+    assert got["a_rate_excess"] == 0.0
+
+    # A judge answering A on that same sample is maximally position-biased.
+    biased = summarize([
+        _row(human_is_b=True, letter="A", p_a=0.9, pair_id="a"),
+        _row(human_is_b=True, letter="A", p_a=0.8, pair_id="b"),
+    ])
+    assert biased["a_rate_excess"] == 1.0
+
+
+def test_every_row_hard_failing_is_refused() -> None:
+    # Otherwise the cell divides by zero, or silently reports None metrics as a data point.
+    with pytest.raises(ValueError, match="every row hard-failed"):
+        summarize([_row(human_is_b=True, letter=None, p_a=None, pair_id="a",
+                        hard_fail=True)])
+
+
 def test_a_short_cell_is_refused(tmp_path: Path) -> None:
     _cell(tmp_path, f"{PREFIX}0", "j", _two_good_rows("a")[:1])
     with pytest.raises(ValueError, match="expected 2 rows"):
