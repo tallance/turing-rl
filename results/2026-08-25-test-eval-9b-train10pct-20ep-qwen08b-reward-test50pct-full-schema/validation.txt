@@ -1,0 +1,7 @@
+Source completeness: PASS, 44/44 cells with exactly 440 unique pair keys.
+Combined summaries: PASS, 4 judges x 11 checkpoints.
+Parse-error threshold: PASS, every cell is below 2%; metrics exclude invalid Likert rows.
+  qwen35-0.8b: 14/4840 parse failures (0.29% overall; worst cell 5/440 = 1.14%).
+  gemma4-12b: 0/4840 parse failures (0.00% overall; worst cell 0/440 = 0.00%).
+  gemma4-31b: 0/4840 parse failures (0.00% overall; worst cell 0/440 = 0.00%).
+  qwen35-9b: 18/4840 parse failures (0.37% overall; worst cell 3/440 = 0.68%).

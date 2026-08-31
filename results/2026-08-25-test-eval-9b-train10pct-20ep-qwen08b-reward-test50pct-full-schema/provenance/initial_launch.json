@@ -1,0 +1,15 @@
+{
+  "code_root": "/home/lancewicki/projects/turing-rl-sources/a5c198d25bee58d5f25dd2b40baec64749cba12f",
+  "debug_label": null,
+  "dependency_profile": "eval",
+  "environment_keys": [],
+  "format_version": 1,
+  "launched_at_utc": "2026-08-25T22:27:00.362076+00:00",
+  "launcher": "scripts/launch_qwen08b_trained_frac10_eval.sh",
+  "launcher_args": [],
+  "main_sha": "c9d9ab78d57b5169c4cf079a95b1cfcd08e69063",
+  "run_class": "retained",
+  "run_root": "/home/lancewicki/projects/turing-rl/results/2026-08-25-test-eval-9b-train10pct-20ep-qwen08b-reward-test50pct-full-schema",
+  "source_sha": "a5c198d25bee58d5f25dd2b40baec64749cba12f",
+  "state_root": "/home/lancewicki/projects/turing-rl"
+}

@@ -22,6 +22,11 @@ EXPECTED_JUDGES = {
         "num_endpoints": 8,
         "concurrency_per_endpoint": 4,
     },
+    "gemma4-31b": {
+        "model": "google/gemma-4-31B-it",
+        "num_endpoints": 1,
+        "concurrency_per_endpoint": 4,
+    },
     "qwen35-9b": {
         "model": "Qwen/Qwen3.5-9B",
         "num_endpoints": 8,
