@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import gc
 import glob
 import json
 import os
@@ -247,6 +248,22 @@ def is_within(child: Path, parent: Path) -> bool:
     return child_n == parent_n or parent_n in child_n.parents
 
 
+def release_mapped_tensors(target) -> None:
+    """Drop tensors that are memory-mapped out of the directory we are about to delete.
+
+    ``load_adapter`` returns the A/B pairs as safetensors tensors, which are mmap-backed by
+    ``lora_adapter/adapter_model.safetensors``. Holding them keeps that file mapped, and on
+    NFS the open mapping makes ``rmdir`` of the enclosing directory fail with EBUSY -- the
+    shards unlink fine and then the now-empty ``lora_adapter/`` cannot be removed while this
+    process lives. Nothing downstream needs the tensors: the manifest cites r/alpha/sha256,
+    which are plain values.
+    """
+    meta = getattr(target, "adapter_meta", None)
+    if isinstance(meta, dict):
+        meta.pop("pairs", None)
+    gc.collect()
+
+
 def rmtree_nfs(path: Path, attempts: int = 6) -> None:
     """``shutil.rmtree``, tolerant of NFS close-to-open consistency.
 
@@ -268,7 +285,9 @@ def rmtree_nfs(path: Path, attempts: int = 6) -> None:
         except FileNotFoundError:
             return
         except OSError as exc:
-            if exc.errno != errno.ENOTEMPTY or attempt == attempts - 1:
+            # EBUSY too: an NFS silly-rename placeholder for a file some other process still
+            # holds clears on its own once that handle closes.
+            if exc.errno not in (errno.ENOTEMPTY, errno.EBUSY) or attempt == attempts - 1:
                 raise
             time.sleep(delay)
             delay *= 2
@@ -869,6 +888,7 @@ def main(argv: list[str] | None = None) -> int:
             # the preserved copies are already written and verified, so the remaining targets
             # are still safe to process.
             try:
+                release_mapped_tensors(target)
                 rmtree_nfs(target.path)
             except OSError as exc:
                 target.fail("delete", f"{type(exc).__name__}: {exc}")
