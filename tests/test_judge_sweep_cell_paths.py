@@ -142,6 +142,7 @@ def _launcher_env(tmp_path: Path, style: str) -> dict[str, str]:
         "JUDGE_9B_GRADED_MODEL",
         "JUDGE_4B_CE_MODEL",
         "JUDGE_9B_CE_MODEL",
+        "JUDGE_GEMMA12B_CE_MODEL",
     ):
         model = tmp_path / key.lower()
         model.mkdir()

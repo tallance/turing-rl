@@ -21,6 +21,7 @@ P(label | ...model\\n) while the judge is actually asked P(label | ...<channel|>
 prefix builder removes that skew by construction.
 """
 
+import json
 import subprocess
 from pathlib import Path
 
@@ -308,6 +309,81 @@ def test_build_fsdp_kwargs_still_defaults_to_the_optimisation():
     """Existing callers that pass no flag must be unchanged."""
     kw = build_fsdp_kwargs("full_shard auto_wrap", "Qwen3DecoderLayer")
     assert kw["fsdp_config"]["cpu_ram_efficient_loading"] is True
+
+
+# --- serving-env routing for a TRAINED Gemma cell --------------------------------------
+#
+# The zero-shot cells name an HF id, but a trained cell's MODEL is a local merged
+# directory, so no name pattern can classify it. Routing it wrong is not a slow path but a
+# hard failure: turing-rl-train pins vLLM 0.18.0, which predates gemma4 support (0.23.0).
+# These run the launcher's real case statement rather than asserting on its source text.
+
+CELL_SCRIPT = ROOT / "scripts/slurm/judge_sweep_cell.sh"
+
+
+def _route(model: str) -> dict[str, str]:
+    """Execute the launcher's real serving-env case statement for one MODEL."""
+    text = CELL_SCRIPT.read_text()
+    start = text.index("IS_GEMMA4=0")
+    end = text.index("esac", start) + len("esac")
+    block = text[start:end]
+    for token in ("google/gemma-4-12B-it", "model_type", "IS_GEMMA4=1"):
+        assert token in block, f"routing block no longer contains {token!r}"
+    probe = '\nprintf "%s\\n" "IS_GEMMA4=$IS_GEMMA4" "PATH_=$GEMMA_MODEL_PATH" \\\n'
+    probe += '  "SNAP=$GEMMA_SNAPSHOT" "PY_SERVER=${PY_SERVER:-}"\n'
+    result = subprocess.run(
+        ["bash", "-c", "set -uo pipefail\n" + block + probe],
+        env={"PATH": "/usr/bin:/bin", "MODEL": model},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return dict(line.split("=", 1) for line in result.stdout.splitlines())
+
+
+def test_zero_shot_gemma_cells_still_route_by_pinned_snapshot():
+    for model, snap in (
+        ("google/gemma-4-12B-it", "707f0a3b8a3c7ad586ed01e27eafbad8a27dd0f7"),
+        ("google/gemma-4-31B-it", "842da3794eaa0b77d5f08bae87a17459d91ff475"),
+    ):
+        routed = _route(model)
+        assert routed["IS_GEMMA4"] == "1"
+        assert routed["SNAP"] == snap
+        assert routed["PATH_"] == ""  # resolved from the snapshot further down
+
+
+def test_trained_gemma_directory_routes_to_the_gemma_vllm(tmp_path):
+    model = tmp_path / "judge_gemma4_12b_ce_dense"
+    model.mkdir()
+    (model / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["Gemma4UnifiedForConditionalGeneration"],
+                "model_type": "gemma4_unified",
+            }
+        )
+    )
+    routed = _route(str(model))
+    assert routed["IS_GEMMA4"] == "1"
+    assert routed["PATH_"] == str(model)
+
+
+def test_trained_qwen_directory_still_routes_to_turing_rl_train(tmp_path):
+    """The existing trained Qwen CE cells are local paths too — they must not be captured."""
+    model = tmp_path / "judge_qwen35_9b_ce_dense"
+    model.mkdir()
+    (model / "config.json").write_text(json.dumps({"model_type": "qwen3_5"}))
+    routed = _route(str(model))
+    assert routed["IS_GEMMA4"] == "0"
+    assert routed["PY_SERVER"].endswith("turing-rl-train/bin/python")
+
+
+def test_unknown_hf_id_and_anchor_are_unchanged():
+    assert _route("Qwen/Qwen3.5-9B")["IS_GEMMA4"] == "0"
+    anchor = _route("Qwen/Qwen3.5-397B-A17B-GPTQ-Int4")
+    assert anchor["IS_GEMMA4"] == "0"
+    assert anchor["PY_SERVER"].endswith("judge-vllm/bin/python")
 
 
 # --- launcher ------------------------------------------------------------------------------

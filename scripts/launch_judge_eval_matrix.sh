@@ -31,6 +31,11 @@ JUDGE_9B_DIRECTIONAL_MODEL=${JUDGE_9B_DIRECTIONAL_MODEL:-/home/lancewicki/projec
 # explicitly. They are only consulted -- and only required to exist -- for that arm.
 JUDGE_4B_CE_MODEL=${JUDGE_4B_CE_MODEL:-/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge/models/judge-4b-ce/hf_dense}
 JUDGE_9B_CE_MODEL=${JUDGE_9B_CE_MODEL:-/home/lancewicki/projects/turing-rl/results/2026-08-26-single-token-judge/models/judge-9b-ce/hf_dense}
+# Gemma's trained judge. Serving shape copied from the zero-shot gemma4-12b row (TP=1 x 8
+# replicas, concurrency 4), not from the Qwen CE rows: it is a serving constraint of the
+# model, which training does not change. judge_sweep_cell.sh routes this to the Gemma vLLM
+# by reading model_type from the directory, since the path carries no HF id to match on.
+JUDGE_GEMMA12B_CE_MODEL=${JUDGE_GEMMA12B_CE_MODEL:-/home/lancewicki/projects/turing-rl/results/2026-09-01-gemma-single-token-judge/models/judge-gemma12b-ce/hf_dense}
 
 case "$THINKING_MODE" in
   on) ;;
@@ -82,7 +87,7 @@ case "$EVAL_ROOT" in /*) ;; *) echo "FATAL: EVAL_ROOT must be absolute: $EVAL_RO
 # cell_name, model, tensor parallelism, replicas, and concurrency per endpoint.
 # Every row occupies one eight-A100 node.
 if [ "$JUDGE_PROMPT_STYLE" = "single_token" ]; then
-  CHECKED_MODELS=("$JUDGE_4B_CE_MODEL" "$JUDGE_9B_CE_MODEL")
+  CHECKED_MODELS=("$JUDGE_4B_CE_MODEL" "$JUDGE_9B_CE_MODEL" "$JUDGE_GEMMA12B_CE_MODEL")
   # Cell names carry a -st suffix. Both arms land in one merged table where prompt_style is
   # a column rather than part of the cell name, so a name shared with the full arm would
   # leave the row unattributable to an arm by name alone.
@@ -94,6 +99,7 @@ if [ "$JUDGE_PROMPT_STYLE" = "single_token" ]; then
   MATRIX=$(cat <<EOF
 judge-9b-ce-st $JUDGE_9B_CE_MODEL 1 8 32
 judge-4b-ce-st $JUDGE_4B_CE_MODEL 1 8 32
+judge-gemma12b-ce-st $JUDGE_GEMMA12B_CE_MODEL 1 8 4
 qwen35-27b-st Qwen/Qwen3.5-27B 8 1 32
 gemma4-31b-st google/gemma-4-31B-it 8 1 4
 gemma4-12b-st google/gemma-4-12B-it 1 8 4
