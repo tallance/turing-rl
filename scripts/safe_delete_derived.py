@@ -221,6 +221,30 @@ def sibling_base_dirs(target: Path) -> list[Path]:
     return [step / KIND_BASE, step / (KIND_BASE + PRESERVE_SUFFIX)]
 
 
+def _norm(path: Path) -> Path:
+    """Symlink-normalised form, for path COMPARISONS only -- never for writing.
+
+    Both sides of a containment test must be normalised or the test silently inverts.
+    ``resolve_adapter`` returns a resolved path while a target is whatever the caller typed,
+    and on this cluster ``/home/lancewicki`` is a symlink to ``/storage/home/lancewicki``. So
+    "is this adapter inside the directory I am about to delete?" compared
+    ``/storage/home/.../hf_base/lora_adapter`` against ``/home/.../hf_base``, answered NO for
+    an adapter that was plainly inside, skipped preservation, and deleted the adapter along
+    with the shards (judge-r2-4b-graded-thinkon-step52, 2026-09-01). The path guard got this
+    right by resolving both sides; these two call sites did not.
+    """
+    try:
+        return path.resolve()
+    except OSError:  # a broken symlink still has to compare as itself, not explode
+        return path.absolute()
+
+
+def is_within(child: Path, parent: Path) -> bool:
+    """Is ``child`` ``parent`` itself, or underneath it? Symlink-safe on both sides."""
+    child_n, parent_n = _norm(child), _norm(parent)
+    return child_n == parent_n or parent_n in child_n.parents
+
+
 def resolve_adapter(target: Path, explicit: Path | None, report: dict | None) -> Path:
     if explicit is not None:
         return explicit.resolve()
@@ -595,7 +619,7 @@ def inspect_target(target: Target, args, allowed_roots: list[Path], search_roots
         return
 
     # The adapter must outlive the deletion. Inside hf_base it does not, unless relocated.
-    nested = target.path == target.adapter or target.path in target.adapter.parents
+    nested = is_within(target.adapter, target.path)
     try:
         if nested:
             target.preserve_dst = (
@@ -791,8 +815,8 @@ def main(argv: list[str] | None = None) -> int:
             if args.delete and other.preserved is None:
                 continue
             doomed = other.path
-            if target.adapter == doomed or doomed in target.adapter.parents:
-                return other.preserve_dst / target.adapter.relative_to(doomed)
+            if is_within(target.adapter, doomed):
+                return other.preserve_dst / _norm(target.adapter).relative_to(_norm(doomed))
         return target.adapter
 
     if args.delete and passed:

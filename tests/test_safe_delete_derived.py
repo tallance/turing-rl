@@ -498,3 +498,49 @@ def test_json_report_lists_every_target(layout: dict, tmp_path: Path) -> None:
     assert {t["kind"] for t in report["targets"]} == {"hf_dense", "hf_base"}
     assert all(t["ok"] and not t["deleted"] for t in report["targets"])
     assert report["bytes_reclaimable"] > 0
+
+
+# --- the symlink regression ------------------------------------------------------------
+
+
+def test_nested_adapter_is_preserved_when_the_target_is_reached_through_a_symlink(
+    layout: dict, tmp_path: Path
+) -> None:
+    """The bug that cost judge-r2-4b-graded-thinkon-step52 its adapter on 2026-09-01.
+
+    ``/home/lancewicki`` is a symlink to ``/storage/home/lancewicki``. resolve_adapter()
+    returns a RESOLVED path; the target stayed as typed. The containment test compared the
+    two raw, decided a nested adapter was "outside the target", skipped preservation, and
+    rm -rf'd the adapter with the shards. Reaching the same tree through a symlink reproduces
+    it exactly: before the fix this deletes the adapter and leaves no preserved copy.
+    """
+    link = tmp_path / "link_root"
+    link.symlink_to(layout["root"], target_is_directory=True)
+    via_link = link / layout["hf_base"].relative_to(layout["root"])
+    assert via_link.is_dir()
+
+    before = sha256(layout["adapter"] / "adapter_model.safetensors")
+
+    # --allowed-root is the symlinked spelling too, mirroring how the real invocation is made.
+    assert main([
+        "--allowed-root", str(link),
+        "--search-root", str(layout["root"]),
+        "--expect-targets", str(EXPECT_TARGETS),
+        "--sample", "3",
+        "--delete", str(via_link),
+    ]) == 0
+
+    preserved = layout["step"] / "hf_base.preserved" / "lora_adapter"
+    assert preserved.is_dir(), "adapter was not preserved -- it was inside the deleted target"
+    assert sha256(preserved / "adapter_model.safetensors") == before
+    assert not layout["hf_base"].exists()
+
+
+def test_is_within_normalises_both_sides() -> None:
+    """Unit-level guard on the comparison itself, so a future refactor cannot re-invert it."""
+    from scripts.safe_delete_derived import is_within
+
+    assert is_within(Path("/a/b/c"), Path("/a/b"))
+    assert is_within(Path("/a/b"), Path("/a/b"))
+    assert not is_within(Path("/a/b"), Path("/a/b/c"))
+    assert not is_within(Path("/x/y"), Path("/a/b"))
