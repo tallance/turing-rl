@@ -42,6 +42,14 @@ JUDGES = [
 ]
 LEGEND_ORDER = ("qwen9b", "ce9b", "gemma12")
 
+# The generator was trained against Qwen3.5-9B with the FULL schema, thinking ON. That
+# judge is not on this figure -- qwen35-9b-st is the same base model under the
+# single-token protocol. "*" therefore means the same thing here as in the full-schema
+# figures (it points at the training judge) rather than being reused for a second meaning;
+# the subtitle carries the protocol caveat.
+TRAINED_AGAINST = "qwen9b"
+TRAINING_JUDGE = "Qwen3.5-9B, full schema, thinking ON"
+
 PANELS = [
     ("p_gen_mean", "Mean p(generated)", "P(judge picks the generated turn)",
      0.5, "0.5 = no preference"),
@@ -121,7 +129,7 @@ def main() -> None:
                     zorder=5 if emph else 3,
                     label=f"{label} judge" + ("  (trained, single-token)" if emph else ""),
                     solid_capstyle="round")
-            ends.append((ys[-1], label, emph))
+            ends.append((ys[-1], label, emph, key))
 
         # Anchored LEFT, unlike the full-schema figure. These curves rise from below the
         # reference line to above it, so the right end is where the direct labels crowd
@@ -133,9 +141,9 @@ def main() -> None:
                     bbox=dict(facecolor=INK["surface"], edgecolor="none", pad=1.5))
 
         lo, hi = ax.get_ylim()
-        placed = declutter([(y - lo) / (hi - lo) for y, _, _ in ends])
-        for (y, label, emph), yf in zip(ends, placed):
-            ax.annotate(label + ("*" if emph else ""),
+        placed = declutter([(y - lo) / (hi - lo) for y, _, _, _ in ends])
+        for (y, label, emph, key), yf in zip(ends, placed):
+            ax.annotate(label + ("*" if key == TRAINED_AGAINST else ""),
                         xy=(steps[-1], lo + yf * (hi - lo)),
                         xytext=(9, 0), textcoords="offset points",
                         color=INK["primary"] if emph else INK["secondary"],
@@ -162,8 +170,9 @@ def main() -> None:
     default_subtitle = (
         f"{n} pairs per checkpoint, every 2 epochs, on the SAME generations the "
         f"full-schema figure scores.  Judges answer with one A/B token, no rubric and no "
-        f"schema.\n* = judge trained on the single-token task. Colours match the "
-        f"full-schema figure for the two zero-shot judges."
+        f"schema.\n"
+        f"* The generator was trained against {TRAINING_JUDGE}. That judge is NOT plotted "
+        f"here: the 9B line is the same base model under the single-token protocol."
     )
     fig.text(0.008, 0.925, a.subtitle.format(n=n) if a.subtitle else default_subtitle,
              ha="left", va="top", color=INK["muted"], fontsize=9.5)

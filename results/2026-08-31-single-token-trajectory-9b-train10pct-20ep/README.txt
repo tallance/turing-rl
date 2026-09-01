@@ -16,6 +16,18 @@ two packages and only the judge protocol differs.
 Checkpoints: every 2 epochs (6 GRPO steps per epoch)
   0 12 24 36 48 60 72 84 96 108 120
 
+GENERATOR TRAINING JUDGE
+------------------------
+The generator (run tags 9b_frac10_10ep_kl1e4_lr1e4_temp1 and
+9b_frac10_20ep_kl1e4_lr1e4_temp1) was trained against
+  Qwen/Qwen3.5-9B, FULL schema, thinking ON
+from JUDGE=9b in scripts/slurm/rl_generator_run_9b.sh, where JUDGE_MODEL
+resolves to Qwen/Qwen3.5-9B and PERSONA_JUDGE_ENABLE_THINKING defaults to 1.
+
+That judge is NOT one of the three plotted here. The qwen35-9b-st line is the
+same base model under the single-token protocol, which is a different judge.
+The figure marks it "*" and says so in the subtitle.
+
 JUDGES
 ------
   cell             model                                                    TP  replicas

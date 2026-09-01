@@ -22,6 +22,17 @@ GEN_KEY_PREFIX / PAIRS_TAG.
 Checkpoints: every 32 GRPO steps
   0 32 64 96 128 160 192 224 256 288 320
 
+GENERATOR TRAINING JUDGE
+------------------------
+The generator (run tag 9b_full5ep_kl1e4_lr1e4_temp1) was trained against
+  Qwen/Qwen3.5-9B, FULL schema, thinking ON
+from JUDGE=9b in scripts/slurm/rl_generator_run_9b.sh, where JUDGE_MODEL
+resolves to Qwen/Qwen3.5-9B and PERSONA_JUDGE_ENABLE_THINKING defaults to 1.
+
+That judge is NOT one of the three plotted here. The qwen35-9b-st line is the
+same base model under the single-token protocol, which is a different judge.
+The figure marks it "*" and says so in the subtitle.
+
 JUDGES
 ------
   cell             model                                                    TP  replicas
@@ -160,7 +171,7 @@ Render the figure from this directory:
   python plot/plot_single_token_trajectory.py --eval_root . \
     --title "9B GRPO generator, full-dataset 5-epoch run - single-token judges" \
     --subtitle "{n} pairs per checkpoint, every 32 GRPO steps, on the SAME generations the full-schema evaluation scores.  Judges answer with one A/B token, no rubric and no schema.
-* = judge trained on the single-token task."
+* The generator was trained against Qwen3.5-9B, full schema, thinking ON. That judge is NOT plotted here: the 9B line is the same base model under the single-token protocol."
 
 Verify this directory:
   shasum -a 256 -c SHA256SUMS
