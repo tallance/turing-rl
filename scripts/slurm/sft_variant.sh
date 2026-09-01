@@ -104,8 +104,11 @@ _positive_int_or_die() {  # name value; empty value = unset, accepted
 _positive_int_or_die EPOCHS "$EPOCHS"
 _positive_int_or_die MAX_TRAIN_EXAMPLES "$MAX_TRAIN_EXAMPLES"
 
-MODEL=${MODEL:-qwen3-8b}   # qwen3-8b | qwen35-9b | qwen35-4b-judge | qwen35-9b-judge
-# Per-model: output stem, python env, and the FSDP auto-wrap decoder class.
+MODEL=${MODEL:-qwen3-8b}   # qwen3-8b | qwen35-9b | qwen35-4b-judge | qwen35-9b-judge |
+                           # gemma4-12b-judge
+# Per-model: output stem, python env, the FSDP auto-wrap decoder class, and (Gemma only) a
+# corrected HF cache root. Empty default so `set -u` is satisfied for the Qwen aliases.
+HF_HUB_CACHE_OVERRIDE=
 # qwen3.5 needs its own transformers-5.x env (model_type=qwen3_5 unsupported by the 4.57.6
 # in turing-rl-train) and a different decoder class (both verified via probe_qwen35.py).
 # The judge aliases are Qwen3.5 too, so they take the same env and decoder class; their
@@ -134,6 +137,28 @@ case "$MODEL" in
     PY=/home/lancewicki/miniconda3/envs/turing-rl-sft-qwen35/bin/python
     FSDP_LAYER_CLS=Qwen3_5DecoderLayer
     NOPACK=1 ;;
+  # Gemma judge CE. Reuses the qwen35 SFT env on purpose: transformers 5.14.1 there already
+  # resolves model_type=gemma4_unified, so no Gemma-specific training env is needed (the
+  # gemma4 env in cluster_workflow.py is a vLLM SERVING env and is not in the sft profile).
+  # The wrap class differs from the Qwen aliases because the container differs:
+  # Gemma4UnifiedForConditionalGeneration nests 48 Gemma4UnifiedTextDecoderLayer under
+  # model.language_model. NOPACK is forced for the same reason as the Qwen judges.
+  gemma4-12b-judge)
+    STEM=judge_gemma4_12b
+    PY=/home/lancewicki/miniconda3/envs/turing-rl-sft-qwen35/bin/python
+    FSDP_LAYER_CLS=Gemma4UnifiedTextDecoderLayer
+    NOPACK=1
+    # This cache holds TWO layouts. Qwen sits at the top level, which is why the hf-env
+    # block above points HF_HUB_CACHE there; Gemma sits under hub/. Left alone, the Gemma
+    # id still resolves — to a 31 MB config+tokenizer stub at the top level with NO weights
+    # — so the run dies at model load AFTER Slurm has handed over 8 GPUs. Verified: under
+    # the default HF_HUB_CACHE, config.json resolves and model.safetensors does not.
+    # Overriding only for this alias keeps the Qwen aliases (which would break under hub/)
+    # exactly as they were, and resolves snapshot 707f0a3b… — the same revision
+    # judge_sweep_cell.sh pins for the zero-shot gemma4-12b cell, so the trained judge and
+    # its baseline share a base. Resolved here as a plain value and exported below, so this
+    # block stays the side-effect-free resolution its fence promises.
+    HF_HUB_CACHE_OVERRIDE=/home/lancewicki/data/hf_cache/hub ;;
   *) echo "bad MODEL=$MODEL"; exit 2 ;;
 esac
 
@@ -193,6 +218,9 @@ esac
 [ -n "$EPOCHS" ] && ARGS+=(--num_epochs "$EPOCHS")
 [ -n "$MAX_TRAIN_EXAMPLES" ] && ARGS+=(--max_train_examples "$MAX_TRAIN_EXAMPLES")
 # <<< resolve-config <<<
+
+# Applied outside the pure block; see the gemma4-12b-judge case for why it is needed.
+[ -n "$HF_HUB_CACHE_OVERRIDE" ] && export HF_HUB_CACHE="$HF_HUB_CACHE_OVERRIDE"
 
 mkdir -p "$OUT"
 [ -f "$DATA" ] || { echo "ERROR: missing $DATA"; exit 2; }

@@ -98,6 +98,7 @@ REPO=${REPO:-/home/lancewicki/projects/turing-rl}
 # nightly environment and exact offline snapshots; Qwen keeps the prior path.
 IS_GEMMA4=0
 GEMMA_SNAPSHOT=
+GEMMA_MODEL_PATH=
 case "$MODEL" in
   *397B*) PY_SERVER=/home/lancewicki/miniconda3/envs/judge-vllm/bin/python ;;
   google/gemma-4-12B-it)
@@ -109,25 +110,29 @@ case "$MODEL" in
     GEMMA_SNAPSHOT=842da3794eaa0b77d5f08bae87a17459d91ff475
     ;;
   *)
-    PY_SERVER=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
-    # A locally merged Gemma 4 judge (a trained checkpoint rather than a hub id) must
-    # still serve on the Gemma nightly vLLM: the pinned 0.18.0 in turing-rl-train cannot
-    # load this architecture at all. Decided from the CONFIG, not the directory name, so
-    # a checkpoint named anything still reaches the right server -- a name-based rule
-    # would send it to a vLLM that fails at load with an unregistered-architecture error.
-    if [ -f "$MODEL/config.json" ] && grep -q '"Gemma4' "$MODEL/config.json"; then
+    # A TRAINED Gemma cell's MODEL is a local merged directory, not an HF id, so no name
+    # pattern can catch it. Ask the directory what it is: a LoRA-merged Gemma keeps the
+    # base container's architecture (Gemma4UnifiedForConditionalGeneration /
+    # model_type gemma4_unified), and that is exactly what decides which vLLM can load it.
+    # Falling through to turing-rl-train here is not a slow path but a hard failure: that
+    # env pins vLLM 0.18.0, which predates gemma4 support (landed in 0.23.0), so the cell
+    # would die at model load after the allocation.
+    if [ -f "$MODEL/config.json" ] &&
+       grep -q '"model_type"[[:space:]]*:[[:space:]]*"gemma4' "$MODEL/config.json"; then
       IS_GEMMA4=1
+      GEMMA_MODEL_PATH=$MODEL
+    else
+      PY_SERVER=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
     fi
     ;;
 esac
 if [ "$IS_GEMMA4" = "1" ]; then
   GEMMA_VLLM=/home/lancewicki/miniconda3/envs/turing-rl-gemma4-vllm-nightly/bin/vllm
+  # Zero-shot cells are served from a pinned snapshot of the HF cache; trained cells are
+  # served from their own merged directory, already resolved above.
   if [ -n "$GEMMA_SNAPSHOT" ]; then
     GEMMA_CACHE=/home/lancewicki/data/hf_cache/hub/models--google--${MODEL#google/}
     GEMMA_MODEL_PATH=$GEMMA_CACHE/snapshots/$GEMMA_SNAPSHOT
-  else
-    GEMMA_MODEL_PATH=$MODEL
-    GEMMA_SNAPSHOT="local:$MODEL"
   fi
   [ -x "$GEMMA_VLLM" ] || { echo "ERROR: missing Gemma vLLM: $GEMMA_VLLM" >&2; exit 2; }
   [ -f "$GEMMA_MODEL_PATH/config.json" ] || {

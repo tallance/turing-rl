@@ -1,12 +1,17 @@
-"""Which vLLM a model is served on, for judge_sweep_cell.sh.
+"""Extra guards on judge_sweep_cell.sh's model dispatch.
 
-Gemma 4 only loads on the nightly environment; the pinned 0.18.0 in turing-rl-train
-cannot register the architecture. A locally merged Gemma judge is a directory path
-rather than a hub id, so the hub-id cases do not catch it and it would otherwise fall
-through to a server that fails at model load.
+tests/test_gemma_judge_sft.py already covers the four main routes (zero-shot Gemma,
+trained Gemma, trained Qwen, unknown id / anchor). This file adds the cases that pin the
+dispatch against a plausible future "simplification":
 
-The dispatch block is extracted and executed rather than pattern-matched, so the test
-fails if the branch is restructured in a way that changes behaviour.
+  - the decision reads the CONFIG, in both directions, so it cannot be rewritten as a
+    directory-name match without failing;
+  - the pinned snapshot SHAs are the ones actually served;
+  - a MODEL path that does not exist does not crash the dispatch, so the later existence
+    check owns that error and reports it as such.
+
+The dispatch block is extracted and executed rather than pattern-matched, so a
+restructure that changes behaviour fails here.
 """
 from __future__ import annotations
 
@@ -19,14 +24,23 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 CELL_SCRIPT = ROOT / "scripts" / "slurm" / "judge_sweep_cell.sh"
 
+GEMMA_CONFIG = {
+    "architectures": ["Gemma4UnifiedForConditionalGeneration"],
+    "model_type": "gemma4_unified",
+}
+QWEN_CONFIG = {
+    "architectures": ["Qwen3_5ForConditionalGeneration"],
+    "model_type": "qwen3_5",
+}
+
 
 def _dispatch(model: str) -> dict[str, str]:
     """Run the script's model-dispatch block for MODEL and report what it selected."""
     text = CELL_SCRIPT.read_text()
     start = text.index("IS_GEMMA4=0")
     # Stop at the environment checks: they assert cluster-only paths exist and would exit
-    # here. What this test covers is the dispatch decision above them, so close the `if`
-    # ourselves rather than stubbing out binaries that only exist on the cluster.
+    # here. What this file covers is the dispatch decision above them, so close the `if`
+    # ourselves rather than stubbing binaries that only exist on the cluster.
     end = text.index('[ -x "$GEMMA_VLLM" ]', start)
     block = text[start:end] + "fi\n"
 
@@ -41,44 +55,29 @@ def _dispatch(model: str) -> dict[str, str]:
     )
 
 
-def _model_dir(tmp_path: Path, architectures: list[str]) -> Path:
-    model = tmp_path / "merged"
+def _model_dir(tmp_path: Path, name: str, config: dict) -> Path:
+    model = tmp_path / name
     model.mkdir(exist_ok=True)
-    (model / "config.json").write_text(json.dumps({"architectures": architectures}))
+    (model / "config.json").write_text(json.dumps(config))
     return model
 
 
-def test_a_locally_merged_gemma_serves_on_the_gemma_vllm(tmp_path: Path) -> None:
-    model = _model_dir(tmp_path, ["Gemma4UnifiedForConditionalGeneration"])
+def test_a_gemma_checkpoint_routes_by_config_whatever_it_is_named(tmp_path: Path) -> None:
+    # Nothing in this name says Gemma. A name-based rule would send it to a vLLM that
+    # cannot load the architecture, and the failure would land after the allocation.
+    model = _model_dir(tmp_path, "judge_ce_epoch3", GEMMA_CONFIG)
     got = _dispatch(str(model))
     assert got["IS_GEMMA4"] == "1"
-    # Serve the directory itself, not a hub cache snapshot.
     assert got["GEMMA_MODEL_PATH"] == str(model)
 
 
-def test_a_locally_merged_qwen_does_not_get_the_gemma_path(tmp_path: Path) -> None:
-    # The Qwen CE judges are also local directories; they must keep the old behaviour.
-    model = _model_dir(tmp_path, ["Qwen3_5ForConditionalGeneration"])
+def test_a_gemma_named_directory_that_is_not_gemma_is_not_captured(tmp_path: Path) -> None:
+    # The converse: the word "gemma" in a path must not route a Qwen checkpoint onto the
+    # Gemma server.
+    model = _model_dir(tmp_path, "gemma_style_qwen_judge", QWEN_CONFIG)
     got = _dispatch(str(model))
     assert got["IS_GEMMA4"] == "0"
     assert got["PY_SERVER"].endswith("turing-rl-train/bin/python")
-
-
-def test_the_decision_follows_the_config_not_the_directory_name(tmp_path: Path) -> None:
-    # A Gemma checkpoint whose directory says nothing about Gemma still routes correctly;
-    # a name-based rule would send it to a vLLM that cannot load the architecture.
-    model = tmp_path / "judge_ce_epoch3"
-    model.mkdir()
-    (model / "config.json").write_text(
-        json.dumps({"architectures": ["Gemma4UnifiedForConditionalGeneration"]})
-    )
-    assert _dispatch(str(model))["IS_GEMMA4"] == "1"
-
-    # And the converse: "gemma" in the name does not make a non-Gemma config Gemma.
-    decoy = tmp_path / "gemma_style_qwen"
-    decoy.mkdir()
-    (decoy / "config.json").write_text(json.dumps({"architectures": ["Qwen3_5ForCausalLM"]}))
-    assert _dispatch(str(decoy))["IS_GEMMA4"] == "0"
 
 
 @pytest.mark.parametrize(
@@ -88,28 +87,15 @@ def test_the_decision_follows_the_config_not_the_directory_name(tmp_path: Path) 
         ("google/gemma-4-31B-it", "842da3794eaa0b77d5f08bae87a17459d91ff475"),
     ],
 )
-def test_the_hub_gemma_ids_still_resolve_to_their_pinned_snapshots(
-    model: str, snapshot: str
-) -> None:
+def test_the_hub_gemma_ids_serve_their_pinned_snapshot_sha(model: str, snapshot: str) -> None:
     got = _dispatch(model)
     assert got["IS_GEMMA4"] == "1"
     assert got["GEMMA_MODEL_PATH"].endswith(f"snapshots/{snapshot}")
 
 
-def test_a_plain_hub_qwen_id_is_unaffected() -> None:
-    got = _dispatch("Qwen/Qwen3.5-9B")
-    assert got["IS_GEMMA4"] == "0"
-    assert got["PY_SERVER"].endswith("turing-rl-train/bin/python")
-
-
-def test_the_397b_anchor_keeps_its_pinned_environment() -> None:
-    got = _dispatch("Qwen/Qwen3.5-397B-A17B-GPTQ-Int4")
-    assert got["IS_GEMMA4"] == "0"
-    assert got["PY_SERVER"].endswith("judge-vllm/bin/python")
-
-
 def test_a_nonexistent_model_path_does_not_crash_the_dispatch(tmp_path: Path) -> None:
-    # The config probe must tolerate a missing directory: the later existence checks own
-    # that error, and a crash here would report it as a shell failure instead.
+    # The config probe must tolerate a missing directory: the existence check further down
+    # owns that error, and a crash here would surface it as an opaque shell failure.
     got = _dispatch(str(tmp_path / "absent"))
     assert got["IS_GEMMA4"] == "0"
+    assert got["PY_SERVER"].endswith("turing-rl-train/bin/python")

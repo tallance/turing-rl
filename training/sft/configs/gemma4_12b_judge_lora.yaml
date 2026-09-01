@@ -1,0 +1,35 @@
+# Gemma-4-12B judge discriminator CE. Mirrors qwen35_9b_judge_lora.yaml: the target is a
+# single A/B token, so packing is off (it would merge examples across the target boundary)
+# and the stop token is NOT supervised. The eval path decodes with max_tokens=1, so the
+# model is never asked to emit a terminator.
+lora_r: 64
+lora_alpha: 128
+lora_dropout: 0.05
+use_qlora: false
+
+# NOTE: this key is documentation of intent only — lora_sft.py does not read `packing` from
+# the config. Packing is controlled solely by the --no_packing CLI flag (default is packing
+# ON). The launcher that trains this config MUST pass --no_packing explicitly; the
+# gemma4-12b-judge alias in scripts/slurm/sft_variant.sh forces NOPACK=1 for that reason.
+packing: false
+supervise_stop_token: false
+
+# supervise_think_prefill is deliberately ABSENT. It is a knob on the diff-based builder,
+# which Gemma does not use: gemma4-12b-judge routes to build_generation_prefix_sft_features,
+# which renders the served generation prefix and supervises only what follows it. Gemma's
+# empty closed thought channel is part of that prefix and is therefore never in the loss,
+# which is what supervise_think_prefill: false achieves for Qwen. Setting it here would read
+# as if it had an effect.
+
+num_epochs: 3
+batch_size: 1
+gradient_accumulation_steps: 8
+learning_rate: 1e-4
+lr_scheduler: cosine
+warmup_ratio: 0.05
+weight_decay: 0.01
+
+gradient_checkpointing: true
+logging_steps: 10
+report_to: none
+save_strategy: epoch
