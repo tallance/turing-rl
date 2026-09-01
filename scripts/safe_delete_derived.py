@@ -857,9 +857,14 @@ def main(argv: list[str] | None = None) -> int:
         """An adapter under a doomed hf_base moves, so every manifest in this batch must cite
         where the adapter actually ends up -- not where it happened to be read from."""
         for other in targets:
-            if not (other.ok and other.preserve_dst is not None):
+            if other.preserve_dst is None:
                 continue
-            # In --delete mode only count a relocation that has already been verified.
+            # Deliberately NOT gated on other.ok. A target whose REMOVAL failed after its
+            # relocation succeeded is marked failed, but its adapter has still moved and its
+            # original copy is already unlinked -- so a sibling that cites the old path names
+            # a file that no longer exists, and hashing it for the manifest raises
+            # FileNotFoundError mid-batch. What matters is the verified relocation, not
+            # whether the rmtree that followed it happened to finish.
             if args.delete and other.preserved is None:
                 continue
             doomed = other.path
@@ -883,11 +888,13 @@ def main(argv: list[str] | None = None) -> int:
             inventory = file_inventory(target.path)
             preserved_bytes = target.preserved["bytes"] if target.preserved else 0
             target.reclaimed = target.size_bytes - preserved_bytes
-            manifest_path = write_manifest(target, final_adapter(target), args, True, inventory)
-            # One target's removal failing must not abandon the rest of the batch half-done:
-            # the preserved copies are already written and verified, so the remaining targets
-            # are still safe to process.
+            # One target failing must not abandon the rest of the batch half-done: the
+            # preserved copies are already written and verified, so the remaining targets are
+            # still safe to process. Manifest writing is inside the guard too -- it hashes the
+            # adapter, and an unreadable adapter is a reason to skip this target, not to
+            # strand every later one.
             try:
+                manifest_path = write_manifest(target, final_adapter(target), args, True, inventory)
                 release_mapped_tensors(target)
                 rmtree_nfs(target.path)
             except OSError as exc:
