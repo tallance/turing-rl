@@ -612,6 +612,8 @@ class Target:
         self.size_bytes = 0
         self.preserve_dst: Path | None = None
         self.preserved: dict | None = None
+        # Set when the files went but the (now empty) directories could not be rmdir'd yet.
+        self.residue: str | None = None
         self.deleted = False
         self.provenance: dict | None = None
         self.reclaimed = 0
@@ -898,8 +900,24 @@ def main(argv: list[str] | None = None) -> int:
                 release_mapped_tensors(target)
                 rmtree_nfs(target.path)
             except OSError as exc:
-                target.fail("delete", f"{type(exc).__name__}: {exc}")
-                print(f"    ABORT {target.path}: removal failed: {exc}")
+                # The bytes are what we came for. If every FILE is gone and only empty
+                # directories are left, the reclaim succeeded and the residue is cosmetic --
+                # an NFS handle somewhere keeps rmdir returning EBUSY until this process
+                # exits, after which a plain rmdir clears it. Calling that a FAIL both
+                # under-reports the space freed and makes a nonzero exit meaningless to a
+                # caller. Report it as deleted, and name the residue.
+                remaining = [p for p in target.path.rglob("*") if p.is_file()]
+                if remaining:
+                    target.fail("delete", f"{type(exc).__name__}: {exc}")
+                    print(f"    ABORT {target.path}: removal failed, "
+                          f"{len(remaining)} file(s) still present: {exc}")
+                    continue
+                target.deleted = True
+                target.residue = str(target.path)
+                print(f"    deleted {target.path} (+{human_bytes(target.reclaimed)}), "
+                      f"manifest {manifest_path.name}")
+                print(f"    NOTE empty directories remain at {target.path} ({exc.strerror}); "
+                      "rmdir them once this process has exited")
                 continue
             target.deleted = True
             print(f"    deleted {target.path} (+{human_bytes(target.reclaimed)}), "

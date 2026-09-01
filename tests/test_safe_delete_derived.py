@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import errno
 import hashlib
+import pathlib
 import json
 import sys
 from pathlib import Path
@@ -587,3 +588,42 @@ def test_rmtree_nfs_gives_up_and_raises(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sd.time, "sleep", lambda _s: None)
     with pytest.raises(OSError):
         sd.rmtree_nfs(victim, attempts=3)
+
+
+def test_empty_dir_residue_counts_as_deleted_not_failed(layout: dict, monkeypatch) -> None:
+    """NFS can refuse rmdir of an already-emptied directory until the process exits. The
+    bytes are reclaimed, so calling that a FAIL under-reports the space freed and makes a
+    nonzero exit meaningless -- 7 of 18 real targets were misreported this way."""
+    from scripts import safe_delete_derived as sd
+
+    real_rmtree = sd.shutil.rmtree
+
+    def unlink_files_then_fail(path, *a, **k):
+        for p in sorted(pathlib.Path(path).rglob("*")):
+            if p.is_file():
+                p.unlink()
+        raise OSError(errno.EBUSY, "Device or resource busy", str(path))
+
+    monkeypatch.setattr(sd.shutil, "rmtree", unlink_files_then_fail)
+    monkeypatch.setattr(sd.time, "sleep", lambda _s: None)
+
+    assert run(layout, "--delete", str(layout["hf_base"])) == 0      # not a failure
+    assert not any(p.is_file() for p in layout["hf_base"].rglob("*"))
+    # ...and the adapter still made it out before the removal was attempted.
+    preserved = layout["step"] / "hf_base.preserved" / "lora_adapter"
+    assert (preserved / "adapter_model.safetensors").is_file()
+
+    real_rmtree(layout["hf_base"], ignore_errors=True)
+
+
+def test_leftover_files_are_still_a_failure(layout: dict, monkeypatch) -> None:
+    """The escape hatch must not swallow a removal that genuinely left data behind."""
+    from scripts import safe_delete_derived as sd
+
+    def fail_without_unlinking(path, *a, **k):
+        raise OSError(errno.EBUSY, "Device or resource busy", str(path))
+
+    monkeypatch.setattr(sd.shutil, "rmtree", fail_without_unlinking)
+    monkeypatch.setattr(sd.time, "sleep", lambda _s: None)
+    assert run(layout, "--delete", str(layout["hf_base"])) == 1
+    assert (layout["hf_base"] / "model.safetensors").is_file()
