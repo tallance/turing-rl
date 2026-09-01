@@ -93,42 +93,12 @@ the run root for debug runs. `TURING_RL_DATA_ROOT` remains only as a temporary g
 
 ## Reclaiming disk from derived model artifacts
 
-Each generator step of a test-set eval leaves ~37 GB under
-`results/<eval-run>/models/step<N>/`: `hf_base/` (~18 GB, the reconstructed SFT backbone, the same
-content at every step), `hf_base/lora_adapter/` (~223 MB, the only step-unique bytes) and
-`hf_dense/` (~19 GB, what is actually served). Both large directories are reproducible from
-`merged_ep3` plus the adapter, so they are the first thing to delete when the per-user quota bites
--- but `rm -rf hf_base` also removes the adapter nested inside it, which makes every sibling
-`hf_dense` unrecoverable too, silently and after the fact.
-
-`scripts/safe_delete_derived.py` deletes them only after re-deriving the proof from the bytes on
-disk. Per target it checks the path guard (must be a directory named `hf_base`/`hf_dense` under a
-`results/` root), the adapter (parses, `r`/`alpha` sane, the expected paired tensor count), the base
-container, and then spot-checks the reconstruction arithmetic on a seeded random sample of target
-modules read lazily out of the shards: `hf_dense[k] == base[k] + (alpha/r) * B@A`, and `hf_base[k]`
-bit-identical to the container. Any failure skips that target loudly and the process exits nonzero.
-Before deleting an `hf_base` it copies everything that is not a weight shard -- the adapter,
-`merge_provenance.json`, config and tokenizer -- into `hf_base.preserved/`, verifies the copy by
-SHA-256, and rewrites the other manifests in the batch to cite the surviving adapter path.
-
-```bash
-# prove only; nothing is touched (dry run is the default)
-python scripts/safe_delete_derived.py results/<eval-run>/models/step*/hf_dense
-
-# prove, then delete
-python scripts/safe_delete_derived.py --delete \
-  results/<eval-run>/models/step*/hf_base results/<eval-run>/models/step*/hf_dense
-```
-
-Each deletion leaves `<target>.deleted.json` beside where the directory was, recording the file
-inventory, the adapter (path and SHA-256), the base container, the modules that were verified, and
-the literal `merge_grpo_adapter.py` / `validate_grpo_merge.py` commands that rebuild it. Useful
-flags: `--sample N` (default 3) to widen the spot-check, `--base` when
-`grpo_merge_report.json` records a container under a `work/launcher-*/` directory that has since
-been cleaned up and cannot be re-anchored automatically, `--allowed-root` to permit targets outside
-the current directory, and `--json` for a machine-readable run report. It is pure safetensors
-math on the CPU, so it runs fine on the login node; only the hashing of the preserved adapter is
-appreciable work.
+A test-set eval leaves ~37 GB of reconstructible weights per generator step (`hf_base/`,
+`hf_dense/`) against ~223 MB of step-unique adapter, so these are the first thing to delete when
+the per-user quota bites. Use `scripts/safe_delete_derived.py`, which deletes a target only after
+re-deriving the proof that it rebuilds from `merged_ep3` plus the adapter; dry run is the default.
+Its module docstring is the reference -- read it before deleting, in particular for why a plain
+`rm -rf hf_base` silently makes every sibling `hf_dense` unrecoverable.
 
 ## Constraints a job script must respect
 
