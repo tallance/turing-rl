@@ -97,17 +97,25 @@ def resolve_use_qlora(config: dict, *, force_qlora: bool, no_qlora: bool) -> boo
     return bool(config.get("use_qlora", True))
 
 
-def build_fsdp_kwargs(fsdp: str, transformer_layer_cls: str | None) -> dict:
+def build_fsdp_kwargs(
+    fsdp: str,
+    transformer_layer_cls: str | None,
+    *,
+    cpu_ram_efficient_loading: bool = True,
+) -> dict:
     """SFTConfig kwargs for FSDP. Empty fsdp -> {} (FSDP off, unchanged behavior).
 
     When on, returns fsdp=<str> + a fsdp_config tuned for PEFT/LoRA.
+
+    cpu_ram_efficient_loading must be False for any model carrying PERSISTENT BUFFERS —
+    see has_persistent_buffers().
     """
     if not fsdp:
         return {}
     fsdp_config = {
         "use_orig_params": True,  # required for LoRA (mixed frozen/trainable params)
         "sync_module_states": True,
-        "cpu_ram_efficient_loading": True,  # rank0 loads, broadcasts — avoids 8x CPU model copies
+        "cpu_ram_efficient_loading": cpu_ram_efficient_loading,
         "backward_prefetch": "backward_pre",
         "limit_all_gathers": True,
     }
@@ -297,6 +305,28 @@ def build_generation_prefix_sft_features(
         "input_ids": input_ids,
         "completion_mask": completion_mask,
     }
+
+
+def has_persistent_buffers(model_name: str | None) -> bool:
+    """Whether this model's state dict carries entries that FSDP2 will not shard.
+
+    FSDP2 turns PARAMETERS into DTensors but leaves persistent BUFFERS as plain Tensors.
+    accelerate's rank0-broadcast loader (fsdp2_load_full_state_dict, reached only when
+    cpu_ram_efficient_loading is on) walks the whole state dict and reads .device_mesh off
+    every entry, so one buffer is enough to abort Trainer setup with
+
+        AttributeError: 'Tensor' object has no attribute 'device_mesh'
+
+    Gemma 4 registers a per-layer `layer_scalar` buffer WITHOUT persistent=False: measured
+    678 state-dict entries against 630 parameters on 12B, i.e. 48 buffers, one per decoder
+    layer. Qwen3.5-9B has 427 and 427 — zero buffers — which is the whole reason the same
+    config trains Qwen and dies on Gemma (job 19475).
+
+    Marking the buffers non-persistent is NOT an alternative: their checkpoint values are
+    trained, not all ones. Upstream has no released fix (huggingface/accelerate#3898; PRs
+    #3921 and #4023 both unmerged), so disabling the optimisation is the fix, not a stopgap.
+    """
+    return bool(model_name) and "gemma" in model_name
 
 
 def uses_generation_prefix_masking(model_name: str | None) -> bool:
@@ -622,7 +652,11 @@ def main():
         ddp_find_unused_parameters=False,
         seed=42,
         torch_compile=not args.no_torch_compile,
-        **build_fsdp_kwargs(args.fsdp, args.fsdp_transformer_layer_cls),
+        **build_fsdp_kwargs(
+            args.fsdp,
+            args.fsdp_transformer_layer_cls,
+            cpu_ram_efficient_loading=not has_persistent_buffers(args.model),
+        ),
     )
 
     log("Building SFTTrainer")

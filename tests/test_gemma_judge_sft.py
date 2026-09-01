@@ -30,8 +30,10 @@ import yaml
 from training.sft.lora_sft import (
     build_chat_template_sft_features,
     build_completion_mask_mapper,
+    build_fsdp_kwargs,
     build_generation_prefix_sft_features,
     get_lora_targets,
+    has_persistent_buffers,
     uses_generation_prefix_masking,
     MODEL_MAP,
 )
@@ -262,6 +264,50 @@ def test_gemma_judge_config_omits_the_diff_builder_knob():
     """supervise_think_prefill only affects the builder Gemma does not use; setting it
     would read as if it had an effect."""
     assert "supervise_think_prefill" not in load_config("gemma4_12b_judge")
+
+
+# --- FSDP2 persistent buffers -------------------------------------------------------------
+#
+# Measured on the real checkpoints (meta device, no weights): Gemma-4-12B has 678 state-dict
+# entries against 630 parameters — 48 persistent `layer_scalar` buffers, one per decoder
+# layer — while Qwen3.5-9B has 427 and 427, i.e. none. FSDP2 shards parameters into DTensors
+# but leaves buffers plain, and accelerate's rank0-broadcast loader reads .device_mesh off
+# every state-dict entry, so Gemma aborts Trainer setup where Qwen does not (job 19475).
+
+
+def test_only_gemma_is_marked_as_carrying_persistent_buffers():
+    assert has_persistent_buffers("gemma4-12b-judge") is True
+    for alias in ("qwen35-4b-judge", "qwen35-9b-judge", "qwen35-9b", "qwen3-8b"):
+        assert has_persistent_buffers(alias) is False
+    assert has_persistent_buffers(None) is False
+
+
+def test_gemma_disables_the_rank0_broadcast_loader():
+    kw = build_fsdp_kwargs(
+        "full_shard auto_wrap",
+        "Gemma4UnifiedTextDecoderLayer",
+        cpu_ram_efficient_loading=not has_persistent_buffers("gemma4-12b-judge"),
+    )
+    assert kw["fsdp_config"]["cpu_ram_efficient_loading"] is False
+    assert kw["fsdp_config"]["transformer_layer_cls_to_wrap"] == [
+        "Gemma4UnifiedTextDecoderLayer"
+    ]
+
+
+def test_qwen_keeps_the_rank0_broadcast_loader():
+    """The optimisation must stay on where it works — this is the regression guard."""
+    kw = build_fsdp_kwargs(
+        "full_shard auto_wrap",
+        "Qwen3_5DecoderLayer",
+        cpu_ram_efficient_loading=not has_persistent_buffers("qwen35-9b-judge"),
+    )
+    assert kw["fsdp_config"]["cpu_ram_efficient_loading"] is True
+
+
+def test_build_fsdp_kwargs_still_defaults_to_the_optimisation():
+    """Existing callers that pass no flag must be unchanged."""
+    kw = build_fsdp_kwargs("full_shard auto_wrap", "Qwen3DecoderLayer")
+    assert kw["fsdp_config"]["cpu_ram_efficient_loading"] is True
 
 
 # --- launcher ------------------------------------------------------------------------------
