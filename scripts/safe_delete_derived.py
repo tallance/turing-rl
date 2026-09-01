@@ -57,6 +57,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import errno
 import glob
 import json
 import os
@@ -65,6 +66,7 @@ import shlex
 import shutil
 import socket
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -243,6 +245,33 @@ def is_within(child: Path, parent: Path) -> bool:
     """Is ``child`` ``parent`` itself, or underneath it? Symlink-safe on both sides."""
     child_n, parent_n = _norm(child), _norm(parent)
     return child_n == parent_n or parent_n in child_n.parents
+
+
+def rmtree_nfs(path: Path, attempts: int = 6) -> None:
+    """``shutil.rmtree``, tolerant of NFS close-to-open consistency.
+
+    ``/storage/home`` is FSx over NFSv4. rmtree unlinks a directory's files and then rmdirs
+    it, but the server can still report the directory non-empty for a moment after the
+    unlinks land -- ENOTEMPTY on a directory that ``ls -A`` shows as empty. It also leaves
+    ``.nfsXXXX`` silly-rename placeholders behind for files that were still open, which
+    disappear on their own once the handle closes.
+
+    Both resolve by waiting and retrying; the contents are already gone either way. Failing
+    here is not dangerous (the adapter is preserved and verified before this runs) but it
+    aborted a 23-target batch on its first target twice, so it is worth absorbing.
+    """
+    delay = 0.5
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            if exc.errno != errno.ENOTEMPTY or attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay *= 2
 
 
 def resolve_adapter(target: Path, explicit: Path | None, report: dict | None) -> Path:
@@ -836,7 +865,15 @@ def main(argv: list[str] | None = None) -> int:
             preserved_bytes = target.preserved["bytes"] if target.preserved else 0
             target.reclaimed = target.size_bytes - preserved_bytes
             manifest_path = write_manifest(target, final_adapter(target), args, True, inventory)
-            shutil.rmtree(target.path)
+            # One target's removal failing must not abandon the rest of the batch half-done:
+            # the preserved copies are already written and verified, so the remaining targets
+            # are still safe to process.
+            try:
+                rmtree_nfs(target.path)
+            except OSError as exc:
+                target.fail("delete", f"{type(exc).__name__}: {exc}")
+                print(f"    ABORT {target.path}: removal failed: {exc}")
+                continue
             target.deleted = True
             print(f"    deleted {target.path} (+{human_bytes(target.reclaimed)}), "
                   f"manifest {manifest_path.name}")

@@ -11,6 +11,7 @@ a dense dir that is NOT base+BA still looks like a perfectly good 19 GB director
 """
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import sys
@@ -544,3 +545,45 @@ def test_is_within_normalises_both_sides() -> None:
     assert is_within(Path("/a/b"), Path("/a/b"))
     assert not is_within(Path("/a/b"), Path("/a/b/c"))
     assert not is_within(Path("/x/y"), Path("/a/b"))
+
+
+# --- NFS removal tolerance -------------------------------------------------------------
+
+
+def test_rmtree_nfs_retries_enotempty_then_succeeds(tmp_path: Path, monkeypatch) -> None:
+    """FSx/NFSv4 can report ENOTEMPTY on a directory whose unlinks have not yet landed.
+    Two real batches were aborted on their first target by exactly this."""
+    from scripts import safe_delete_derived as sd
+
+    victim = tmp_path / "hf_base"
+    (victim / "lora_adapter").mkdir(parents=True)
+    calls = {"n": 0}
+    real_rmtree = sd.shutil.rmtree
+
+    def flaky(path, *a, **k):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path))
+        return real_rmtree(path, *a, **k)
+
+    monkeypatch.setattr(sd.shutil, "rmtree", flaky)
+    monkeypatch.setattr(sd.time, "sleep", lambda _s: None)
+    sd.rmtree_nfs(victim)
+    assert calls["n"] == 3
+    assert not victim.exists()
+
+
+def test_rmtree_nfs_gives_up_and_raises(tmp_path: Path, monkeypatch) -> None:
+    """A directory that is genuinely non-empty must still surface, not loop forever."""
+    from scripts import safe_delete_derived as sd
+
+    victim = tmp_path / "hf_base"
+    victim.mkdir()
+
+    def always(path, *a, **k):
+        raise OSError(errno.ENOTEMPTY, "Directory not empty", str(path))
+
+    monkeypatch.setattr(sd.shutil, "rmtree", always)
+    monkeypatch.setattr(sd.time, "sleep", lambda _s: None)
+    with pytest.raises(OSError):
+        sd.rmtree_nfs(victim, attempts=3)
