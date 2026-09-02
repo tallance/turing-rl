@@ -46,10 +46,18 @@ def main() -> None:
     ap.add_argument("--dump_dir", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--group_size", type=int, default=4)
+    # train rows are rollout.n per epoch (G=4); val rows are val_kwargs.n=1 per pass,
+    # so a val trajectory needs --split val --group_size 1 or the passes get merged.
+    ap.add_argument("--split", choices=["train", "val"], default=None,
+                    help="keep only this split (default: all rows)")
     a = ap.parse_args()
     G = a.group_size
 
     rows = _load(a.dump_dir)
+    if a.split:
+        rows = [r for r in rows if r.get("split") == a.split]
+        if not rows:
+            raise SystemExit(f"no rows with split={a.split!r} in {a.dump_dir}")
     groups: dict[tuple, list[dict]] = {}
     for r in rows:
         groups.setdefault(_key(r), []).append(r)
