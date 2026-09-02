@@ -68,6 +68,9 @@ def main() -> None:
     lines.append(f"# Conversation trajectory — {a.dump_dir}")
     lines.append(f"# {len(groups)} examples; G={G} rollouts/epoch; win = Likert>=5, tie = 4, "
                  f"parse-fail = 0/None. Generated turn shown per rollout per epoch.")
+    lines.append("# Score column: p_human (single-token judge; renormalised P(generated turn "
+                 "is the human), 0-1) where logged, else Likert (full-schema judge, 1-7). "
+                 "For single-token rows the [tag] is just p_human thresholded at 0.5.")
     lines.append("")
 
     for si, k in enumerate(sorted(groups, key=lambda t: tuple(str(x) for x in t)), 1):
@@ -93,7 +96,15 @@ def main() -> None:
                 tag = "win" if (lk is not None and lk >= 5) else ("tie" if lk == 4 else
                       ("parsefail" if (lk == 0 or lk is None) else "human-wins"))
                 gen = str(r.get("response", "")).replace("\n", " ").strip()
-                lines.append(f"    rollout {ri}  Likert={lk} [{tag}]  {gen}")
+                # Single-token rows carry p_human, the actual reward and a continuous
+                # [0,1]. Their "Likert" is only the 1/7 endpoint stand-in for the A/B
+                # letter, so it cannot separate a coin-flip verdict from a certain one.
+                # Prefer p_human where present; fall back to Likert for full-schema rows.
+                ph = r.get("p_human")
+                score = (f"p_human={float(ph):.3f}" if isinstance(ph, (int, float))
+                         else f"Likert={lk}")
+                hf = "  HARDFAIL" if r.get("hard_fail") else ""
+                lines.append(f"    rollout {ri}  {score} [{tag}]{hf}  {gen}")
         lines.append("")
 
     with open(a.out, "w") as fh:
