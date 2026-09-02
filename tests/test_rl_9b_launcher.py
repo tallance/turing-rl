@@ -1,4 +1,5 @@
 # tests/test_rl_9b_launcher.py
+import os
 import pathlib
 import re
 import subprocess
@@ -91,7 +92,8 @@ def test_frac10_modes_pin_the_subsets_and_the_per_epoch_cadence():
     # loader drops the last partial batch, so 417 would rotate 33 different rows out per epoch;
     # 384 means every sample is seen exactly once per epoch. Confirmed on the completed
     # 10-epoch run: 384 keys judged exactly 40x (10 epochs x 4 rollouts), no rotation.
-    # save_freq=test_freq=6 keeps ckpts and val on the same epoch grid.
+    # save_freq is derived (6 * SAVE_EVERY_EPOCHS), defaulting to 6 = one epoch; test_freq
+    # stays at 6 so every saved ckpt lands on a validated step whatever the save cadence.
     # 352 = 50% of the 705-row val split, and at seed 42 is the same subset the half-data run
     # used, so val is comparable across runs.
     #
@@ -103,14 +105,18 @@ def test_frac10_modes_pin_the_subsets_and_the_per_epoch_cadence():
             "data.train_max_samples=384",
             "data.val_max_samples=352",
             "trainer.total_epochs=$_EPOCHS",
-            "trainer.save_freq=6",
+            "trainer.save_freq=$_SAVE_FREQ",
             "trainer.test_freq=6",
             "trainer.val_before_train=True",
             "trainer.max_actor_ckpt_to_keep=null",
         ):
             assert k in arm, f"{mode} must pin {k}"
-        # save_freq already equals steps_per_epoch, so the epoch-end hook would double-save.
+        # save_freq is a whole number of epochs, so the epoch-end hook would double-save.
         assert "export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0" in arm
+        # Derived from an epoch count, never a bare literal: 6 steps/epoch is the one place
+        # that relationship is written down.
+        assert "SAVE_EVERY_EPOCHS=${SAVE_EVERY_EPOCHS:-1}" in arm
+        assert "_SAVE_FREQ=$((6 * SAVE_EVERY_EPOCHS))" in arm
         # Batch size comes from the 9B config, not this arm; setting it here would add a
         # second variable versus full5.
         assert "data.train_batch_size=" not in arm
@@ -125,6 +131,99 @@ def test_frac10_epoch_count_comes_from_the_mode_name():
     for mode, expected in (("frac10ep10", "10"), ("frac10ep20", "20")):
         proc = subprocess.run(["bash", "-c", script, "_", mode], capture_output=True, text=True)
         assert proc.stdout.strip() == expected, f"{mode} -> {proc.stdout!r}"
+
+
+def assert_judge_is_accepted(judge: str) -> None:
+    """Assert `judge` appears in BOTH places JUDGE is validated.
+
+    The :? default message and the explicit case guard are separate lists that must agree;
+    a judge missing from either is rejected before its arm is ever reached.
+    """
+    msg = re.search(r"JUDGE=\$\{JUDGE:\?set JUDGE=([\w.|-]+)\}", RUN_2NODE)
+    assert msg, "no JUDGE=${JUDGE:?...} validation message"
+    guard = re.search(r'case "\$JUDGE" in ([\w.|-]+)\) ;;', RUN_2NODE)
+    assert guard, "no `case $JUDGE` validation guard"
+    assert msg.group(1).split("|") == guard.group(1).split("|"), (
+        f"the two JUDGE lists disagree: {msg.group(1)!r} vs {guard.group(1)!r}"
+    )
+    assert judge in guard.group(1).split("|"), f"{judge} is not an accepted JUDGE"
+
+
+def _save_freq(save_every, epochs):
+    """Run the ARM'S OWN save-cadence lines; returns (stdout, exit code).
+
+    Lifted verbatim out of the script rather than reimplemented here. An earlier version of
+    this helper transcribed the arithmetic, and deleting the divisibility guard from the
+    script left every one of these tests passing -- it was checking the transcription.
+    """
+    arm = mode_arm("frac10ep20")
+    block = re.search(
+        r"(SAVE_EVERY_EPOCHS=\$\{SAVE_EVERY_EPOCHS:-1\}.*?exit 5; \})", arm, re.S
+    )
+    assert block, "the frac10 arm no longer contains a save-cadence block to exercise"
+    script = f'MODE=frac10ep20\n_EPOCHS={epochs}\n{block.group(1)}\necho "$_SAVE_FREQ"\n'
+    env = None
+    if save_every is not None:
+        env = {**os.environ, "SAVE_EVERY_EPOCHS": save_every}
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+    return proc.stdout.strip(), proc.returncode
+
+
+def test_save_every_epochs_defaults_to_one_epoch():
+    # The default must reproduce the every-epoch cadence both completed frac10 runs used;
+    # 20 checkpoints at 6,12,...,120 is what their artifacts on disk actually are.
+    for save_every in (None, "1"):
+        out, rc = _save_freq(save_every, 20)
+        assert (out, rc) == ("6", 0), f"SAVE_EVERY_EPOCHS={save_every} -> {out!r} rc={rc}"
+
+
+def test_save_every_epochs_scales_the_grid():
+    # 19 GB per checkpoint: every-epoch frac10ep20 is 365 GB and the quota killed job 19509
+    # mid-write. N=2 halves it to 10 checkpoints, which is also the cadence eval consumes.
+    assert _save_freq("2", 20) == ("12", 0)
+    assert _save_freq("4", 20) == ("24", 0)
+    assert _save_freq("2", 10) == ("12", 0)
+
+
+def test_save_every_epochs_refuses_a_grid_that_would_drop_the_final_checkpoint():
+    # save_freq must divide the total step count. 20 epochs = 120 steps: N=3 gives 18, and
+    # 120 % 18 != 0, so the run would end at step 120 having last saved at 108 -- losing the
+    # final policy, which is the one every downstream eval wants.
+    assert _save_freq("3", 20)[1] == 5
+    assert _save_freq("4", 10)[1] == 5     # 60 % 24 != 0
+    assert _save_freq("7", 20)[1] == 5     # 120 % 42 != 0
+
+
+def test_ce_trained_judge_is_served_from_the_evaluated_checkpoint():
+    # The CE judge is a local merged checkpoint, not an HF id. This is the exact path eval
+    # cell judge-9b-ce-st scored (0.802 single-token vs 0.541 zero-shot), so the training
+    # reward and the published accuracy refer to the same weights.
+    assert (
+        "JUDGE_MODEL=/home/lancewicki/projects/turing-rl/checkpoints/sft/"
+        "judge_qwen35_9b_ce_dense" in RUN_2NODE
+    )
+    # Same serving shape as the zero-shot 9B: one node, 8 TP=1 replicas.
+    ce_arm = re.search(r"^  9b-ce\)(.*?)^  397b\)", RUN_2NODE, re.M | re.S)
+    assert ce_arm, "no 9b-ce arm in the judge case block"
+    assert "TP=1" in ce_arm.group(1) and "DP=8" in ce_arm.group(1)
+    # Absolute, because the judge step runs under the runtime view where checkpoints/ is a
+    # symlink and a relative path would depend on the child's cwd.
+    assert "JUDGE_MODEL=checkpoints/sft/judge_qwen35_9b_ce_dense" not in RUN_2NODE
+
+
+def test_ce_judge_passes_both_judge_validation_gates():
+    # JUDGE is validated twice -- the :? message and the explicit case guard. A value missing
+    # from either is rejected before the judge case block ever runs.
+    assert "JUDGE=${JUDGE:?set JUDGE=0.8b|9b|9b-ce|397b|gemma4-12b}" in RUN_2NODE
+    assert 'case "$JUDGE" in 0.8b|9b|9b-ce|397b|gemma4-12b) ;;' in RUN_2NODE
+    # And an unknown judge still fails fast rather than serving something unintended.
+    guard = 'case "$JUDGE" in 0.8b|9b|9b-ce|397b|gemma4-12b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac'
+    assert guard in RUN_2NODE
+    for judge, rc in (("9b-ce", 0), ("9b", 0), ("9b-CE", 2), ("ce", 2), ("", 2)):
+        proc = subprocess.run(
+            ["bash", "-c", f'JUDGE="{judge}"\n{guard}\nexit 0'], capture_output=True, text=True
+        )
+        assert proc.returncode == rc, f"JUDGE={judge!r} -> rc={proc.returncode}, want {rc}"
 
 
 def test_frac10_rejects_extra_overrides_that_collide_with_pinned_keys():
@@ -344,8 +443,10 @@ def test_gemma_judge_resolves_the_shape_the_eval_registry_assigns():
     # configs/judge_sweep_cells.py:tp_for_size, so it gets TP=1 across 8 replicas rather
     # than spanning the node. Getting this backwards would cost ~8x judge throughput on a
     # judge-bound run without failing anything.
-    assert "JUDGE=${JUDGE:?set JUDGE=0.8b|9b|397b|gemma4-12b}" in RUN_2NODE
-    assert 'case "$JUDGE" in 0.8b|9b|397b|gemma4-12b) ;;' in RUN_2NODE
+    # Assert membership, not the exact list: pinning the whole alternation here made every
+    # newly added judge fail this gemma-shape test for an unrelated reason. The list itself
+    # is pinned once, in test_ce_judge_passes_both_judge_validation_gates.
+    assert_judge_is_accepted("gemma4-12b")
     arm = judge_arm("gemma4-12b")
     assert "JUDGE_MODEL=google/gemma-4-12B-it" in arm
     assert "TP=1" in arm and "DP=8" in arm

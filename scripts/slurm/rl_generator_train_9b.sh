@@ -234,11 +234,28 @@ case "$MODE" in
     # total_training_steps. And 6*$_EPOCHS is a multiple of steps_per_epoch, so veRL skips the
     # dataloader-state restore at the boundary and the next epoch iterates from scratch.
     export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0
+    #
+    # Checkpoints are 19 GB each, so every-epoch saves cost 365 GB per frac10ep20 run and the
+    # per-user quota already killed one mid-flight (job 19509, died writing global_step_66 with
+    # no traceback). SAVE_EVERY_EPOCHS=2 halves that to 10 checkpoints / ~190 GB. 6 steps per
+    # epoch, so save_freq = 6 * N. Default 1 reproduces the every-epoch behaviour exactly.
+    SAVE_EVERY_EPOCHS=${SAVE_EVERY_EPOCHS:-1}
+    _SAVE_FREQ=$((6 * SAVE_EVERY_EPOCHS))
+    # The final step must land on the save grid, or the last checkpoint -- the one every
+    # downstream eval wants -- is silently never written.
+    [ $(( (6 * _EPOCHS) % _SAVE_FREQ )) -eq 0 ] || {
+      echo "ERROR: SAVE_EVERY_EPOCHS=$SAVE_EVERY_EPOCHS gives save_freq=$_SAVE_FREQ, which does not" >&2
+      echo "       divide the $((6 * _EPOCHS)) total steps of MODE=$MODE -- the final checkpoint" >&2
+      echo "       would be lost. Pick a value dividing $_EPOCHS epochs." >&2
+      exit 5; }
+    # test_freq stays at one epoch: validation is cheap (352 rows at n=1) and finer val curves
+    # are worth keeping. _SAVE_FREQ is a multiple of 6, so every saved ckpt still has a val
+    # score -- the property this arm is built around.
     OVR+=(
       data.train_max_samples=384
       data.val_max_samples=352
       trainer.total_epochs=$_EPOCHS
-      trainer.save_freq=6
+      trainer.save_freq=$_SAVE_FREQ
       trainer.test_freq=6
       trainer.val_before_train=True
       trainer.max_actor_ckpt_to_keep=null
