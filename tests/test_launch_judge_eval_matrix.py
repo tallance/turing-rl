@@ -14,7 +14,7 @@ GRPO_MODEL_KEYS = (
     "JUDGE_9B_DIRECTIONAL_MODEL",
     "JUDGE_9B_GRADED_MODEL",
 )
-CE_MODEL_KEYS = ("JUDGE_4B_CE_MODEL", "JUDGE_9B_CE_MODEL")
+CE_MODEL_KEYS = ("JUDGE_4B_CE_MODEL", "JUDGE_9B_CE_MODEL", "JUDGE_GEMMA12B_CE_MODEL")
 
 
 def _make_models(tmp_path: Path, keys: tuple[str, ...]) -> dict[str, str]:
@@ -258,7 +258,7 @@ def test_single_token_style_accepts_confirmed_thinking_off(tmp_path: Path) -> No
 
     assert result.returncode == 0, result.stderr
     planned = _planned(result)
-    assert len(planned) == 7
+    assert len(planned) == len(SINGLE_TOKEN_CELLS)
     assert all("THINKING_MODE=off" in line for line in planned)
     assert all("JUDGE_PROMPT_STYLE=single_token" in line for line in planned)
 
@@ -304,7 +304,7 @@ def test_single_token_style_does_not_collide_with_the_full_schema_reward_dir(tmp
     result = _run(env)
 
     assert result.returncode == 0, result.stderr
-    assert len(_planned(result)) == 7
+    assert len(_planned(result)) == len(SINGLE_TOKEN_CELLS)
 
 
 def test_single_token_style_reward_dir_is_itself_guarded(tmp_path: Path) -> None:
@@ -358,6 +358,9 @@ def test_single_token_arm_matrix_is_the_literal_seven_rows(tmp_path: Path) -> No
     assert _planned_matrix(result) == [
         f"judge-9b-ce-st {env['JUDGE_9B_CE_MODEL']} 1 8 32",
         f"judge-4b-ce-st {env['JUDGE_4B_CE_MODEL']} 1 8 32",
+        # Concurrency 4, not 32: copied from the zero-shot gemma4-12b row, because it is a
+        # serving constraint of the model rather than of the training.
+        f"judge-gemma12b-ce-st {env['JUDGE_GEMMA12B_CE_MODEL']} 1 8 4",
         "qwen35-27b-st Qwen/Qwen3.5-27B 8 1 32",
         "gemma4-31b-st google/gemma-4-31B-it 8 1 4",
         "gemma4-12b-st google/gemma-4-12B-it 1 8 4",
@@ -433,7 +436,7 @@ def test_single_token_arm_does_not_require_the_grpo_models(tmp_path: Path) -> No
     result = _run(env)
 
     assert result.returncode == 0, result.stderr
-    assert len(_planned(result)) == 7
+    assert len(_planned(result)) == len(SINGLE_TOKEN_CELLS)
 
 
 def test_single_token_arm_checks_both_ce_models(tmp_path: Path) -> None:
@@ -471,6 +474,7 @@ FULL_CELLS = (
 SINGLE_TOKEN_CELLS = (
     "judge-9b-ce-st",
     "judge-4b-ce-st",
+    "judge-gemma12b-ce-st",
     "qwen35-27b-st",
     "gemma4-31b-st",
     "gemma4-12b-st",

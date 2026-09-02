@@ -46,10 +46,11 @@ cd "$REPO" || exit 2
 DRY=${DRY:-0}
 
 MODEL=${MODEL:-}
+JUDGE_ALIASES="qwen35-4b-judge|qwen35-9b-judge|gemma4-12b-judge"
 case "$MODEL" in
-  qwen35-4b-judge|qwen35-9b-judge) ;;
-  "") echo "FATAL: MODEL is unset or empty; set qwen35-4b-judge or qwen35-9b-judge" >&2; exit 2 ;;
-  *) echo "FATAL: MODEL must be a judge alias (qwen35-4b-judge|qwen35-9b-judge), got '$MODEL'" >&2
+  qwen35-4b-judge|qwen35-9b-judge|gemma4-12b-judge) ;;
+  "") echo "FATAL: MODEL is unset or empty; set one of ($JUDGE_ALIASES)" >&2; exit 2 ;;
+  *) echo "FATAL: MODEL must be a judge alias ($JUDGE_ALIASES), got '$MODEL'" >&2
      exit 2 ;;
 esac
 
