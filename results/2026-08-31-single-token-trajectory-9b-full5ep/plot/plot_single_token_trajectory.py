@@ -2,8 +2,8 @@
 
 Same layout, axis order and palette as ``plot_test_eval_judges.py`` in the full-schema
 package, so the two figures can be read side by side. The two zero-shot judges keep the
-colour their full-schema counterparts use there; the CE judge is new to this figure and is
-emphasised.
+colour their full-schema counterparts use there; the two CE judges are new to this figure
+and are drawn heavier.
 
 The panels are NOT the same quantities as the full-schema figure's, because single-token
 has no 1-7 rating:
@@ -35,12 +35,15 @@ from plotstyle import INK, SLOT, apply_rc, declutter, style_axes  # noqa: E402
 # Fixed slots BY ENTITY, never by rank. The two zero-shot judges reuse the colour their
 # full-schema counterparts carry in the adjacent figure (9B = slot 2, Gemma 4 12B = the
 # dashed secondary), so a reader moving between the figures tracks the same model.
+# Marker carries the model family (o = Qwen 9B, D = Gemma 4 12B); line weight carries
+# zero-shot vs trained. So a reader can pair each trained judge with its zero-shot twin.
 JUDGES = [
     ("gemma12", "gemma4-12b-st", "Gemma 4 12B", INK["secondary"], False, "--", "D"),
     ("qwen9b", "qwen35-9b-st", "9B", SLOT[2], False, "-", "o"),
-    ("ce9b", "judge-9b-ce-st", "9B CE", SLOT[1], True, "-", "^"),
+    ("ce9b", "judge-9b-ce-st", "9B CE", SLOT[1], True, "-", "o"),
+    ("ce12b", "judge-gemma12b-ce-st", "Gemma 12B CE", SLOT[3], True, "-", "D"),
 ]
-LEGEND_ORDER = ("qwen9b", "ce9b", "gemma12")
+LEGEND_ORDER = ("qwen9b", "ce9b", "gemma12", "ce12b")
 
 # The generator was trained against Qwen3.5-9B with the FULL schema, thinking ON. That
 # judge is not on this figure -- qwen35-9b-st is the same base model under the
@@ -160,7 +163,7 @@ def main() -> None:
     }
     idx = sorted(range(len(labels)), key=lambda i: LEGEND_ORDER.index(key_for_label[labels[i]]))
     leg = fig.legend([handles[i] for i in idx], [labels[i] for i in idx],
-                     loc="lower center", ncol=3, frameon=False,
+                     loc="lower center", ncol=4, frameon=False,
                      bbox_to_anchor=(0.5, -0.015), fontsize=10.5)
     for t in leg.get_texts():
         t.set_color(INK["secondary"])

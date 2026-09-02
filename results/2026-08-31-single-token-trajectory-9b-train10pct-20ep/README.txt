@@ -35,11 +35,44 @@ JUDGES
   gemma4-12b-st    google/gemma-4-12B-it                                     1  8
   judge-9b-ce-st   checkpoints/sft/judge_qwen35_9b_ce_dense                  1  8
 
-judge-9b-ce-st is the LoRA cross-entropy judge trained on the single-token A/B
-task (see docs/plans/2026-08-26-single-token-judge.md). The other two are
-zero-shot and have a full-schema counterpart in the package named above.
+  judge-gemma12b-ce-st  checkpoints/sft/judge_gemma4_12b_ce_dense           1  8
+
+judge-9b-ce-st and judge-gemma12b-ce-st are LoRA cross-entropy judges trained on
+the single-token A/B task (see docs/plans/2026-08-26-single-token-judge.md). The
+other two are zero-shot and have a full-schema counterpart in the package named
+above.
 
 Not run here: qwen35-27b, gemma4-31b, and the 5 odd-epoch checkpoints.
+
+
+FOURTH JUDGE, ADDED 2026-09-01
+------------------------------
+judge-gemma12b-ce-st was run after the other three and is recorded separately
+because it used a later source snapshot; cluster_launch refuses to mix snapshots
+in one run root, so it has its own.
+
+  source snapshot  5c34cce127d8fa2d1aa5eddb46dd01b56f830af2 (retained)
+                   contains lancewicki/main at a645d610
+  run root         results/2026-09-01-single-token-trajectory-9b-train10pct-20ep-gemma12b
+                   manifests copied here as provenance_gemma12b/
+  jobs             19594-19604, all COMPLETED 0:0
+  smoke            19593, COMPLETED 0:0, 20 pairs at step 0
+
+The served model was merged locally from the adapter another agent trained:
+  adapter  checkpoints/sft/judge_gemma4_12b_ce_nopack/checkpoint-144 (epoch 3)
+  base     hf_cache/hub/models--google--gemma-4-12B-it/snapshots/707f0a3b...
+  command  python scripts/merge_grpo_adapter.py --base <base> \
+             --adapter <adapter> --out checkpoints/sft/judge_gemma4_12b_ce_dense \
+             --expect_targets 328
+328 targets, not 336: the base has no v_proj on layers 5, 11, ... 47, so the
+adapter has none either. Verified after merging: architecture, config and
+keyset identical to the base, 0 dtype mismatches, exactly 328 tensors changed
+and all of them LoRA targets, vision tower untouched.
+
+Validation for these 11 cells: exactly 440 unique pair keys each, an identical
+pair-id set across them, 0 hard failures, no checkpoint over the degeneracy
+threshold. Their pair-id set was additionally checked against the other three
+judges' and is identical, which the per-root builder cannot see.
 
 SOURCE CODE
 -----------

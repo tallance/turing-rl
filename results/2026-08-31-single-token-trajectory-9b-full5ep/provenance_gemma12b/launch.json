@@ -1,0 +1,22 @@
+{
+  "code_root": "/home/lancewicki/projects/turing-rl-sources/5c34cce127d8fa2d1aa5eddb46dd01b56f830af2",
+  "debug_label": null,
+  "dependency_profile": "eval",
+  "environment_keys": [
+    "GEN_KEY_PREFIX",
+    "JOB_PREFIX",
+    "JUDGES",
+    "PAIRS_TAG",
+    "SOURCE_ROOTS",
+    "STEPS"
+  ],
+  "format_version": 1,
+  "launched_at_utc": "2026-09-01T21:53:11.157133+00:00",
+  "launcher": "scripts/launch_single_token_trajectory.sh",
+  "launcher_args": [],
+  "main_sha": "a645d6107c0a5f16e05987c2a1ceac3dd5187e4e",
+  "run_class": "retained",
+  "run_root": "/home/lancewicki/projects/turing-rl/results/2026-09-01-single-token-trajectory-9b-full5ep-gemma12b",
+  "source_sha": "5c34cce127d8fa2d1aa5eddb46dd01b56f830af2",
+  "state_root": "/home/lancewicki/projects/turing-rl"
+}
