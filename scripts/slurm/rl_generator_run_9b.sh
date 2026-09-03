@@ -69,9 +69,9 @@ mkdir -p "$WANDB_DIR"
 WANDB_BIN=${WANDB_BIN:-/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/wandb}
 
 JUDGE=${JUDGE:?set JUDGE=0.8b|9b|9b-ce|397b|gemma4-12b}
-MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep10|frac10ep20}
+MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep3|frac10ep10|frac10ep20}
 case "$JUDGE" in 0.8b|9b|9b-ce|397b|gemma4-12b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
-case "$MODE" in overfit|full|epoch1|full5|frac10ep10|frac10ep20) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
+case "$MODE" in overfit|full|epoch1|full5|frac10ep3|frac10ep10|frac10ep20) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
 # Serving shape per judge. TP x DP is always 8 (one node): a model whose bf16 footprint fits
 # one 40GB A100 with KV/CUDA-graph headroom runs TP=1 across 8 replicas for throughput,
 # otherwise it spans the node at TP=8. Same rule configs/judge_sweep_cells.py:tp_for_size

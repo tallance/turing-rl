@@ -194,15 +194,17 @@ case "$MODE" in
       # delete the first four of this run's ten checkpoints.
       trainer.max_actor_ckpt_to_keep=null
     ) ;;
-  frac10ep10|frac10ep20)
+  frac10ep3|frac10ep10|frac10ep20)
     # Low-compute contrast arm to full5: 10% of the train split, one checkpoint and one
     # validation pass per epoch. The question is whether the smaller slice overfits MORE,
     # which reads off train/val divergence WITHIN the run (many views per sample vs full5's 5).
     # This is NOT a matched-compute comparison: even at 20 epochs, 120 steps is ~37% of full5's
     # 325, so a final-val gap between the runs must not be read as coverage-vs-repetition.
     #
-    # The epoch count is the mode-name suffix: frac10ep10 -> 10, frac10ep20 -> 20. Everything
-    # else is identical, so the two modes cannot drift apart in the parts that define the slice.
+    # The epoch count is the mode-name suffix: frac10ep3 -> 3, frac10ep20 -> 20. Everything
+    # else is identical, so the modes cannot drift apart in the parts that define the slice.
+    # frac10ep3 exists for short pre-collapse runs: against a single-token judge the policy
+    # collapses onto one template around step 50, so 18 steps stops well before that.
     _EPOCHS=${MODE#frac10ep}
     #
     # 384 = 6 x 64, i.e. 9.2% of the 4174-row train split, NOT the round 10% (417).

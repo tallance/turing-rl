@@ -99,7 +99,7 @@ def test_frac10_modes_pin_the_subsets_and_the_per_epoch_cadence():
     #
     # Both frac10 modes share one arm, so the slice cannot drift between them; only the epoch
     # count differs, and it is derived from the mode name rather than written twice.
-    for mode in ("frac10ep10", "frac10ep20"):
+    for mode in ("frac10ep3", "frac10ep10", "frac10ep20"):
         arm = mode_arm(mode)
         for k in (
             "data.train_max_samples=384",
@@ -121,14 +121,14 @@ def test_frac10_modes_pin_the_subsets_and_the_per_epoch_cadence():
         # second variable versus full5.
         assert "data.train_batch_size=" not in arm
         assert "_EPOCHS=${MODE#frac10ep}" in arm
-    assert "overfit|full|epoch1|full5|frac10ep10|frac10ep20" in RUN_2NODE
+    assert "overfit|full|epoch1|full5|frac10ep3|frac10ep10|frac10ep20" in RUN_2NODE
 
 
 def test_frac10_epoch_count_comes_from_the_mode_name():
     # The whole point of sharing one arm: `frac10ep20` must resolve to 20 epochs without a
     # second hard-coded literal that could drift from the mode it is named after.
     script = 'MODE="$1"\n_EPOCHS=${MODE#frac10ep}\necho "$_EPOCHS"\n'
-    for mode, expected in (("frac10ep10", "10"), ("frac10ep20", "20")):
+    for mode, expected in (("frac10ep3", "3"), ("frac10ep10", "10"), ("frac10ep20", "20")):
         proc = subprocess.run(["bash", "-c", script, "_", mode], capture_output=True, text=True)
         assert proc.stdout.strip() == expected, f"{mode} -> {proc.stdout!r}"
 
@@ -175,6 +175,16 @@ def test_save_every_epochs_defaults_to_one_epoch():
     for save_every in (None, "1"):
         out, rc = _save_freq(save_every, 20)
         assert (out, rc) == ("6", 0), f"SAVE_EVERY_EPOCHS={save_every} -> {out!r} rc={rc}"
+
+
+def test_frac10ep3_saves_every_epoch_by_default():
+    # frac10ep3 is the short pre-collapse arm: 3 epochs x 6 steps = 18 steps. The default
+    # cadence must give a checkpoint per epoch (6, 12, 18) and must land on the final step,
+    # or the only policy anyone wants to evaluate is never written.
+    out, rc = _save_freq(None, 3)
+    assert (out, rc) == ("6", 0)
+    assert (6 * 3) % int(out) == 0
+    assert (6 * 3) // int(out) == 3, "expected exactly 3 checkpoints"
 
 
 def test_save_every_epochs_scales_the_grid():
