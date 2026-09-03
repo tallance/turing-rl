@@ -1,0 +1,12 @@
+step|source|sha256
+0|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step0_440.parquet|9165aabaaef27ac2b6ded415fe1e18142829bedd39b8f7da5035ad44370d84c2
+12|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step12_440.parquet|651ded9d7c64dfbbcaba791433b33eed4f7cbf20543d7f8b693aa1fda532769c
+24|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step24_440.parquet|ef74bde1d05505939a3e96c0013f9edc79fd1582afff2f6195497ed7835ba233
+36|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step36_440.parquet|2e68ce0f75aecef75022948200ea481ed611b6ca1ada045619636d1667df11aa
+48|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step48_440.parquet|5869e7c69a15361797ceb5e46945ea8951c937c54728a1de85ce58b3df3c66a0
+60|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step60_440.parquet|9b9e882756adaa78b326524ffac8c2a99eb2fcbbc4018bce9ba4e8cb925d222a
+72|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step72_440.parquet|3bc9452076bd189777e05cfaabe8266d6b3f83486717b191511f7ef28f20c9fc
+84|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step84_440.parquet|26b8ee137c8422286ea1167f9b26a9ac5802bf2901899bd14dacea2007966456
+96|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step96_440.parquet|ab4a3772fa67d9c222ec2ab1d9566008be9237c40731a624b49b6f2873d7283a
+108|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step108_440.parquet|aef68545a8f150b0cd41122483597b67d088a82fdaff85314c85782d8dc596b3
+120|/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep/raw/pairs/gen_9b-st-trained-step120_440.parquet|6d843d4af7316c172f79c6f1303d4a76f19fbb360d80ede5a6067e311587c2f1

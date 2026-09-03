@@ -1,0 +1,4 @@
+prompt_style=single_token
+thinking_mode=off
+source_sha=b4cd7881d1bc59b1d122ffedac173bb87a96c3b0
+claimed_at_utc=2026-09-02T19:41:58Z

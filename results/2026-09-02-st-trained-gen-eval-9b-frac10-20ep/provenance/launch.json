@@ -1,0 +1,22 @@
+{
+  "code_root": "/home/lancewicki/projects/turing-rl-sources/b4cd7881d1bc59b1d122ffedac173bb87a96c3b0",
+  "debug_label": null,
+  "dependency_profile": "eval",
+  "environment_keys": [
+    "GEN_KEY_PREFIX",
+    "JOB_PREFIX",
+    "JUDGES",
+    "PAIRS_TAG",
+    "SOURCE_ROOTS",
+    "STEPS"
+  ],
+  "format_version": 1,
+  "launched_at_utc": "2026-09-02T19:37:46.467647+00:00",
+  "launcher": "scripts/launch_single_token_trajectory.sh",
+  "launcher_args": [],
+  "main_sha": "a9770a49d9acab8613bdd9a45ed6db633d2d89c6",
+  "run_class": "retained",
+  "run_root": "/home/lancewicki/projects/turing-rl/results/2026-09-02-st-trained-gen-eval-9b-frac10-20ep",
+  "source_sha": "b4cd7881d1bc59b1d122ffedac173bb87a96c3b0",
+  "state_root": "/home/lancewicki/projects/turing-rl"
+}
