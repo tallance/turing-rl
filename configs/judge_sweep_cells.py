@@ -156,6 +156,16 @@ def cell_list(family: str) -> list[dict]:
     return out
 
 
+def extra_cell_names() -> list[str]:
+    """Every opt-in cell name.
+
+    Exists so callers can offer all opt-in judges without repeating the names. The launcher
+    used to hardcode its own list, which meant registering a cell here left it unreachable
+    with a message that blamed the family list -- see scripts/launch_test_eval.sh.
+    """
+    return sorted(_EXTRA_CELLS)
+
+
 def extra_cell(cell_name: str) -> dict:
     """Return a copy of an opt-in judge cell by name."""
     try:

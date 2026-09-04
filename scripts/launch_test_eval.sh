@@ -97,15 +97,20 @@ for s in $STEPS; do
 done
 
 CELLS=$(/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python -c "
-from configs.judge_sweep_cells import cell_list, extra_cell
-cells = cell_list('qwen3.5') + [extra_cell('gemma4-12b'), extra_cell('gemma4-31b')]
+from configs.judge_sweep_cells import cell_list, extra_cell, extra_cell_names
+# Every opt-in cell, not a hardcoded subset: adding a judge to _EXTRA_CELLS used to leave it
+# unreachable here, and the rejection blamed cell_list('qwen3.5') rather than this list.
+cells = cell_list('qwen3.5') + [extra_cell(n) for n in extra_cell_names()]
 for c in cells:
     print(c['cell_name'], c['model_id'], c['tp'], c['replicas'], c.get('concurrency', 32))
 ")
 FILTERED=""
 for j in $JUDGES; do
   line=$(echo "$CELLS" | awk -v n="$j" '$1==n')
-  [ -z "$line" ] && { echo "FATAL: judge '$j' not in cell_list('qwen3.5')" >&2; exit 1; }
+  [ -z "$line" ] && {
+    echo "FATAL: unknown judge '$j'. Known cells:" >&2
+    echo "$CELLS" | awk '{printf "         %s\n", $1}' >&2
+    exit 1; }
   FILTERED="${FILTERED}${line}
 "
 done

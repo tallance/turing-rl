@@ -1,5 +1,9 @@
 import pytest
 
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+
 from configs.judge_sweep_cells import (
     ANCHOR_CELL,
     SIZE_MAP,
@@ -77,6 +81,27 @@ def test_ce_judge_cells_point_at_servable_absolute_merges():
         assert model_id.startswith("/"), f"{name} must be absolute: {model_id}"
         assert model_id.endswith(stem), f"{name} -> {model_id}"
         assert "_nopack" not in model_id, f"{name} points at an adapter dir: {model_id}"
+
+
+def test_every_opt_in_cell_is_reachable_from_the_launcher():
+    """The launcher offers extra_cell_names(), so registering a cell is enough to use it.
+
+    It used to hardcode its own subset, so a newly registered judge was rejected with a
+    message blaming the family list -- a confusing failure at submit time.
+    """
+    from configs.judge_sweep_cells import extra_cell_names
+
+    names = extra_cell_names()
+    for required in ("9b-ce", "9b-ce2", "gemma4-12b", "gemma4-31b"):
+        assert required in names, required
+    # Enumerable, not a fixed list: every name must actually resolve.
+    for name in names:
+        assert extra_cell(name)["cell_name"] == name
+
+    launcher = (ROOT / "scripts" / "launch_test_eval.sh").read_text()
+    assert "extra_cell(n) for n in extra_cell_names()" in launcher
+    for stale in ("extra_cell('gemma4-12b')", "extra_cell('gemma4-31b')"):
+        assert stale not in launcher, f"launcher still hardcodes {stale}"
 
 
 def test_unknown_opt_in_cell_fails_loudly():
