@@ -72,6 +72,16 @@ _EXTRA_CELLS = {
         "quantized": False,
         "concurrency": 32,
     },
+    "9b-ce3": {
+        "cell_name": "9b-ce3",
+        "model_id": "/home/lancewicki/projects/turing-rl/checkpoints/sft/judge_qwen35_9b_ce_iter3_dense",
+        "tp": 1,
+        "replicas": 8,
+        "size_b": 9,
+        "is_moe": False,
+        "quantized": False,
+        "concurrency": 32,
+    },
     "gemma4-31b": {
         "cell_name": "gemma4-31b",
         "model_id": "google/gemma-4-31B-it",
@@ -195,6 +205,7 @@ SIZE_MAP = {
     # CE judges: same 9B backbone as qwen35-9b, so they plot at the same x.
     "9b-ce": 9,
     "9b-ce2": 9,
+    "9b-ce3": 9,
     "qwen35-27b": 27,
     "qwen35-35b-a3b": 3,
     "qwen35-122b": 10,  # A10B: 10B active
