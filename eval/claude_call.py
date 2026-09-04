@@ -23,7 +23,10 @@ import sys
 CLAUDE = "/usr/local/bin/claude"
 
 
-def ask(prompt, model="opus", system=None, timeout=300, full=False):
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+
+def ask(prompt, model="opus", system=None, timeout=300, full=False, effort=None):
     """Single-turn, no-tools completion. Returns the model's text.
 
     With full=True, returns the whole result envelope instead (adds usage and
@@ -45,6 +48,10 @@ def ask(prompt, model="opus", system=None, timeout=300, full=False):
     ]
     if system:
         cmd += ["--system-prompt", system]
+    if effort:
+        if effort not in EFFORT_LEVELS:
+            raise ValueError(f"effort must be one of {EFFORT_LEVELS}, got {effort!r}")
+        cmd += ["--effort", effort]
     # ponytail: macOS forbids nested sandbox_exec, so a call made from inside a
     # Claude Code session dies at startup unless the inner sandbox is dropped.
     # Only skip it in that case -- a standalone run keeps the sandbox.

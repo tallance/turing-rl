@@ -19,7 +19,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from eval.claude_call import ask  # noqa: E402
+from eval.claude_call import EFFORT_LEVELS, ask  # noqa: E402
 from eval.metrics import _parse_turing_response  # noqa: E402
 from shared.judge_prompts import TURING_PROMPT  # noqa: E402
 from shared.judge_utils import (  # noqa: E402
@@ -59,6 +59,9 @@ def main():
     ap.add_argument("--index", type=int, default=221)
     ap.add_argument("--dump", type=Path, default=DUMP)
     ap.add_argument("--out", type=Path, default=OUT)
+    # Pin this for any run you want to compare across: unset, the binary picks
+    # its own level (~800 thinking tokens here), and low/max move real numbers.
+    ap.add_argument("--effort", choices=EFFORT_LEVELS, default=None)
     args = ap.parse_args()
 
     with open(args.dump) as f:
@@ -68,7 +71,7 @@ def main():
     if rec.get("judge_prompt") and prompt != rec["judge_prompt"]:
         raise AssertionError("rebuilt prompt differs from the stored judge_prompt")
 
-    envelope = ask(prompt, full=True)
+    envelope = ask(prompt, full=True, effort=args.effort)
     raw = envelope["result"]
     verdict = _parse_turing_response(raw)
     if verdict.get("parse_error"):
@@ -90,6 +93,7 @@ def main():
         "opus_correct": opus_side == human_side,
         "opus_verdict": verdict,
         "opus_raw": raw,
+        "effort": args.effort,
         "cost_usd": envelope.get("total_cost_usd"),
         "usage": envelope.get("usage"),
     }
