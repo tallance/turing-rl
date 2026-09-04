@@ -68,9 +68,9 @@ mkdir -p "$WANDB_DIR"
 # Arm-B trainer env (same one rl_generator_train_9b.sh runs in), used for the exit-time sync.
 WANDB_BIN=${WANDB_BIN:-/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/wandb}
 
-JUDGE=${JUDGE:?set JUDGE=0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b}
+JUDGE=${JUDGE:?set JUDGE=0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b|/abs/path/to/dense}
 MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep3|frac10ep10|frac10ep20}
-case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
+case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b|/*) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
 case "$MODE" in overfit|full|epoch1|full5|frac10ep3|frac10ep10|frac10ep20) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
 # Serving shape per judge. TP x DP is always 8 (one node): a model whose bf16 footprint fits
 # one 40GB A100 with KV/CUDA-graph headroom runs TP=1 across 8 replicas for throughput,
@@ -101,6 +101,20 @@ case "$JUDGE" in
              TP=1; DP=8; REASONING_PARSER=qwen3  ;;
   397b)      JUDGE_MODEL=Qwen/Qwen3.5-397B-A17B-GPTQ-Int4; TP=8; DP=1; REASONING_PARSER=qwen3  ;;
   gemma4-12b) JUDGE_MODEL=google/gemma-4-12B-it;           TP=1; DP=8; REASONING_PARSER=gemma4 ;;
+  # Any absolute path: a locally merged dense judge. The alternating loop mints a new one
+  # every round and they all share the Qwen serving shape, so an enum arm per iteration was
+  # three byte-identical copies and a commit per round. The named aliases above are kept so a
+  # previous round's launch command still reproduces verbatim.
+  #
+  # REASONING_PARSER is overridable here rather than pinned, which the named arms deliberately
+  # are not -- a bare path carries no model family. The qwen3 default is right for the CE
+  # judges; a Gemma dense passed by path MUST set REASONING_PARSER=gemma4, or thinking text is
+  # silently mis-split out of .content and the reward path fails to parse it with nothing in
+  # the log naming the cause. (single_token clears the parser below, so this only bites the
+  # full style.)
+  /*)        [ -f "$JUDGE/config.json" ] || {
+               echo "bad JUDGE path (no config.json): $JUDGE" >&2; exit 2; }
+             JUDGE_MODEL=$JUDGE; TP=1; DP=8; REASONING_PARSER=${REASONING_PARSER:-qwen3} ;;
 esac
 
 # Judge protocol: "full" (37-field JSON verdict) or "single_token" (one A/B token, verdict

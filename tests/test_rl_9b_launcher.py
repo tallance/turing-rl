@@ -139,13 +139,18 @@ def assert_judge_is_accepted(judge: str) -> None:
     The :? default message and the explicit case guard are separate lists that must agree;
     a judge missing from either is rejected before its arm is ever reached.
     """
-    msg = re.search(r"JUDGE=\$\{JUDGE:\?set JUDGE=([\w.|-]+)\}", RUN_2NODE)
+    msg = re.search(r"JUDGE=\$\{JUDGE:\?set JUDGE=([\w.|*/-]+)\}", RUN_2NODE)
     assert msg, "no JUDGE=${JUDGE:?...} validation message"
-    guard = re.search(r'case "\$JUDGE" in ([\w.|-]+)\) ;;', RUN_2NODE)
+    guard = re.search(r'case "\$JUDGE" in ([\w.|*/-]+)\) ;;', RUN_2NODE)
     assert guard, "no `case $JUDGE` validation guard"
-    assert msg.group(1).split("|") == guard.group(1).split("|"), (
+    # The :? message spells the path form out for a human ("/abs/path/to/dense"); the
+    # guard carries the glob that actually matches it. Compare the named entries only.
+    named = lambda lst: [x for x in lst if not x.startswith("/")]
+    assert named(msg.group(1).split("|")) == named(guard.group(1).split("|")), (
         f"the two JUDGE lists disagree: {msg.group(1)!r} vs {guard.group(1)!r}"
     )
+    assert "/*" in guard.group(1).split("|"), "the guard no longer accepts a path"
+    assert "/abs/path/to/dense" in msg.group(1), "the :? message no longer documents paths"
     assert judge in guard.group(1).split("|"), f"{judge} is not an accepted JUDGE"
 
 
@@ -224,10 +229,10 @@ def test_ce_trained_judge_is_served_from_the_evaluated_checkpoint():
 def test_ce_judge_passes_both_judge_validation_gates():
     # JUDGE is validated twice -- the :? message and the explicit case guard. A value missing
     # from either is rejected before the judge case block ever runs.
-    assert "JUDGE=${JUDGE:?set JUDGE=0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b}" in RUN_2NODE
-    assert 'case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b) ;;' in RUN_2NODE
+    assert ("JUDGE=${JUDGE:?set JUDGE=0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b|/abs/path/to/dense}" in RUN_2NODE)
+    assert 'case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b|/*) ;;' in RUN_2NODE
     # And an unknown judge still fails fast rather than serving something unintended.
-    guard = ('case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b) ;; '
+    guard = ('case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b|/*) ;; '
              '*) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac')
     assert guard in RUN_2NODE
     for judge, rc in (("9b-ce", 0), ("9b-ce2", 0), ("9b-ce3", 0), ("9b", 0), ("9b-CE", 2), ("ce", 2), ("", 2)):
@@ -445,7 +450,7 @@ def judge_arm(name: str) -> str:
     m = re.search(rf"^  {re.escape(name)}\)\s", RUN_2NODE, re.M)
     assert m, f"no case arm resolves JUDGE={name}"
     rest = RUN_2NODE[m.end():]
-    end = re.search(r"^(  [\w.|-]+\)|esac)", rest, re.M)
+    end = re.search(r"^(  [\w.|*/-]+\)|esac)", rest, re.M)
     return rest[: end.start()] if end else rest
 
 
@@ -507,8 +512,17 @@ def test_reasoning_parser_is_pinned_per_family_and_forwarded_to_the_judge_step()
     assert "REASONING_PARSER=gemma4" in judge_arm("gemma4-12b")
     # forwarded into the srun that launches the server
     assert "REASONING_PARSER=$REASONING_PARSER" in RUN_2NODE
-    # and never read back from the ambient environment in the driver
-    assert "${REASONING_PARSER:-" not in RUN_2NODE
+    # and never read back from the ambient environment for a NAMED family -- the whole
+    # point is that a caller cannot set a wrong parser for a known model. The one
+    # exception is the "/*" path arm: a bare path carries no family, so it defaults
+    # (and a Gemma dense passed by path has to be able to say so).
+    for named in ("0.8b", "9b", "9b-ce", "9b-ce2", "9b-ce3", "397b", "gemma4-12b"):
+        assert "${REASONING_PARSER:-" not in judge_arm(named), (
+            f"the {named} arm stopped pinning its parser"
+        )
+    assert RUN_2NODE.count("${REASONING_PARSER:-") == 1, (
+        "the parser is defaulted somewhere other than the single path arm"
+    )
     # resolved value is echoed, so the log records which parser actually served
     assert "judge serving pinned:" in RUN_2NODE
 
@@ -687,3 +701,70 @@ def test_serve_omits_the_parser_flag_when_it_is_empty():
     # still passes it directly, and both consume the array instead.
     assert SERVE.count('--reasoning-parser "$REASONING_PARSER"') == 1
     assert SERVE.count('"${RP[@]}"') == 2
+
+
+def _resolve_judge(judge: str, **env: str):
+    """Run the script's OWN judge-resolution case block; returns (stdout, rc).
+
+    Extracted verbatim rather than transcribed -- the frac10 cadence tests were once written
+    the other way and passed with the guard deleted.
+    """
+    m = re.search(r'case "\$JUDGE" in\n  0\.8b\).*?\nesac', RUN_2NODE, re.S)
+    assert m, "the judge-resolution case block moved"
+    script = (
+        "set -uo pipefail\n"
+        + m.group(0)
+        + '\nprintf "%s\\n" "JUDGE_MODEL=$JUDGE_MODEL" "TP=$TP" "DP=$DP" '
+          '"REASONING_PARSER=$REASONING_PARSER"\n'
+    )
+    proc = subprocess.run(
+        ["bash", "-c", script],
+        env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "JUDGE": judge, **env},
+        capture_output=True,
+        text=True,
+    )
+    return proc.stdout, proc.returncode
+
+
+def test_a_dense_judge_path_needs_no_new_enum_arm(tmp_path):
+    """The alternating loop mints a judge per round; adding an arm each time was three
+    byte-identical copies. A path must resolve straight through with the Qwen shape."""
+    d = tmp_path / "judge_qwen35_9b_ce_iter4_dense"
+    d.mkdir()
+    (d / "config.json").write_text("{}")
+    out, rc = _resolve_judge(str(d))
+    assert rc == 0, out
+    assert f"JUDGE_MODEL={d}" in out
+    assert "TP=1" in out and "DP=8" in out
+    assert "REASONING_PARSER=qwen3" in out
+
+
+def test_a_judge_path_that_is_not_a_model_is_refused(tmp_path):
+    """Fail fast on the launcher, not four minutes later inside eight vLLM replicas whose
+    logs never name the cause."""
+    empty = tmp_path / "typo"
+    empty.mkdir()
+    for bad in (str(empty), str(tmp_path / "does-not-exist")):
+        out, rc = _resolve_judge(bad)
+        assert rc == 2, f"{bad} resolved instead of failing: {out}"
+
+
+def test_a_path_judge_can_override_the_reasoning_parser(tmp_path):
+    """A bare path carries no model family, so unlike the named arms the parser is not
+    pinnable in advance. A Gemma dense passed by path must be able to say so."""
+    d = tmp_path / "gemma_dense"
+    d.mkdir()
+    (d / "config.json").write_text("{}")
+    out, rc = _resolve_judge(str(d), REASONING_PARSER="gemma4")
+    assert rc == 0, out
+    assert "REASONING_PARSER=gemma4" in out
+
+
+def test_named_judges_still_pin_their_parser(tmp_path):
+    """The path arm must not have loosened the named arms: their whole point is that a
+    caller cannot set a wrong parser for a known model family."""
+    out, rc = _resolve_judge("gemma4-12b", REASONING_PARSER="qwen3")
+    assert rc == 0, out
+    assert "REASONING_PARSER=gemma4" in out, "the gemma alias stopped pinning its parser"
+    out, rc = _resolve_judge("9b-ce3", REASONING_PARSER="gemma4")
+    assert "REASONING_PARSER=qwen3" in out, "a CE alias stopped pinning its parser"
