@@ -224,13 +224,13 @@ def test_ce_trained_judge_is_served_from_the_evaluated_checkpoint():
 def test_ce_judge_passes_both_judge_validation_gates():
     # JUDGE is validated twice -- the :? message and the explicit case guard. A value missing
     # from either is rejected before the judge case block ever runs.
-    assert "JUDGE=${JUDGE:?set JUDGE=0.8b|9b|9b-ce|9b-ce2|397b|gemma4-12b}" in RUN_2NODE
-    assert 'case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|397b|gemma4-12b) ;;' in RUN_2NODE
+    assert "JUDGE=${JUDGE:?set JUDGE=0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b}" in RUN_2NODE
+    assert 'case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b) ;;' in RUN_2NODE
     # And an unknown judge still fails fast rather than serving something unintended.
-    guard = ('case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|397b|gemma4-12b) ;; '
+    guard = ('case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|9b-ce3|397b|gemma4-12b) ;; '
              '*) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac')
     assert guard in RUN_2NODE
-    for judge, rc in (("9b-ce", 0), ("9b-ce2", 0), ("9b", 0), ("9b-CE", 2), ("ce", 2), ("", 2)):
+    for judge, rc in (("9b-ce", 0), ("9b-ce2", 0), ("9b-ce3", 0), ("9b", 0), ("9b-CE", 2), ("ce", 2), ("", 2)):
         proc = subprocess.run(
             ["bash", "-c", f'JUDGE="{judge}"\n{guard}\nexit 0'], capture_output=True, text=True
         )
