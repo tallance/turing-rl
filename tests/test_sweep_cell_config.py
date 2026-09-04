@@ -49,6 +49,36 @@ def test_opt_in_gemma_cells_have_proven_serving_shapes():
     assert (gemma31["tp"], gemma31["replicas"], gemma31["concurrency"]) == (8, 1, 4)
 
 
+def test_ce_judge_cells_serve_like_the_zero_shot_9b_they_are_compared_against():
+    """J1/J2 must match J0's serving shape, or the comparison confounds two variables.
+
+    J0 is the zero-shot `qwen35-9b` family cell; J1/J2 are the same backbone after CE
+    training. If the CE cells were served at a different tp/replicas, a difference in their
+    scores could come from sharding rather than from the training the eval is measuring.
+    """
+    j0 = next(c for c in cell_list("qwen3.5") if c["cell_name"] == "qwen35-9b")
+    for name in ("9b-ce", "9b-ce2"):
+        cell = resolve_cell(name)
+        assert (cell["tp"], cell["replicas"]) == (j0["tp"], j0["replicas"]), name
+        assert cell["size_b"] == 9, name
+        assert SIZE_MAP[name] == SIZE_MAP["qwen35-9b"], name
+
+
+def test_ce_judge_cells_point_at_servable_absolute_merges():
+    """Absolute, and the _dense merge -- not the _nopack adapter dir.
+
+    vLLM cannot serve a PEFT adapter directory, and the cell is resolved inside a job whose
+    checkpoints/ is a symlink. Either mistake surfaces only once an 8-GPU cell has been
+    scheduled and the server fails to load, so pin both here.
+    """
+    for name, stem in (("9b-ce", "judge_qwen35_9b_ce_dense"),
+                       ("9b-ce2", "judge_qwen35_9b_ce_iter2_dense")):
+        model_id = resolve_cell(name)["model_id"]
+        assert model_id.startswith("/"), f"{name} must be absolute: {model_id}"
+        assert model_id.endswith(stem), f"{name} -> {model_id}"
+        assert "_nopack" not in model_id, f"{name} points at an adapter dir: {model_id}"
+
+
 def test_unknown_opt_in_cell_fails_loudly():
     with pytest.raises(ValueError, match="unknown extra judge cell"):
         extra_cell("gemma4-99b")

@@ -43,6 +43,35 @@ _EXTRA_CELLS = {
         "quantized": False,
         "concurrency": 4,
     },
+    # The alternating loop's CE judges, served from local merged checkpoints rather than an HF
+    # id. Deliberately the same serving shape as the zero-shot qwen35-9b family cell they are
+    # compared against (9B bf16 fits one 40GB A100), so J0 -> J1 -> J2 differs only by CE
+    # training, not by how the judge is served.
+    #
+    # Absolute paths, matching the JUDGE cases in rl_generator_run_9b.sh: the cell is resolved
+    # inside a job whose checkpoints/ is a symlink, so a repo-relative path would depend on the
+    # child's cwd. Always the _dense merge, never the _nopack adapter dir -- vLLM cannot serve
+    # the latter, and it would fail only after an 8-GPU cell had already been scheduled.
+    "9b-ce": {
+        "cell_name": "9b-ce",
+        "model_id": "/home/lancewicki/projects/turing-rl/checkpoints/sft/judge_qwen35_9b_ce_dense",
+        "tp": 1,
+        "replicas": 8,
+        "size_b": 9,
+        "is_moe": False,
+        "quantized": False,
+        "concurrency": 32,
+    },
+    "9b-ce2": {
+        "cell_name": "9b-ce2",
+        "model_id": "/home/lancewicki/projects/turing-rl/checkpoints/sft/judge_qwen35_9b_ce_iter2_dense",
+        "tp": 1,
+        "replicas": 8,
+        "size_b": 9,
+        "is_moe": False,
+        "quantized": False,
+        "concurrency": 32,
+    },
     "gemma4-31b": {
         "cell_name": "gemma4-31b",
         "model_id": "google/gemma-4-31B-it",
@@ -153,6 +182,9 @@ SIZE_MAP = {
     "qwen35-4b": 4,
     "qwen35-0.8b": 0.8,
     "qwen35-9b": 9,
+    # CE judges: same 9B backbone as qwen35-9b, so they plot at the same x.
+    "9b-ce": 9,
+    "9b-ce2": 9,
     "qwen35-27b": 27,
     "qwen35-35b-a3b": 3,
     "qwen35-122b": 10,  # A10B: 10B active

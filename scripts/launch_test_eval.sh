@@ -183,8 +183,20 @@ if [ "$N_MATCHED" -eq 0 ]; then
   exit 1
 fi
 
-# ---------------- phase 2: judging (serialized, 8 GPUs each) ----------------
+# ---------------- phase 2: judging (8 GPUs each) ----------------
 [ "$DO_JUDGE" = "1" ] || { echo "DO_JUDGE=0: stopping after generation."; exit 0; }
+
+# Chaining each cell behind the last is a CAPACITY guard, not a data dependency: cells only
+# read the same pair parquet, and nothing they write is shared. SERIALIZE_JUDGES=0 submits
+# them all and lets Slurm pack them across nodes, which is the difference between hours and
+# half a day on a multi-generator sweep. Default 1 keeps the 8-GPU budget honest, so existing
+# callers are unchanged. The afterok on the pair build below is a REAL dependency and always
+# applies -- a cell that starts before its pairs exist dies on a missing file.
+SERIALIZE_JUDGES=${SERIALIZE_JUDGES:-1}
+case "$SERIALIZE_JUDGES" in
+  0|1) ;;
+  *) echo "FATAL: SERIALIZE_JUDGES must be 0 or 1, got '$SERIALIZE_JUDGES'" >&2; exit 2 ;;
+esac
 
 PREV=""
 for dep_entry in $BUILD_DEPS; do
@@ -214,7 +226,7 @@ for dep_entry in $BUILD_DEPS; do
       fi
       dep=""
       [ -n "$bjid" ] && dep="afterok:$bjid"
-      [ -n "$PREV" ] && dep="${dep:+$dep,}afterany:$PREV"
+      [ "$SERIALIZE_JUDGES" = "1" ] && [ -n "$PREV" ] && dep="${dep:+$dep,}afterany:$PREV"
       sjid=$(submit "$dep" --gres=gpu:$gpus --job-name=tejudge_${gk}_${cell_name}_${mode} \
         --export=ALL,MODEL=$model_id,TP=$tp,REPLICAS=$replicas,CONCURRENCY=$concurrency,THINKING_MODE=$mode,CELL_NAME=$cell_name,PAIRS=$pairs,SWEEP_ROOT=$sweep_root \
         -- \
