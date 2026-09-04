@@ -31,6 +31,8 @@ JOB_RE = re.compile(r"reward-(\d+)-\d+\.jsonl$")
 KEY_FIELDS = ("user_id", "post_id", "target_idx")
 
 
+from scripts.eval_rl_generator import find_reward_dirs, gen_key_of
+
 def _key(row: dict) -> tuple:
     return tuple(str(row.get(f, "")) for f in KEY_FIELDS)
 
@@ -146,8 +148,8 @@ def main() -> None:
         checks.append((Path(a.reward_dir), Path(a.pairs)))
     elif a.eval_root:
         root = Path(a.eval_root)
-        for reward_dir in sorted(root.glob("raw/*/sweep/*/*/reward")):
-            gen_key = reward_dir.parents[3].name
+        for reward_dir in find_reward_dirs(root):
+            gen_key = gen_key_of(reward_dir)
             pairs = root / "raw" / "pairs" / f"gen_{gen_key}_{a.pairs_tag}.parquet"
             if not pairs.exists():
                 # NOT a silent skip. A scored cell with no matching pair-set means either the

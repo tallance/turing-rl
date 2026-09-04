@@ -82,6 +82,48 @@ def _picked_human(row: dict) -> int | None:
     return int(pick == _human_side(row))
 
 
+def find_reward_dirs(root, cell: str = "*", mode: str = "*") -> list:
+    """Reward dirs under ``root``, for both the flat and prompt-style layouts.
+
+    judge_sweep_cell.sh nests a single_token run one level deeper than a full-schema one:
+
+        raw/<gen_key>/sweep/<cell>/<mode>/reward                 full schema
+        raw/<gen_key>/sweep/<cell>/<mode>/<style>/reward         single_token
+
+    Callers used to glob only the first and index the gen_key at a fixed depth, so a
+    single-token eval was invisible to them -- reporting "no reward dirs" for a sweep that had
+    in fact scored every pair. Matching both, and deriving the gen_key by position relative to
+    ``raw`` rather than by depth, keeps them correct under either layout.
+    """
+    from pathlib import Path
+
+    root = Path(root)
+    seen: dict = {}
+    for pattern in (f"raw/*/sweep/{cell}/{mode}/reward",
+                    f"raw/*/sweep/{cell}/{mode}/*/reward"):
+        for p in root.glob(pattern):
+            seen[p] = None
+    return sorted(seen)
+
+
+def gen_key_of(reward_dir) -> str:
+    """The gen_key owning ``reward_dir``: the path component directly under ``raw``.
+
+    Depth-independent on purpose -- see find_reward_dirs for why a fixed index is wrong.
+    """
+    from pathlib import Path
+
+    parts = Path(reward_dir).resolve().parts
+    try:
+        # Last "raw" wins: an absolute results path may contain the word earlier.
+        raw_at = len(parts) - 1 - parts[::-1].index("raw")
+    except ValueError as exc:
+        raise ValueError(f"{reward_dir} is not under a raw/ directory") from exc
+    if raw_at + 1 >= len(parts):
+        raise ValueError(f"{reward_dir} is not under a raw/ directory")
+    return parts[raw_at + 1]
+
+
 def directional_accuracy(rows: Iterable[dict]) -> dict:
     """Sweep-matched directional accuracy over judge pairs.
 

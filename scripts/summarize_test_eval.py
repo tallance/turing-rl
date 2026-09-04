@@ -27,7 +27,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.eval_rl_generator import directional_accuracy  # noqa: E402
+from scripts.eval_rl_generator import (  # noqa: E402
+    directional_accuracy,
+    find_reward_dirs,
+    gen_key_of,
+)
 
 KEY_FIELDS = ("user_id", "post_id", "target_idx")
 # Display order; anything else found is appended in numeric step order.
@@ -103,7 +107,7 @@ def main() -> None:
     a = ap.parse_args()
 
     root = Path(a.eval_root)
-    found = {p.parents[3].name: p for p in root.glob(f"raw/*/sweep/{a.cell}/{a.mode}/reward")}
+    found = {gen_key_of(p): p for p in find_reward_dirs(root, a.cell, a.mode)}
     if not found:
         raise SystemExit(f"FAIL: no reward dirs under {root}/raw/*/sweep/{a.cell}/{a.mode}")
     order = [k for k in PREFERRED if k in found] + sorted(
