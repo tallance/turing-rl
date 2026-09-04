@@ -23,8 +23,12 @@ import sys
 CLAUDE = "/usr/local/bin/claude"
 
 
-def ask(prompt, model="opus", system=None, timeout=300):
-    """Single-turn, no-tools completion. Returns the model's text."""
+def ask(prompt, model="opus", system=None, timeout=300, full=False):
+    """Single-turn, no-tools completion. Returns the model's text.
+
+    With full=True, returns the whole result envelope instead (adds usage and
+    total_cost_usd, which is the only way to see what a call actually cost).
+    """
     cmd = [
         CLAUDE,
         "--bare",  # skip hooks, plugins, CLAUDE.md: ~3s startup instead of ~28s
@@ -53,7 +57,7 @@ def ask(prompt, model="opus", system=None, timeout=300):
     result = json.loads(proc.stdout)  # banner goes to stderr, JSON to stdout
     if result.get("is_error"):
         raise RuntimeError(f"claude error: {result.get('result')}")
-    return result["result"]
+    return result if full else result["result"]
 
 
 if __name__ == "__main__":
