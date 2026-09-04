@@ -544,6 +544,58 @@ def test_launcher_never_calls_sbatch_directly():
             assert not line.strip().startswith("sbatch ")
 
 
+def test_base_adapter_is_absent_unless_asked_for():
+    # Every pre-iter2 caller trains from BASE. An unset BASE_ADAPTER must leave the arg list
+    # byte-identical, or this change silently alters runs that never opted in.
+    args = _resolve(MODEL="qwen35-9b-judge", VARIANT="bf16_fsdp", DATA="/d.jsonl", OUT="/o")["ARGS"]
+    assert "--base_adapter" not in args
+
+
+def test_base_adapter_is_forwarded_once_when_the_adapter_exists(tmp_path):
+    # Iterative SFT: iter2 continues from iter1's adapter rather than restarting from
+    # Qwen3.5-9B. lora_sft.py merges it into the base, then trains a fresh LoRA on top.
+    adapter = tmp_path / "checkpoint-144"
+    adapter.mkdir()
+    (adapter / "adapter_config.json").write_text("{}")
+    args = _resolve(
+        MODEL="qwen35-9b-judge", VARIANT="bf16_fsdp", DATA="/d.jsonl", OUT="/o",
+        BASE_ADAPTER=str(adapter),
+    )["ARGS"]
+    assert args.count("--base_adapter") == 1
+    assert args[args.index("--base_adapter") + 1] == str(adapter)
+
+
+def test_base_adapter_pointing_at_a_non_adapter_refuses_to_launch(tmp_path):
+    """A wrong path must fail loudly, not train from base.
+
+    This is the failure that has no other detector: training from BASE with iter2's data
+    completes cleanly, produces a plausible judge, and is simply not iteration 2. Nothing
+    downstream would reveal it -- the accuracy would just be a bit different.
+    """
+    empty = tmp_path / "not-an-adapter"
+    empty.mkdir()
+    for bad in (str(empty), str(tmp_path / "does-not-exist")):
+        try:
+            _resolve(MODEL="qwen35-9b-judge", VARIANT="bf16_fsdp", DATA="/d.jsonl",
+                     OUT="/o", BASE_ADAPTER=bad)
+        except ResolveError as exc:
+            assert exc.result.returncode == 2, exc
+            assert "adapter_config.json" in exc.result.stderr
+        else:
+            raise AssertionError(f"BASE_ADAPTER={bad} should have exited 2")
+
+
+def test_ce_train_launcher_forwards_base_adapter_only_when_set():
+    # sft_variant.sh reads BASE_ADAPTER from the job env, so the launcher must put it in
+    # --export. Unset stays unset: sft_variant treats empty as "train from base".
+    text = (ROOT / "scripts" / "launch_judge_ce_train.sh").read_text()
+    assert '[ -n "${BASE_ADAPTER:-}" ] && EXPORTS="$EXPORTS,BASE_ADAPTER=$BASE_ADAPTER"' in text
+    # Slurm splits --export on commas; a comma in the path would truncate the export list.
+    assert "BASE_ADAPTER=$BASE_ADAPTER" in text
+    # The banner records it, so a run that meant to continue is visibly missing the line.
+    assert "continuing from base_adapter=" in text
+
+
 def test_generated_data_never_resolves_through_the_source_snapshot():
     """Inside a job $REPO/data is the immutable source snapshot, where a generated jsonl
     does not exist. Generated datasets come from TURING_RL_GENERATED_DATA_ROOT."""

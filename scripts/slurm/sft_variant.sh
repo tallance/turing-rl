@@ -210,6 +210,22 @@ case "$VARIANT" in
   bf16_fa2)  ARGS+=(--no_qlora --attn_implementation flash_attention_2) ;;
 esac
 
+# Iterative SFT: merge a previous LoRA into the base, then train a FRESH LoRA on top. This
+# is how judge iter2 continues from iter1 instead of restarting from Qwen3.5-9B.
+#
+# The existence check is the whole point. --resume_from_checkpoint auto silently finds
+# nothing when a path is wrong, and a typo'd BASE_ADAPTER would likewise train from BASE --
+# producing a judge that looks entirely plausible, trains cleanly, and is simply not
+# iteration 2. Refuse instead, the same way the frac10 arm refuses a colliding override.
+BASE_ADAPTER=${BASE_ADAPTER:-}
+if [ -n "$BASE_ADAPTER" ]; then
+  [ -f "$BASE_ADAPTER/adapter_config.json" ] || {
+    echo "ERROR: BASE_ADAPTER=$BASE_ADAPTER has no adapter_config.json." >&2
+    echo "       Point it at a PEFT adapter dir (e.g. .../judge_qwen35_9b_ce_nopack/checkpoint-144)." >&2
+    exit 2; }
+  ARGS+=(--base_adapter "$BASE_ADAPTER")
+fi
+
 [ "$SMOKE" = "1" ] && ARGS+=(--exit_after_trainer_build)
 # SMOKE's own cap yields to an explicit MAX_TRAIN_EXAMPLES so --max_train_examples is never
 # passed twice; SMOKE=1 on its own still emits the same 64 it always did.

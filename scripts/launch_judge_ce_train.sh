@@ -73,8 +73,14 @@ EXPORTS="ALL,MODEL=$MODEL,VARIANT=$VARIANT,DATA=$DATA,OUT=$OUT"
 # behaviour rather than receiving an empty string.
 [ -n "${EPOCHS:-}" ] && EXPORTS="$EXPORTS,EPOCHS=$EPOCHS"
 [ -n "${MAX_TRAIN_EXAMPLES:-}" ] && EXPORTS="$EXPORTS,MAX_TRAIN_EXAMPLES=$MAX_TRAIN_EXAMPLES"
+# Iterative SFT (judge iter2+): a previous adapter merged into the base before a fresh LoRA
+# is trained on top. sft_variant.sh refuses a path with no adapter_config.json.
+[ -n "${BASE_ADAPTER:-}" ] && EXPORTS="$EXPORTS,BASE_ADAPTER=$BASE_ADAPTER"
 
 echo "=== judge CE train: model=$MODEL variant=$VARIANT data=$DATA out=$OUT ==="
+# Echoed separately so the ordinary from-base banner is unchanged, and so a run that MEANT
+# to continue from iter1 but lost the env var is visibly missing this line.
+[ -n "${BASE_ADAPTER:-}" ] && echo "=== judge CE train: continuing from base_adapter=$BASE_ADAPTER ==="
 
 if [ "$DRY" = "1" ]; then
   echo "[DRY] $SBATCH --parsable --export=$EXPORTS -- scripts/slurm/sft_variant.sh"
