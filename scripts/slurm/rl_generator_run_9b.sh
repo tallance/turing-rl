@@ -68,9 +68,9 @@ mkdir -p "$WANDB_DIR"
 # Arm-B trainer env (same one rl_generator_train_9b.sh runs in), used for the exit-time sync.
 WANDB_BIN=${WANDB_BIN:-/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/wandb}
 
-JUDGE=${JUDGE:?set JUDGE=0.8b|9b|9b-ce|397b|gemma4-12b}
+JUDGE=${JUDGE:?set JUDGE=0.8b|9b|9b-ce|9b-ce2|397b|gemma4-12b}
 MODE=${MODE:?set MODE=overfit|full|epoch1|full5|frac10ep3|frac10ep10|frac10ep20}
-case "$JUDGE" in 0.8b|9b|9b-ce|397b|gemma4-12b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
+case "$JUDGE" in 0.8b|9b|9b-ce|9b-ce2|397b|gemma4-12b) ;; *) echo "bad JUDGE=$JUDGE" >&2; exit 2 ;; esac
 case "$MODE" in overfit|full|epoch1|full5|frac10ep3|frac10ep10|frac10ep20) ;; *) echo "bad MODE=$MODE" >&2; exit 2 ;; esac
 # Serving shape per judge. TP x DP is always 8 (one node): a model whose bf16 footprint fits
 # one 40GB A100 with KV/CUDA-graph headroom runs TP=1 across 8 replicas for throughput,
@@ -89,6 +89,11 @@ case "$JUDGE" in
   0.8b)      JUDGE_MODEL=Qwen/Qwen3.5-0.8B;                TP=1; DP=8; REASONING_PARSER=qwen3  ;;
   9b)        JUDGE_MODEL=Qwen/Qwen3.5-9B;                  TP=1; DP=8; REASONING_PARSER=qwen3  ;;
   9b-ce)     JUDGE_MODEL=/home/lancewicki/projects/turing-rl/checkpoints/sft/judge_qwen35_9b_ce_dense
+             TP=1; DP=8; REASONING_PARSER=qwen3  ;;
+  # Round 2 of the alternating loop: iter1 continued (--base_adapter) on generations from
+  # the RL generator, slice [0.2,0.3), sampled at T=1.0 to match the GRPO rollouts rather
+  # than the T=0.7 that made iter1 largely a decoding-entropy detector.
+  9b-ce2)    JUDGE_MODEL=/home/lancewicki/projects/turing-rl/checkpoints/sft/judge_qwen35_9b_ce_iter2_dense
              TP=1; DP=8; REASONING_PARSER=qwen3  ;;
   397b)      JUDGE_MODEL=Qwen/Qwen3.5-397B-A17B-GPTQ-Int4; TP=8; DP=1; REASONING_PARSER=qwen3  ;;
   gemma4-12b) JUDGE_MODEL=google/gemma-4-12B-it;           TP=1; DP=8; REASONING_PARSER=gemma4 ;;
