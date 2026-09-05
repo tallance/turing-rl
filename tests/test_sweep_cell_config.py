@@ -61,7 +61,7 @@ def test_ce_judge_cells_serve_like_the_zero_shot_9b_they_are_compared_against():
     scores could come from sharding rather than from the training the eval is measuring.
     """
     j0 = next(c for c in cell_list("qwen3.5") if c["cell_name"] == "qwen35-9b")
-    for name in ("9b-ce", "9b-ce2", "9b-ce3"):
+    for name in ("9b-ce", "9b-ce2", "9b-ce3", "9b-ce4"):
         cell = resolve_cell(name)
         assert (cell["tp"], cell["replicas"]) == (j0["tp"], j0["replicas"]), name
         assert cell["size_b"] == 9, name
@@ -77,7 +77,8 @@ def test_ce_judge_cells_point_at_servable_absolute_merges():
     """
     for name, stem in (("9b-ce", "judge_qwen35_9b_ce_dense"),
                        ("9b-ce2", "judge_qwen35_9b_ce_iter2_dense"),
-                       ("9b-ce3", "judge_qwen35_9b_ce_iter3_dense")):
+                       ("9b-ce3", "judge_qwen35_9b_ce_iter3_dense"),
+                       ("9b-ce4", "judge_qwen35_9b_ce_iter4_dense")):
         model_id = resolve_cell(name)["model_id"]
         assert model_id.startswith("/"), f"{name} must be absolute: {model_id}"
         assert model_id.endswith(stem), f"{name} -> {model_id}"
@@ -93,7 +94,7 @@ def test_every_opt_in_cell_is_reachable_from_the_launcher():
     from configs.judge_sweep_cells import extra_cell_names
 
     names = extra_cell_names()
-    for required in ("9b-ce", "9b-ce2", "9b-ce3", "gemma4-12b", "gemma4-31b"):
+    for required in ("9b-ce", "9b-ce2", "9b-ce3", "9b-ce4", "gemma4-12b", "gemma4-31b"):
         assert required in names, required
     # Enumerable, not a fixed list: every name must actually resolve.
     for name in names:
