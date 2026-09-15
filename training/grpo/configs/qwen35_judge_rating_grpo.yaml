@@ -11,23 +11,25 @@ defaults:
   - _self_
 
 data:
-  # DERIVED from the parent's measurement, not guessed, and not yet confirmed on real data.
+  # MEASURED with the real Qwen3.5 tokenizer on the rating_iter1 corpus (jobs 23068/23069,
+  # scripts/measure_prompt_tokens.py):
   #
-  #   full-schema measured max prompt              10535 tokens  (parent config, Qwen3.5 tokenizer)
-  #   rubric dropped by rating_only                19256 chars  = ~4937 est tokens
-  #   projected rating_only max prompt             ~5598 tokens
-  #   allowance here                                6144 tokens  (+546, inside the parent's
-  #                                                               "measured max + 1024" rule)
+  #            n     p50    p95    p99    max
+  #   train  3328   2154   3840   4935   5375
+  #   val    1410   2108   4144   4923   5866
   #
-  # The ~4937 is a chars/3.9 estimate, so CONFIRM IT before the first real submit: the pair
-  # builder writes prompt_tokens_est_max and n_over_budget into the parquet's sibling .meta.json,
-  # and n_over_budget must be 0. filter_overlong_prompts is true in the parent and drops
-  # over-budget rows from train AND val silently, which biases the corpus toward short-history
-  # users without failing anything.
+  # Both splits matter -- data.val_files is loaded by this same config, and val is the longer one.
+  # 6656 clears the combined 5866 by 790, matching the parent's own slack (11264 over a measured
+  # 10535, i.e. 729). filter_overlong_prompts is true in the parent and drops over-budget rows
+  # from train AND val silently, biasing the corpus toward short-history users without failing.
   #
-  # Re-measure per slice, exactly as the parent instructs: the observed maximum grows with sample
-  # size (it rose 10% when the parent's sample went from 416 to 1,121 contexts).
-  max_prompt_length: 6144
+  # Do NOT set this from the .meta.json's prompt_tokens_est_max: that is chars/3.9 and over-counted
+  # this corpus by ~1.3x (est 7807 against a real 5866). Its n_over_budget field is also computed
+  # against the builder's PROMPT_BUDGET_TOKENS (default 10240), not against this key, so it does
+  # not gate this value unless the pair job passes PROMPT_BUDGET_TOKENS to match.
+  #
+  # Re-measure per slice, as the parent instructs: the observed maximum grows with sample size.
+  max_prompt_length: 6656
 
 actor_rollout_ref:
   rollout:
@@ -39,4 +41,4 @@ actor_rollout_ref:
     #
     # Held as a literal because OmegaConf cannot do arithmetic; the parent holds 22016 the same
     # way. The test is what keeps the two from drifting.
-    max_model_len: 16896
+    max_model_len: 17408

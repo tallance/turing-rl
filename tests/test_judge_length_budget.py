@@ -219,25 +219,25 @@ def test_rating_config_keeps_the_parent_response_budget():
     assert _composed_rating_config()["data"]["max_response_length"] == 10752
 
 
-def test_rating_prompt_allowance_matches_the_dropped_rubric():
-    """The allowance is derived from the parent's measured maximum minus the rubric it drops.
+def test_rating_prompt_allowance_covers_the_measured_corpus():
+    """Real Qwen3.5 tokenizer maxima on rating_iter1 (jobs 23068/23069): train 5375, val 5866.
 
-    Recomputed here from the live prompt text, so shortening or growing the rating_only tail
-    without revisiting the budget fails rather than silently truncating prompts (or silently
-    eating generation room).
+    val is the binding one and is loaded by the same config as train, so the allowance must
+    clear 5866 -- filter_overlong_prompts drops over-budget rows from both splits silently.
+
+    Bounded above as well, on the parent's reasoning: prompt and response share max_model_len,
+    so unused prompt allowance is taken out of generation.
+
+    This replaced a chars/3.9 PROJECTION, which put the maximum at ~5598 and was wrong in both
+    directions -- the same estimator called the real 5866 maximum 7807.
     """
-    from shared.judge_prompts import _RATING_ONLY_TAIL, _TURING_PROMPT_TAIL
-
-    chars_per_token = 3.9  # scripts/build_judge_train_pairs.CHARS_PER_TOKEN_ESTIMATE
-    measured_full_max = 10535
-    dropped = (len(_TURING_PROMPT_TAIL) - len(_RATING_ONLY_TAIL)) / chars_per_token
-    projected = measured_full_max - dropped
+    measured_combined_max = 5866
 
     allowance = _composed_rating_config()["data"]["max_prompt_length"]
 
-    assert allowance > projected, "prompts would be truncated"
-    assert allowance <= projected + 1024, (
-        "allowance exceeds the projected corpus by more than the parent's safety margin"
+    assert allowance > measured_combined_max, "prompts would be truncated"
+    assert allowance <= measured_combined_max + 1024, (
+        "allowance exceeds the measured corpus by more than the parent's safety margin"
     )
 
 
