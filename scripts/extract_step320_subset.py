@@ -23,16 +23,26 @@ import os
 import random
 import sys
 
-ROOT = os.environ.get(
-    "STEP320_ROOT",
+EVAL_ROOT = os.environ.get(
+    "EVAL_ROOT",
     "/home/lancewicki/projects/turing-rl/results/"
-    "2026-08-10-test-eval-9b-full5ep-full-schema/raw/9b-full5ep-step320/sweep",
+    "2026-08-10-test-eval-9b-full5ep-full-schema",
 )
+GEN_KEY = os.environ.get("GEN_KEY", "9b-full5ep-step320")
+ROOT = os.environ.get("STEP320_ROOT", "%s/raw/%s/sweep" % (EVAL_ROOT, GEN_KEY))
+# JSON list of [user_id, post_id, target_idx] triples. Set it to score a later
+# checkpoint on the SAME pairs as an earlier one: the trajectory is then paired,
+# so a change between checkpoints cannot be a change of sample. Without it the
+# keys are sampled fresh from this checkpoint.
+KEYS_JSON = os.environ.get("KEYS_JSON")
 CELLS = ["qwen35-4b", "qwen35-9b", "qwen35-27b", "gemma4-12b", "gemma4-31b"]
-# The judge the GRPO run was trained against: its stored prompt is the canonical
-# one to replay. (qwen35-4b dumps judge_prompt as null, so it cannot be the
-# source; the other four store byte-identical prompts -- asserted below.)
-PROMPT_CELL = "qwen35-9b"
+# Which cell to lift the replayed prompt from, in preference order. No single
+# cell records one for every pair and which cells do varies by checkpoint
+# (at step 320 qwen35-4b stores none; at step 0 it stores all 880 while
+# qwen35-9b misses 10). Since every cell that records a prompt records a
+# byte-identical one -- asserted below, per pair -- taking the first available
+# is safe, and preferring the trained-against judge keeps it stable where it can.
+PROMPT_CELLS = ["qwen35-9b", "qwen35-27b", "gemma4-31b", "gemma4-12b", "qwen35-4b"]
 MODE = "on"
 N_SAMPLE = int(os.environ.get("N_SAMPLE", "100"))
 EXPECT_PAIRS = int(os.environ.get("EXPECT_PAIRS", "880"))
@@ -100,7 +110,8 @@ def main():
     #     this is what makes the judges comparable at all;
     #   * judge_prompt identical in every cell that records one. qwen35-4b dumps
     #     it as null, so it is exempted by presence, not by name.
-    no_prompt = set()
+    no_prompt = {}
+    prompt_from = {}
     for k in base:
         ref = per_cell[CELLS[0]][k]
         for cell in CELLS[1:]:
@@ -110,36 +121,49 @@ def main():
                     raise SystemExit("FAIL: %s differs on %s for pair %s"
                                      % (cell, field, k))
         prompts = {c: per_cell[c][k].get("judge_prompt") for c in CELLS}
-        no_prompt |= {c for c, p in prompts.items() if not p}
+        for c, p in prompts.items():
+            if not p:
+                no_prompt[c] = no_prompt.get(c, 0) + 1
         distinct = {p for p in prompts.values() if p}
         if len(distinct) > 1:
             raise SystemExit("FAIL: %d distinct judge_prompt values for pair %s "
                              "across cells that record one" % (len(distinct), k))
-        if not prompts.get(PROMPT_CELL):
-            raise SystemExit("FAIL: %s has no judge_prompt for pair %s"
-                             % (PROMPT_CELL, k))
+        src = next((c for c in PROMPT_CELLS if prompts.get(c)), None)
+        if src is None:
+            raise SystemExit("FAIL: no cell recorded a judge_prompt for pair %s" % (k,))
+        prompt_from[k] = src
     sys.stderr.write(
-        "cross-cell check OK on all %d pairs: identical generated_is_b, response "
-        "and ground_truth; identical judge_prompt across the %d cells that record "
-        "one (no judge_prompt: %s)\n"
-        % (len(base), len(CELLS) - len(no_prompt), ", ".join(sorted(no_prompt)) or "none"))
+        "cross-cell check OK on all %d pairs: identical generated_is_b, response and "
+        "ground_truth; every pair has a judge_prompt and all cells recording one agree. "
+        "Missing-prompt rows per cell: %s\n"
+        % (len(base), ", ".join("%s=%d" % (c, n) for c, n in sorted(no_prompt.items())) or "none"))
 
-    if N_SAMPLE >= len(base):
+    if KEYS_JSON:
+        chosen = [tuple(str(x) for x in k) for k in json.loads(KEYS_JSON)]
+        missing = [k for k in chosen if k not in base]
+        if missing:
+            raise SystemExit("FAIL: %d requested keys are absent from %s, e.g. %s"
+                             % (len(missing), GEN_KEY, missing[0]))
+        source = "KEYS_JSON"
+    elif N_SAMPLE >= len(base):
         chosen = sorted(base)
+        source = "all"
     else:
         chosen = random.Random(SEED).sample(sorted(base), N_SAMPLE)
+        source = "seed=%d" % SEED
     digest = hashlib.sha256(
         json.dumps(sorted(chosen)).encode()).hexdigest()
-    sys.stderr.write("selected %d pairs, seed=%d, sorted-key-list sha256=%s\n"
-                     % (len(chosen), SEED, digest))
+    sys.stderr.write("%s: selected %d pairs (%s), sorted-key-list sha256=%s\n"
+                     % (GEN_KEY, len(chosen), source, digest))
 
     for k in chosen:
-        ref = per_cell[PROMPT_CELL][k]
+        ref = per_cell[prompt_from[k]][k]
         out = {f: ref.get(f) for f in KEY_FIELDS}
         fields = ("generated_is_b",) if SLIM else PAIR_FIELDS
         out.update({f: ref.get(f) for f in fields})
         if not SLIM:
-            out["prompt_source_cell"] = PROMPT_CELL
+            out["prompt_source_cell"] = prompt_from[k]
+            out["gen_key"] = GEN_KEY
         out["incumbent"] = {
             cell: {f: per_cell[cell][k].get(f) for f in RATING_FIELDS}
             for cell in CELLS
