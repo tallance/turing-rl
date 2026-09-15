@@ -202,3 +202,60 @@ def test_both_orientations_are_represented_in_the_real_data():
     # A flip bug is invisible if every pair happens to sit on one side.
     gib = [rec["generated_is_b"] for rec in _slim_rows()]
     assert 0.4 < sum(gib) / len(gib) < 0.6
+
+
+# --------------------------------------------------------------------------
+# Plot: the point-judge channel must not have weakened the curve guards
+# --------------------------------------------------------------------------
+
+PLOT = REPO_ROOT / "scripts" / "plot_test_eval_judges.py"
+FROZEN_PLOT_DIR = PUBLISHED / "plot"
+
+
+def _run_plot(eval_root, out_dir, *extra):
+    return subprocess.run(
+        [sys.executable, str(PLOT), "--eval_root", str(eval_root),
+         "--out_dir", str(out_dir), "--stem", "t", *extra],
+        capture_output=True, text=True,
+        # plotstyle.py is a sibling of the frozen script, imported by bare name.
+        env={**__import__("os").environ, "PYTHONPATH": str(FROZEN_PLOT_DIR)},
+    )
+
+
+@needs_data
+def test_original_five_judge_figure_still_renders(tmp_path):
+    proc = _run_plot(PUBLISHED, tmp_path)
+    assert proc.returncode == 0, proc.stderr
+    assert (tmp_path / "t.png").is_file()
+
+
+@needs_data
+def test_pair_count_guard_still_fires_for_a_curve_judge(tmp_path):
+    # The risk of adding point judges is weakening this guard so the new markers
+    # fit, which would let a genuinely incomparable CURVE through later. Feed a
+    # mismatched pair count through the normal curve path and require a failure.
+    for cell in CELLS:
+        rows = list(csv.DictReader(open(PUBLISHED / f"summary_{cell}.csv")))
+        if cell == "gemma4-31b":
+            rows[-1]["n_scored"] = "100"
+        with open(tmp_path / f"summary_{cell}.csv", "w", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=list(rows[0]))
+            w.writeheader()
+            w.writerows(rows)
+    proc = _run_plot(tmp_path, tmp_path)
+    assert proc.returncode != 0
+    assert "different pair counts" in proc.stderr
+
+
+@needs_data
+def test_point_judge_is_exempt_and_disclosed(tmp_path):
+    for cell in CELLS:
+        (tmp_path / f"summary_{cell}.csv").write_text(
+            (PUBLISHED / f"summary_{cell}.csv").read_text())
+    # A single-checkpoint, 100-pair cell: rejected as a curve, fine as a point.
+    (tmp_path / "summary_claude-opus-5.csv").write_text(
+        "checkpoint,n_scored,likert_mean,win_rate_ge5\n"
+        f"{GEN_KEY},100,3.2,0.27\n")
+    proc = _run_plot(tmp_path, tmp_path, "--point_cell", "claude-opus-5")
+    assert proc.returncode == 0, proc.stderr
+    assert (tmp_path / "t.png").is_file()
