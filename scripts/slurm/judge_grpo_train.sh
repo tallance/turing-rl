@@ -98,6 +98,21 @@ OVR=(
   # ~494 blocks of cache at util 0.70 -> ~26 fit. Raising it directly cuts generation time,
   # which was ~45% of every R0 step.
   actor_rollout_ref.rollout.max_num_seqs=${JUDGE_MAX_NUM_SEQS:-16}
+  # Prompt budget, and the engine window DERIVED from it. Default 11264 is the yaml's value, so
+  # an unset knob changes nothing.
+  #
+  # This is a knob rather than a second config file because the right value is a property of
+  # the SLICE, not of the experiment: the yaml says to re-measure it per slice from the pair
+  # builder's .meta.json, and a child config pinning one measurement would go stale silently
+  # while still looking authoritative. A rating_only corpus runs far shorter than a full-schema
+  # one -- the rubric is ~5k tokens of every full-schema prompt and rating_only drops it -- so
+  # this is expected to be set well below the default there.
+  #
+  # max_model_len is computed, never passed separately. The two must agree, and the yaml already
+  # records what happens when a pair like this is held in two places: response_length and
+  # max_response_length disagreed and a run generated at the old cap while looking correct.
+  data.max_prompt_length=${JUDGE_MAX_PROMPT_LEN:-11264}
+  actor_rollout_ref.rollout.max_model_len=$(( ${JUDGE_MAX_PROMPT_LEN:-11264} + 10752 ))
   data.train_files="$TRAIN_FILE"
   data.val_files="$VAL_FILE"
   trainer.default_local_dir="$CKPT_DIR"

@@ -58,7 +58,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-PROMPT_STYLES = ("full", "single_token")
+PROMPT_STYLES = ("full", "single_token", "rating_only")
 
 
 def resolve_prompt_style(raw: str | None = None) -> str:
@@ -117,6 +117,13 @@ def cell_env(
         env.pop("PERSONA_JUDGE_JSON_SCHEMA")
         env["PERSONA_JUDGE_MAX_COMPLETION_TOKENS"] = "1"
         env["PERSONA_JUDGE_ENABLE_THINKING"] = "0"
+    if style == "rating_only":
+        # Only the schema is dropped. The 37-field schema would force a body this judge was
+        # never trained to emit; `{"type":"json_object"}` (what reward.py falls back to) is
+        # the right constraint for a one-field answer. Thinking and the token budget are left
+        # exactly as `mode` asked for -- unlike single_token, nothing is pinned in code here,
+        # so both thinking modes are honest configurations.
+        env.pop("PERSONA_JUDGE_JSON_SCHEMA")
     return env
 
 

@@ -117,17 +117,23 @@ case "$JUDGE" in
              JUDGE_MODEL=$JUDGE; TP=1; DP=8; REASONING_PARSER=${REASONING_PARSER:-qwen3} ;;
 esac
 
-# Judge protocol: "full" (37-field JSON verdict) or "single_token" (one A/B token, verdict
-# read from logprobs). Single-token decodes ONE token with thinking off, so there is no
-# <think> block: clear the parser (judge_serve_9b_replicas.sh omits the flag when empty,
-# matching judge_sweep_cell.sh, which only adds one for thinking-on cells) and turn thinking
-# off for the reward path too. The scorer pins enable_thinking=False in code regardless, but
-# leaving the env at 1 here would misreport what the run did.
+# Judge protocol: "full" (37-field JSON verdict), "single_token" (one A/B token, verdict read
+# from logprobs), or "rating_only" (a 1-7 rating, thinking on).
+#
+# Single-token decodes ONE token with thinking off, so there is no <think> block: clear the
+# parser (judge_serve_9b_replicas.sh omits the flag when empty, matching judge_sweep_cell.sh,
+# which only adds one for thinking-on cells) and turn thinking off for the reward path too.
+# The scorer pins enable_thinking=False in code regardless, but leaving the env at 1 here
+# would misreport what the run did.
+#
+# rating_only deliberately takes NO arm of its own: it reasons and returns JSON exactly like
+# the full style, so it wants the family's reasoning parser and thinking left on. Giving it a
+# branch here would be a second place to keep in sync with no difference to express.
 JUDGE_PROMPT_STYLE=${JUDGE_PROMPT_STYLE:-full}
 case "$JUDGE_PROMPT_STYLE" in
-  full) ;;
+  full|rating_only) ;;
   single_token) REASONING_PARSER=""; PERSONA_JUDGE_ENABLE_THINKING=0 ;;
-  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token, got '$JUDGE_PROMPT_STYLE'" >&2
+  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token|rating_only, got '$JUDGE_PROMPT_STYLE'" >&2
      exit 2 ;;
 esac
 

@@ -63,6 +63,29 @@ export GEN_TOP_P=${GEN_TOP_P:-0.8}
 export GEN_TOP_K=${GEN_TOP_K:-20}
 export GEN_MAX_TOKENS=${GEN_MAX_TOKENS:-1024}
 
+# Opt-in second sampling temperature. Set it and GEN_NUM splits evenly across GEN_TEMPERATURE
+# and GEN_TEMPERATURE_B (two generation passes, two pickles, merged by the builder), so one
+# judge-training set contains fake turns drawn at BOTH the eval temperature and the generator's
+# training temperature. Unset -- the default -- leaves the single-pass path byte-identical,
+# which the already-running single-token/CE flow depends on.
+GEN_TEMPERATURE_B=${GEN_TEMPERATURE_B:-}
+MIX_TEMPERATURES=0
+if [ -n "$GEN_TEMPERATURE_B" ]; then
+  if [ "$SPLIT" = val ]; then
+    # val is pinned to GEN_NUM=1 above, so there is nothing to split. Ignored loudly rather
+    # than silently, and NOT an error: passing the same env block to both splits is normal.
+    echo "=== NOTE: GEN_TEMPERATURE_B ignored for SPLIT=val (GEN_NUM is pinned to 1) ==="
+  elif [ $((GEN_NUM % 2)) -ne 0 ]; then
+    echo "ERROR: GEN_TEMPERATURE_B needs an even GEN_NUM to split; got GEN_NUM=$GEN_NUM." >&2
+    echo "       Refusing rather than rounding: an odd split would silently weight one" >&2
+    echo "       temperature more than the other in every downstream accuracy number." >&2
+    exit 2
+  else
+    MIX_TEMPERATURES=1
+    GEN_NUM_PER_TEMP=$((GEN_NUM / 2))
+  fi
+fi
+
 # Two independent directories, derived separately on purpose. Generation inputs/outputs live
 # in a raw/ dir; the builder's parquet lands in OUT_DIR. In generate mode the raw dir sits
 # under this run's own OUT_DIR. In reuse mode it does NOT: a single_token build writes to
@@ -80,20 +103,34 @@ if [ "$REUSE_GENERATIONS" = 1 ]; then
 else
   RAW_DIR=$OUT_DIR/raw
 fi
-PKL=$RAW_DIR/${SPLIT}_generations.pkl
+# One pickle per sampling temperature. The single-temperature filename is UNCHANGED, so every
+# existing raw dir stays reusable; a mixed run writes temperature-suffixed names beside it
+# rather than overloading the old name with a different meaning.
+if [ "$MIX_TEMPERATURES" = 1 ]; then
+  PKLS=("$RAW_DIR/${SPLIT}_generations_t${GEN_TEMPERATURE}.pkl"
+        "$RAW_DIR/${SPLIT}_generations_t${GEN_TEMPERATURE_B}.pkl")
+  TEMPS=("$GEN_TEMPERATURE" "$GEN_TEMPERATURE_B")
+else
+  PKLS=("$RAW_DIR/${SPLIT}_generations.pkl")
+  TEMPS=("$GEN_TEMPERATURE")
+fi
 SLICED_PARQUET=$RAW_DIR/${SPLIT}_source_slice.parquet
 mkdir -p "$OUT_DIR"
 [ "$REUSE_GENERATIONS" = 1 ] || mkdir -p "$RAW_DIR"
 
 echo "=== judge gen: split=$SPLIT slice=[$SLICE_LO,$SLICE_HI) limit=$LIMIT k=$GEN_NUM style=$PROMPT_STYLE ==="
-echo "=== model=$MERGED_EP3 sampling T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
+if [ "$MIX_TEMPERATURES" = 1 ]; then
+  echo "=== model=$MERGED_EP3 sampling T=${TEMPS[*]} (k=$GEN_NUM_PER_TEMP each) top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
+else
+  echo "=== model=$MERGED_EP3 sampling T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
+fi
 if [ "$REUSE_GENERATIONS" = 1 ]; then
   echo "=== generations: REUSE existing (slice and GPU generation skipped) ==="
 else
   echo "=== generations: GENERATE fresh (slice, then vLLM sampling) ==="
 fi
 echo "=== generations dir: $RAW_DIR ==="
-echo "===   pickle:        $PKL ==="
+echo "===   pickle(s):     ${PKLS[*]} ==="
 echo "===   sliced source: $SLICED_PARQUET ==="
 echo "=== builder out dir: $OUT_DIR ==="
 
@@ -106,7 +143,9 @@ if [ "$REUSE_GENERATIONS" = 1 ]; then
   # the ones the already-trained judges were built on -- the confound reuse exists to avoid --
   # and would burn a GPU node doing it.
   rc=0
-  [ -f "$PKL" ] || { echo "ERROR: REUSE_GENERATIONS=1 but no generations pickle at $PKL" >&2; rc=3; }
+  for pkl in "${PKLS[@]}"; do
+    [ -f "$pkl" ] || { echo "ERROR: REUSE_GENERATIONS=1 but no generations pickle at $pkl" >&2; rc=3; }
+  done
   [ -f "$SLICED_PARQUET" ] || { echo "ERROR: REUSE_GENERATIONS=1 but no sliced source at $SLICED_PARQUET" >&2; rc=3; }
   [ "$rc" -eq 0 ] || exit "$rc"
 else
@@ -119,21 +158,38 @@ else
     --source_parquet "$SOURCE_PARQUET" --out "$SLICED_PARQUET" \
     --slice_lo "$SLICE_LO" --slice_hi "$SLICE_HI" "${LIMIT_ARG[@]}" || exit 3
 
-  $PY -u -m eval.generate_trained --base_model --model_id "$MERGED_EP3" \
-    --test_parquet "$SLICED_PARQUET" --output "$PKL" --gen_num "$GEN_NUM" \
-    --temperature "$GEN_TEMPERATURE" --top_p "$GEN_TOP_P" --top_k "$GEN_TOP_K" \
-    --max_tokens "$GEN_MAX_TOKENS" --backend vllm \
-    --vllm_max_model_len "${GEN_MAX_MODEL_LEN:-13524}" \
-    --vllm_truncate_prompt_tokens "${GEN_TRUNCATE_PROMPT_TOKENS:-12500}" || exit 3
+  # One pass per temperature. Sequential rather than one call with a temperature list:
+  # generate_trained takes a single --temperature, and a second pass costs one extra model
+  # load on an already-short job.
+  for i in "${!PKLS[@]}"; do
+    k=${GEN_NUM_PER_TEMP:-$GEN_NUM}
+    echo "=== generation pass $((i + 1))/${#PKLS[@]}: T=${TEMPS[$i]} k=$k -> ${PKLS[$i]} ==="
+    $PY -u -m eval.generate_trained --base_model --model_id "$MERGED_EP3" \
+      --test_parquet "$SLICED_PARQUET" --output "${PKLS[$i]}" --gen_num "$k" \
+      --temperature "${TEMPS[$i]}" --top_p "$GEN_TOP_P" --top_k "$GEN_TOP_K" \
+      --max_tokens "$GEN_MAX_TOKENS" --backend vllm \
+      --vllm_max_model_len "${GEN_MAX_MODEL_LEN:-13524}" \
+      --vllm_truncate_prompt_tokens "${GEN_TRUNCATE_PROMPT_TOKENS:-12500}" || exit 3
+  done
 fi
 
 # Same file, same bounds: select_slice on an already-sliced frame is a no-op, so the
 # builder's `assert not missing` still checks that every kept context has generations.
 # PROMPT_BUDGET_TOKENS must track data.max_prompt_length in qwen35_judge_grpo.yaml -- the
 # emitted .meta.json is what that value has to be chosen from.
+
+# --gen_temperature is passed only when mixing: stamping it unconditionally would add a column
+# to the single-temperature path that the running single-token/CE flow does not expect.
+#
+# A plain string, not an array, and expanded unquoted: bash 3.2 (macOS, where the tests run)
+# cannot expand an EMPTY array under `set -u`, which is why LIMIT_ARG above is only ever
+# built non-empty. Temperatures are bare numbers, so word-splitting is exactly what is wanted.
+TEMP_ARG=""
+[ "$MIX_TEMPERATURES" = 1 ] && TEMP_ARG="--gen_temperature ${TEMPS[*]}"
+
 $PY -u scripts/build_judge_train_pairs.py \
-  --inference_pkl "$PKL" --source_parquet "$SLICED_PARQUET" \
+  --inference_pkl "${PKLS[@]}" --source_parquet "$SLICED_PARQUET" \
   --out "$OUT_DIR/$SPLIT.parquet" \
   --prompt_budget_tokens "${PROMPT_BUDGET_TOKENS:-10240}" \
   --slice_lo "$SLICE_LO" --slice_hi "$SLICE_HI" --split "$SPLIT" \
-  --prompt-style "$PROMPT_STYLE" "${LIMIT_ARG[@]}"
+  --prompt-style "$PROMPT_STYLE" $TEMP_ARG "${LIMIT_ARG[@]}"

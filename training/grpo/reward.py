@@ -31,7 +31,11 @@ from shared.api_client import (
     post_chat_async,
     resolve_judge_api_key,
 )
-from shared.judge_prompts import TURING_PROMPT, TURING_RESPONSE_SCHEMA
+from shared.judge_prompts import (
+    TURING_PROMPT,
+    TURING_RATING_ONLY_PROMPT,
+    TURING_RESPONSE_SCHEMA,
+)
 from training.grpo.single_token_reward import score_turing_single_token_with_info
 from shared.judge_utils import (
     _coerce_turing_rating,
@@ -267,7 +271,18 @@ def build_logprob_reward_result(
 
 PROMPT_STYLE_FULL = "full"
 PROMPT_STYLE_SINGLE_TOKEN = "single_token"
-PROMPT_STYLES = (PROMPT_STYLE_FULL, PROMPT_STYLE_SINGLE_TOKEN)
+# Same inputs as single_token, but thinking ON and a 1-7 rating instead of one letter. It scores
+# through the FULL arm below, not the single-token one: the answer is a rating, so the existing
+# Likert path already handles it end to end.
+PROMPT_STYLE_RATING_ONLY = "rating_only"
+PROMPT_STYLES = (PROMPT_STYLE_FULL, PROMPT_STYLE_SINGLE_TOKEN, PROMPT_STYLE_RATING_ONLY)
+
+# Which template each style sends. single_token is absent on purpose: that style never reaches
+# score_turing_with_info, it is dispatched to single_token_reward.py before this map is read.
+_JUDGE_PROMPT_TEMPLATES = {
+    PROMPT_STYLE_FULL: TURING_PROMPT,
+    PROMPT_STYLE_RATING_ONLY: TURING_RATING_ONLY_PROMPT,
+}
 
 
 def resolve_judge_prompt_style() -> str:
@@ -900,7 +915,12 @@ async def score_turing_with_info(
     target_idx: Any = "",
     randomization_seed_material: str = "",
 ) -> dict[str, Any]:
-    """Turing test with judge-returned source-copy metadata."""
+    """Turing test with judge-returned source-copy metadata.
+
+    The template follows JUDGE_PROMPT_STYLE. Only the prompt changes: a rating_only judge
+    answers `{"rating": N}`, and the parser below already prefers an explicit `rating` field
+    when no dimension fields are present, so the scoring path is shared rather than forked.
+    """
     return await _score_pairwise_likert_with_info(
         session,
         api_key,
@@ -908,7 +928,7 @@ async def score_turing_with_info(
         ground_truth,
         user_history,
         context,
-        prompt_template=TURING_PROMPT,
+        prompt_template=_JUDGE_PROMPT_TEMPLATES[resolve_judge_prompt_style()],
         calibration_domain=calibration_domain,
         user_id=user_id,
         post_id=post_id,

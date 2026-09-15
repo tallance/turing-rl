@@ -28,8 +28,8 @@ done
 case "$THINKING_MODE" in on|off) ;; *) echo "ERROR: THINKING_MODE must be on|off" >&2; exit 2 ;; esac
 JUDGE_PROMPT_STYLE=${JUDGE_PROMPT_STYLE:-full}
 case "$JUDGE_PROMPT_STYLE" in
-  full|single_token) ;;
-  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token, got '$JUDGE_PROMPT_STYLE'" >&2; exit 2 ;;
+  full|single_token|rating_only) ;;
+  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token|rating_only, got '$JUDGE_PROMPT_STYLE'" >&2; exit 2 ;;
 esac
 # --- BEGIN style-mode guard ---
 # Also enforced in launch_judge_eval_matrix.sh, and deliberately duplicated here: a single
@@ -40,6 +40,11 @@ esac
 # thinking_mode=on into timing.json and run_metadata.json for a thinking-off request.
 # Rejected rather than silently rewritten -- an altered submission is as hard to notice as
 # the mislabel it fixes. tests/test_judge_sweep_cell_paths.py executes this block.
+#
+# Scoped to single_token, NOT to every non-full style. The guard exists because that scorer
+# pins enable_thinking=False in CODE, so the env cannot be believed. rating_only has no such
+# pin -- it honours THINKING_MODE -- so both modes are real configurations there and running
+# it thinking-off is a legitimate ablation, not a mislabel.
 if [ "$JUDGE_PROMPT_STYLE" = "single_token" ] && [ "$THINKING_MODE" != "off" ]; then
   echo "ERROR: JUDGE_PROMPT_STYLE=single_token requires THINKING_MODE=off, got THINKING_MODE=$THINKING_MODE" >&2
   echo "       The single-token judge always serves with thinking disabled, so every" >&2

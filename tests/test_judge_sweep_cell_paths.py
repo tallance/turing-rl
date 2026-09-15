@@ -90,7 +90,7 @@ def _mode_dir(sweep_root: str, cell: str, mode: str, style: str) -> str:
     return result.stdout
 
 
-@pytest.mark.parametrize("style", ["full", "single_token"])
+@pytest.mark.parametrize("style", ["full", "single_token", "rating_only"])
 def test_the_sbatch_script_and_the_python_client_agree(tmp_path: Path, style: str) -> None:
     sweep_root = str(tmp_path / "raw" / "sweep")
 
