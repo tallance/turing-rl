@@ -159,6 +159,10 @@ def main():
     ap.add_argument("--published", default=str(
         Path.home() / "Projects/turing-rl/results/2026-08-10-test-eval-9b-full5ep-full-schema"))
     ap.add_argument("--claude_cells", nargs="*", default=["claude-opus-5", "claude-sonnet-5"])
+    ap.add_argument("--retest_of", default="claude-opus-5",
+                    help="cell that --retest_cell is a second pass of")
+    ap.add_argument("--retest_cell", default="claude-opus-5-retest",
+                    help="second pass of the same pairs, for the noise floor")
     ap.add_argument("--out_stem", default="comparison_step320")
     a = ap.parse_args()
 
@@ -251,6 +255,27 @@ def main():
             f"[{ag['acc_diff_ci'][0]:+.3f}, {ag['acc_diff_ci'][1]:+.3f}]"
             + ("  <- includes 0: not separated by 100 pairs"
                if ag['acc_diff_ci'][0] <= 0 <= ag['acc_diff_ci'][1] else ""),
+        ]
+
+    # Noise floor. Claude exposes no temperature or seed, so the same prompt can
+    # come back with a different rating. Without this the Opus-Sonnet gap cannot
+    # be read: a difference smaller than a judge's disagreement with ITSELF is
+    # not a difference.
+    retest = load_claude(root, a.retest_cell)
+    base = claude_rows.get(a.retest_of)
+    if retest and base:
+        retest_keys = {key_of(r) for r in retest}
+        ag = pair_agreement([r for r in base if key_of(r) in retest_keys], retest)
+        lines += [
+            "", f"## Noise floor: {LABELS.get(a.retest_of, a.retest_of)} scored twice", "",
+            f"- pairs rescored: {ag['n_shared']}",
+            f"- identical rating: {ag['exact_match']:.1%}",
+            f"- mean |rating difference|: {ag['mean_abs_rating_diff']:.2f}",
+            f"- agrees with itself on picked-the-human: {ag['binary_agreement']:.1%}",
+            f"- accuracy difference between the two passes: {ag['acc_diff']:+.3f}",
+            "",
+            "Read the Opus-Sonnet gap against this: a between-model difference "
+            "smaller than a model's disagreement with itself is not a result.",
         ]
 
     lines += ["", "## Measured cost", ""]

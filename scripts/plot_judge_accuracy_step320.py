@@ -64,10 +64,9 @@ def main() -> None:
     ax.annotate("0.5 = chance", xy=(0.5, len(rows) - 0.4), xytext=(4, 0),
                 textcoords="offset points", color=INK["primary"], fontsize=9,
                 va="center", ha="left")
-    ax.axvline(STEP0_ANCHOR, color=INK["muted"], lw=1, ls=(0, (1, 2)), zorder=2)
-    ax.annotate(f"{STEP0_ANCHOR} = same 9B judge before GRPO (step 0)",
-                xy=(STEP0_ANCHOR, -0.62), xytext=(4, 0), textcoords="offset points",
-                color=INK["muted"], fontsize=8.5, va="center", ha="left")
+    # The step-0 anchor (0.518) is drawn as text rather than a second rule: it
+    # sits within a pixel of the chance line, so a line there would read as
+    # clutter, and the fact that it IS chance is the point worth stating.
 
     for y, (v, h) in enumerate(zip(acc, hi)):
         ax.annotate(f"{v:.3f}", xy=(h, y), xytext=(6, 0), textcoords="offset points",
@@ -87,7 +86,8 @@ def main() -> None:
     fig.text(0.008, 0.93,
              f"GRPO step 320, held-out test set, {n_note} -- every judge scored on the "
              f"identical pairs.\nBars below 0.5 are judges the generator reliably fools. "
-             f"Whiskers are 95% Wilson intervals.",
+             f"Whiskers are 95% Wilson intervals.\nBefore GRPO (step 0) the 9B judge sat at "
+             f"{STEP0_ANCHOR}, i.e. chance -- the collapse is trained in, not inherent.",
              ha="left", va="top", color=INK["muted"], fontsize=9.5)
 
     fig.tight_layout(rect=(0, 0, 1, 0.87))
