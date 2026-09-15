@@ -37,6 +37,10 @@ MODE = "on"
 N_SAMPLE = int(os.environ.get("N_SAMPLE", "100"))
 EXPECT_PAIRS = int(os.environ.get("EXPECT_PAIRS", "880"))
 SEED = int(os.environ.get("SEED", "0"))
+# SLIM=1 drops the prompt and conversation text, leaving just keys, orientation
+# and the incumbent ratings. That is all the golden pipeline test needs, and it
+# turns a ~34 MB all-pairs dump into ~200 KB.
+SLIM = os.environ.get("SLIM") == "1"
 
 KEY_FIELDS = ("user_id", "post_id", "target_idx")
 # Carried through for the qualitative read; judge_prompt already embeds them.
@@ -120,7 +124,10 @@ def main():
         "one (no judge_prompt: %s)\n"
         % (len(base), len(CELLS) - len(no_prompt), ", ".join(sorted(no_prompt)) or "none"))
 
-    chosen = random.Random(SEED).sample(sorted(base), N_SAMPLE)
+    if N_SAMPLE >= len(base):
+        chosen = sorted(base)
+    else:
+        chosen = random.Random(SEED).sample(sorted(base), N_SAMPLE)
     digest = hashlib.sha256(
         json.dumps(sorted(chosen)).encode()).hexdigest()
     sys.stderr.write("selected %d pairs, seed=%d, sorted-key-list sha256=%s\n"
@@ -129,8 +136,10 @@ def main():
     for k in chosen:
         ref = per_cell[PROMPT_CELL][k]
         out = {f: ref.get(f) for f in KEY_FIELDS}
-        out.update({f: ref.get(f) for f in PAIR_FIELDS})
-        out["prompt_source_cell"] = PROMPT_CELL
+        fields = ("generated_is_b",) if SLIM else PAIR_FIELDS
+        out.update({f: ref.get(f) for f in fields})
+        if not SLIM:
+            out["prompt_source_cell"] = PROMPT_CELL
         out["incumbent"] = {
             cell: {f: per_cell[cell][k].get(f) for f in RATING_FIELDS}
             for cell in CELLS
