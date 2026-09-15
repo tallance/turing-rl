@@ -98,21 +98,6 @@ OVR=(
   # ~494 blocks of cache at util 0.70 -> ~26 fit. Raising it directly cuts generation time,
   # which was ~45% of every R0 step.
   actor_rollout_ref.rollout.max_num_seqs=${JUDGE_MAX_NUM_SEQS:-16}
-  # Prompt budget, and the engine window DERIVED from it. Default 11264 is the yaml's value, so
-  # an unset knob changes nothing.
-  #
-  # This is a knob rather than a second config file because the right value is a property of
-  # the SLICE, not of the experiment: the yaml says to re-measure it per slice from the pair
-  # builder's .meta.json, and a child config pinning one measurement would go stale silently
-  # while still looking authoritative. A rating_only corpus runs far shorter than a full-schema
-  # one -- the rubric is ~5k tokens of every full-schema prompt and rating_only drops it -- so
-  # this is expected to be set well below the default there.
-  #
-  # max_model_len is computed, never passed separately. The two must agree, and the yaml already
-  # records what happens when a pair like this is held in two places: response_length and
-  # max_response_length disagreed and a run generated at the old cap while looking correct.
-  data.max_prompt_length=${JUDGE_MAX_PROMPT_LEN:-11264}
-  actor_rollout_ref.rollout.max_model_len=$(( ${JUDGE_MAX_PROMPT_LEN:-11264} + 10752 ))
   data.train_files="$TRAIN_FILE"
   data.val_files="$VAL_FILE"
   trainer.default_local_dir="$CKPT_DIR"
@@ -120,13 +105,23 @@ OVR=(
   trainer.project_name=grpo-judge
 )
 
+# Which prompt style this judge trains on. The prompt is baked into the pair parquet, so this
+# selects only the LENGTH profile that corpus needs -- a rating_only prompt carries none of the
+# full-schema rubric and runs roughly 5k tokens shorter. Both configs are real files rather
+# than an override string, so the numbers stay reviewable next to the comments explaining them.
+JUDGE_CONFIG_NAME=${JUDGE_CONFIG_NAME:-qwen35_judge_grpo}
+case "$JUDGE_CONFIG_NAME" in
+  qwen35_judge_grpo|qwen35_judge_rating_grpo) ;;
+  *) echo "ERROR: JUDGE_CONFIG_NAME must be qwen35_judge_grpo or qwen35_judge_rating_grpo, got $JUDGE_CONFIG_NAME" >&2; exit 2 ;;
+esac
+
 # --config-dir is NOT optional: without it Hydra resolves --config-name against veRL's own
 # packaged config directory and the job dies immediately with
 # "Cannot find primary config 'qwen35_judge_grpo'". Both working trainers pass it.
-echo "+ $PY -u -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen35_judge_grpo hydra.run.dir=$TURING_RL_HYDRA_DIR hydra.job.chdir=false ${OVR[*]} ${EXTRA_OVERRIDES:-}"
+echo "+ $PY -u -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name $JUDGE_CONFIG_NAME hydra.run.dir=$TURING_RL_HYDRA_DIR hydra.job.chdir=false ${OVR[*]} ${EXTRA_OVERRIDES:-}"
 $PY -u -m training.grpo.run_verl_main_ppo \
   --config-dir training/grpo/configs \
-  --config-name qwen35_judge_grpo \
+  --config-name "$JUDGE_CONFIG_NAME" \
   hydra.run.dir="$TURING_RL_HYDRA_DIR" \
   hydra.job.chdir=false \
   "${OVR[@]}" ${EXTRA_OVERRIDES:-}

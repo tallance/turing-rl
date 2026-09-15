@@ -1,0 +1,42 @@
+# veRL GRPO config for the rating_only judge: same protocol as qwen35_judge_grpo, shorter prompts.
+#
+# The rating_only prompt is the single-token prompt with the seven 1-7 anchors added: it keeps the
+# shared header and drops the full-schema rubric entirely. Everything else about the run is
+# unchanged -- thinking ON, the same optimiser recipe, the same merged-dense rollout sync, the same
+# local label-verifiable reward -- so this overrides only what the shorter prompt moves.
+#
+# Selected by scripts/slurm/judge_grpo_train.sh via JUDGE_CONFIG_NAME=qwen35_judge_rating_grpo.
+defaults:
+  - qwen35_judge_grpo
+  - _self_
+
+data:
+  # DERIVED from the parent's measurement, not guessed, and not yet confirmed on real data.
+  #
+  #   full-schema measured max prompt              10535 tokens  (parent config, Qwen3.5 tokenizer)
+  #   rubric dropped by rating_only                19256 chars  = ~4937 est tokens
+  #   projected rating_only max prompt             ~5598 tokens
+  #   allowance here                                6144 tokens  (+546, inside the parent's
+  #                                                               "measured max + 1024" rule)
+  #
+  # The ~4937 is a chars/3.9 estimate, so CONFIRM IT before the first real submit: the pair
+  # builder writes prompt_tokens_est_max and n_over_budget into the parquet's sibling .meta.json,
+  # and n_over_budget must be 0. filter_overlong_prompts is true in the parent and drops
+  # over-budget rows from train AND val silently, which biases the corpus toward short-history
+  # users without failing anything.
+  #
+  # Re-measure per slice, exactly as the parent instructs: the observed maximum grows with sample
+  # size (it rose 10% when the parent's sample went from 416 to 1,121 contexts).
+  max_prompt_length: 6144
+
+actor_rollout_ref:
+  rollout:
+    # max_prompt_length + max_response_length, and nothing else. max_response_length stays at the
+    # parent's 10752: a cap costs nothing by itself (peak memory tracks the ACTUAL sequence
+    # length), and the rating_only answer is ~10 tokens, so the whole budget is thinking room --
+    # strictly more of it than the full-schema arm had, since that arm spent part of the same
+    # budget writing a 37-field body. tests/test_judge_length_budget.py pins the sum.
+    #
+    # Held as a literal because OmegaConf cannot do arithmetic; the parent holds 22016 the same
+    # way. The test is what keeps the two from drifting.
+    max_model_len: 16896

@@ -16,6 +16,7 @@ import yaml
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "training" / "grpo" / "configs"
 JUDGE_CONFIG = CONFIG_DIR / "qwen35_judge_grpo.yaml"
+RATING_CONFIG = CONFIG_DIR / "qwen35_judge_rating_grpo.yaml"
 
 
 def _raw(path):
@@ -146,6 +147,111 @@ def test_longest_selection_actually_picks_the_longest_pairs():
     # Both orders of each pair survive, so human_is_b stays balanced.
     assert len(longest) == 4
     assert sum(info["human_is_b"] for info in longest["extra_info"]) * 2 == len(longest)
+
+
+# --- the rating_only child config ---------------------------------------------------------
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Hydra's defaults-list composition, for the one case this file needs: child over parent."""
+    merged = dict(base)
+    for key, value in override.items():
+        if key == "defaults":
+            continue
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _flatten(config: dict, prefix: str = "") -> dict:
+    flat = {}
+    for key, value in config.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict):
+            flat.update(_flatten(value, f"{path}."))
+        else:
+            flat[path] = value
+    return flat
+
+
+def _composed_rating_config() -> dict:
+    return _deep_merge(_loaded(JUDGE_CONFIG), _loaded(RATING_CONFIG))
+
+
+def test_rating_config_composes_from_the_judge_config():
+    """It must be a child, not a fork. A standalone copy would drift from the recipe the parent
+    documents -- fused kernels, merged-LoRA rollout sync, use_v1 false, the nested reward block --
+    each of which has its own incident behind it."""
+    assert _loaded(RATING_CONFIG)["defaults"] == ["qwen35_judge_grpo", "_self_"]
+
+
+def test_rating_config_changes_only_the_two_length_keys():
+    """Minimal delta, enforced rather than trusted.
+
+    Everything that makes a judge run work is inherited. Any new key appearing here is either a
+    copy of a parent value (which will go stale silently) or an unreviewed change of recipe, and
+    both read identically in a diff.
+    """
+    parent = _flatten(_loaded(JUDGE_CONFIG))
+    child = _flatten(_composed_rating_config())
+
+    changed = {key for key in child if parent.get(key) != child[key]}
+
+    assert changed == {
+        "data.max_prompt_length",
+        "actor_rollout_ref.rollout.max_model_len",
+    }, f"unexpected overrides: {sorted(changed)}"
+
+
+def test_rating_config_prompt_plus_response_fits_its_context_window():
+    config = _composed_rating_config()
+    data = config["data"]
+    max_model_len = config["actor_rollout_ref"]["rollout"]["max_model_len"]
+
+    assert data["max_prompt_length"] + data["max_response_length"] == max_model_len
+
+
+def test_rating_config_keeps_the_parent_response_budget():
+    """The shorter prompt must not be spent shrinking generation: a rating_only answer is ~10
+    tokens, so the whole budget is thinking room, and thinking is the point of this arm."""
+    assert _composed_rating_config()["data"]["max_response_length"] == 10752
+
+
+def test_rating_prompt_allowance_matches_the_dropped_rubric():
+    """The allowance is derived from the parent's measured maximum minus the rubric it drops.
+
+    Recomputed here from the live prompt text, so shortening or growing the rating_only tail
+    without revisiting the budget fails rather than silently truncating prompts (or silently
+    eating generation room).
+    """
+    from shared.judge_prompts import _RATING_ONLY_TAIL, _TURING_PROMPT_TAIL
+
+    chars_per_token = 3.9  # scripts/build_judge_train_pairs.CHARS_PER_TOKEN_ESTIMATE
+    measured_full_max = 10535
+    dropped = (len(_TURING_PROMPT_TAIL) - len(_RATING_ONLY_TAIL)) / chars_per_token
+    projected = measured_full_max - dropped
+
+    allowance = _composed_rating_config()["data"]["max_prompt_length"]
+
+    assert allowance > projected, "prompts would be truncated"
+    assert allowance <= projected + 1024, (
+        "allowance exceeds the projected corpus by more than the parent's safety margin"
+    )
+
+
+def test_the_trainer_can_select_the_rating_config():
+    launcher = (
+        Path(__file__).resolve().parents[1] / "scripts" / "slurm" / "judge_grpo_train.sh"
+    ).read_text()
+
+    assert "JUDGE_CONFIG_NAME" in launcher
+    assert '--config-name "$JUDGE_CONFIG_NAME"' in launcher
+    # Both names are real files, so a typo cannot reach Hydra as a missing-config crash.
+    for name in ("qwen35_judge_grpo", "qwen35_judge_rating_grpo"):
+        assert (CONFIG_DIR / f"{name}.yaml").is_file()
+        assert name in launcher
 
 
 def test_longest_selection_rejects_an_unknown_mode():
