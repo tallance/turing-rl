@@ -17,6 +17,16 @@ source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
+# A cached model still revalidates against the Hub on load. ONE job is already a burst here:
+# eight AgentLoopWorkers plus eight vLLM engine processes all resolve the same repo within a few
+# seconds, and the 429 that comes back surfaces as `OSError: Unable to load vocabulary from file
+# ... not corrupted`, which reads like a broken cache rather than rate limiting (job 23086, dead
+# at step-0 validation after 9 minutes). Every sibling serving/inference script already does this
+# -- generator_infer.sh names it "the concurrent-rank hub-check race".
+#
+# Overridable, unlike those siblings, because JUDGE_MODEL_PATH may legitimately be an uncached
+# Hub model: pass HF_HUB_OFFLINE=0 for the one run that has to populate the cache.
+export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1} TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
 # TMPDIR is shared on purpose -- this is what job 18701 ran. A per-job TMPDIR was tried (6bb1b18)
 # to dodge an Errno 16 pymp teardown collision; it dodged nothing (18915 hit the same collision
 # inside its own per-job dir) and it moved TorchInductor's cache, which defaults to
