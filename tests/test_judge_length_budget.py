@@ -254,6 +254,17 @@ def test_the_trainer_can_select_the_rating_config():
         assert name in launcher
 
 
+def test_the_submit_launcher_forwards_the_config_name_explicitly():
+    """Not left to --export=ALL. A dropped JUDGE_CONFIG_NAME silently falls back to the
+    full-schema length profile, and that run does not fail -- an allowance that is too LARGE
+    truncates nothing -- so it would train under the wrong context window while reading clean."""
+    submit = (
+        Path(__file__).resolve().parents[1] / "scripts" / "launch_judge_train.sh"
+    ).read_text()
+
+    assert "EXPORTS=$EXPORTS,JUDGE_CONFIG_NAME=$JUDGE_CONFIG_NAME" in submit.replace('"', "")
+
+
 def test_longest_selection_rejects_an_unknown_mode():
     import pandas as pd
 
