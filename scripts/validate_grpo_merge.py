@@ -281,11 +281,13 @@ def main() -> None:
         one_bf16_step = 2.0 ** -7
         mismatched, rounding = [], []
         for key in sorted(base.keys() & hf_base.keys()):
-            a, b = base.get(key), hf_base.get(key)
-            if torch.equal(a, b):
+            # NOT `a`/`b`: `a` is the argparse namespace in this scope, and shadowing it made
+            # the gate die with AttributeError two checks later (job 23550).
+            base_t, hf_t = base.get(key), hf_base.get(key)
+            if torch.equal(base_t, hf_t):
                 continue
-            if a.shape == b.shape and torch.isclose(
-                a.float(), b.float(), rtol=one_bf16_step, atol=0.0
+            if base_t.shape == hf_t.shape and torch.isclose(
+                base_t.float(), hf_t.float(), rtol=one_bf16_step, atol=0.0
             ).all():
                 rounding.append(key)
             else:
