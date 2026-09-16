@@ -267,6 +267,10 @@ TIMING_SERVERS_READY_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
 
 ENDPOINTS=$(IFS=,; echo "${URLS[*]}")
 EXTRA=(); [ -n "$MAX_PAIRS" ] && EXTRA=(--max_pairs "$MAX_PAIRS")
+# Opt-in decode override. Unset leaves the frozen "no wire override" sweep policy intact, so
+# every historical cell is reproduced byte-for-byte; set, it is recorded in run_metadata.json
+# and the resulting cells are a separate series from the matrix.
+[ -n "${JUDGE_SAMPLING:-}" ] && EXTRA+=(--judge_sampling "$JUDGE_SAMPLING")
 
 cd "$REPO"
 CLIENT_PIDS=()
