@@ -49,7 +49,10 @@ PY_MERGE=/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/python
 # proves the artifacts are readable by the env that will actually serve them).
 PY_EVAL=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 
-ACTOR=$REPO/results/grpo/rl-generator/$RUN_TAG/checkpoints/global_step_${STEP}/actor
+# Default is the GENERATOR layout. A judge GRPO run writes its checkpoints under its own
+# run root (RL_CKPT_DIR), so pass ACTOR_DIR to point at one directly -- every step below is
+# model-agnostic tensor math and does not care which policy produced the shards.
+ACTOR=${ACTOR_DIR:-$REPO/results/grpo/rl-generator/$RUN_TAG/checkpoints/global_step_${STEP}/actor}
 OUT=$EVAL_ROOT/models/step${STEP}
 HF_BASE=$OUT/hf_base
 HF_DENSE=$OUT/hf_dense
