@@ -17,6 +17,7 @@ import argparse
 import csv
 import glob
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -28,7 +29,24 @@ import matplotlib.pyplot as plt  # noqa: E402
 
 from plotstyle import INK, SLOT, apply_rc, declutter, style_axes  # noqa: E402
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+def _repo_root() -> Path:
+    """Locate the checkout holding scripts/eval_rl_generator.py.
+
+    This file is also copied into a results package's plot/ directory for
+    provenance, where the usual parents[1] guess lands on the results dir, so
+    walk up looking for the real thing and let TURING_RL_ROOT override.
+    """
+    env = os.environ.get("TURING_RL_ROOT")
+    if env:
+        return Path(env).expanduser().resolve()
+    here = Path(__file__).resolve()
+    for cand in here.parents:
+        if (cand / "scripts" / "eval_rl_generator.py").is_file():
+            return cand
+    raise SystemExit("FAIL: cannot find the turing-rl checkout; set TURING_RL_ROOT")
+
+
+REPO_ROOT = _repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
@@ -142,7 +160,7 @@ def main() -> None:
                 markeredgecolor=INK["surface"], markeredgewidth=2,
                 zorder=5 if emph else 3,
                 label=f"{label} judge" + ("  (trained against)" if emph else ""))
-        ends.append((ys[-1], label, emph))
+        ends.append((ys[-1], label, emph, color))
 
     for cell, (label, color, marker, size) in FRONTIER.items():
         if cell not in series:
@@ -155,15 +173,19 @@ def main() -> None:
                 lw=1.6, marker=marker, markersize=size, markerfacecolor="none",
                 markeredgecolor=color, markeredgewidth=2.2, zorder=7,
                 label=f"{label} judge")
-        ends.append((ys[-1], label, False))
+        ends.append((ys[-1], label, False, color))
 
+    # Direct labels in the SERIES colour, not ink. The house style puts them in
+    # ink because the adjacent mark carries identity -- but six endpoints inside
+    # 0.14-0.42 force declutter to push labels well off their own marks, so
+    # adjacency stops being reliable and the colour has to carry it instead.
     lo, hi = ax.get_ylim()
-    placed = declutter([(y - lo) / (hi - lo) for y, _, _ in ends])
-    for (y, label, emph), yf in zip(ends, placed):
+    placed = declutter([(y - lo) / (hi - lo) for y, _, _, _ in ends])
+    for (y, label, emph, color), yf in zip(ends, placed):
         ax.annotate(label + ("*" if emph else ""),
                     xy=(steps[-1], lo + yf * (hi - lo)),
                     xytext=(9, 0), textcoords="offset points",
-                    color=INK["primary"] if emph else INK["secondary"],
+                    color=color,
                     fontsize=10.5, fontweight="bold" if emph else "normal",
                     va="center", ha="left", zorder=8, annotation_clip=False)
 

@@ -171,7 +171,11 @@ def main() -> None:
             xs = [r["step"] for r in pj["rows"]]
             ys = [r[field] for r in pj["rows"]]
             ax.plot(xs, ys,
-                    linestyle="none",
+                    # Faint dotted connector once there is more than one point:
+                    # readable as a trend, still unmistakably not one of the
+                    # solid 880-pair curves.
+                    color=pj["color"],
+                    linestyle=(0, (2, 3)) if len(xs) > 1 else "none", lw=1.4,
                     marker=pj["marker"], markersize=pj["size"],
                     markerfacecolor="none",
                     markeredgecolor=pj["color"], markeredgewidth=2.2,
