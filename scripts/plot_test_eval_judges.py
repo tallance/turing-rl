@@ -8,22 +8,24 @@ Reads the per-judge tables written by scripts/summarize_test_eval.py
          generated turn); 0.5 = parity
 
 The 9B curve is emphasised because that is the judge the GRPO run was trained
-against; 4B, 27B, Gemma 4 12B, and Gemma 4 31B are held-out judges.
+against; the others are held-out judges. Judge identities, labels and colours
+come from scripts/judges.py so adjacent figures cannot disagree about them.
 
-All five judges score the SAME generations per checkpoint -- the pair-sets
-are built once and reused -- so differences between curves are a property of the
+All curve judges score the SAME generations per checkpoint -- the pair-sets are
+built once and reused -- so differences between curves are a property of the
 judge, not of the sample.
 
-POINT JUDGES (--point_cell) overlay a judge evaluated at a single checkpoint on
-a smaller pair set, e.g. a frontier model scored on 100 pairs at the last step.
-They are deliberately routed around the shared-pair-count and shared-origin
-guards, which exist to stop incomparable CURVES being drawn together -- so they
-are drawn markers-only, hollow, and the pair-count asymmetry is written into the
-subtitle automatically rather than relying on the caller to pass --subtitle.
+POINT JUDGES (--point_cell) overlay a judge evaluated at selected checkpoints on
+a smaller pair set, e.g. a frontier model scored on 100 pairs. They are
+deliberately routed around the shared-pair-count and shared-origin guards, which
+exist to stop incomparable CURVES being drawn together -- so they are drawn
+markers-only, hollow, and the pair-count asymmetry is written into the subtitle
+automatically rather than relying on the caller to pass --subtitle.
 
 Provenance: patched copy of
 results/2026-08-10-test-eval-9b-full5ep-full-schema/plot/plot_test_eval_judges.py
-(frozen package, unchanged); the only additions are the point-judge channel.
+(frozen package, unchanged); the additions are the point-judge channel and the
+shared judge registry.
 
 Usage:
   python scripts/plot_test_eval_judges.py \
@@ -42,27 +44,8 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from plotstyle import INK, SLOT, apply_rc, declutter, style_axes  # noqa: E402
-
-# Categorical slots assigned in fixed order by entity, never by rank -- adding or
-# dropping a judge must not repaint the others. Draw order puts the emphasised
-# judge last so it sits on top.
-JUDGES = [
-    ("4b", "qwen35-4b", "4B", SLOT[1], False, "-", "o"),
-    ("27b", "qwen35-27b", "27B", SLOT[3], False, "-", "o"),
-    ("gemma4", "gemma4-12b", "Gemma 4 12B", INK["secondary"], False, "--", "D"),
-    ("gemma31", "gemma4-31b", "Gemma 4 31B", "#8b5fbf", False, "-", "s"),
-    ("9b", "qwen35-9b", "9B", SLOT[2], True, "-", "o"),
-]
-LEGEND_ORDER = ("4b", "9b", "27b", "gemma4", "gemma31")
-
-# Single-checkpoint overlays. Hollow marker + no line, so they never read as a
-# trajectory and never look like they share the curves' pair count.
-POINT_STYLE = {
-    "claude-opus-5": ("Opus 5", "#b5451f", "*", 20),
-    "claude-sonnet-5": ("Sonnet 5", "#1f6f8b", "P", 12),
-}
-POINT_FALLBACK = ("#6b6a66", "X", 12)
+from judges import BY_CELL, CURVE_JUDGES  # noqa: E402
+from plotstyle import INK, apply_rc, declutter, style_axes  # noqa: E402
 
 PANELS = [
     ("likert_mean", "Mean judge rating", "Likert 1-7", 4.0, "4 = cannot tell"),
@@ -100,7 +83,7 @@ def main() -> None:
     ap.add_argument("--subtitle", default=None,
                     help="figure subtitle; {n} is substituted with the pair count")
     ap.add_argument("--point_cell", action="append", default=[],
-                    help="cell drawn as a single marker, exempt from the "
+                    help="cell drawn as markers only, exempt from the "
                          "shared-pair-count and shared-origin guards (repeatable)")
     a = ap.parse_args()
 
@@ -109,12 +92,12 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     data, n_pairs = {}, set()
-    for key, cell, _label, _color, _emph, _linestyle, _marker in JUDGES:
-        p = root / f"summary_{cell}.csv"
+    for j in CURVE_JUDGES:
+        p = root / f"summary_{j.cell}.csv"
         if not p.exists():
-            raise SystemExit(f"FAIL: missing {p} -- run scripts/summarize_test_eval.py --cell {cell}")
-        data[key] = read_summary(p)
-        n_pairs.update(r["n_scored"] for r in data[key])
+            raise SystemExit(f"FAIL: missing {p} -- run scripts/summarize_test_eval.py --cell {j.cell}")
+        data[j.key] = read_summary(p)
+        n_pairs.update(r["n_scored"] for r in data[j.key])
 
     # Every CURVE judge must be on the same pair count, or the curves are not
     # comparable. Point judges are handled separately and deliberately exempt.
@@ -138,10 +121,10 @@ def main() -> None:
         p = root / f"summary_{cell}.csv"
         if not p.exists():
             raise SystemExit(f"FAIL: missing {p} for --point_cell {cell}")
-        rows = read_summary(p)
-        label, color, marker, size = (POINT_STYLE.get(cell, (cell,) + POINT_FALLBACK))
-        points[cell] = {"rows": rows, "label": label, "color": color,
-                        "marker": marker, "size": size}
+        points[cell] = (BY_CELL[cell] if cell in BY_CELL else None, read_summary(p))
+        if points[cell][0] is None:
+            raise SystemExit(f"FAIL: unknown point cell {cell!r}; add it to scripts/judges.py "
+                             f"so every figure labels and colours it the same way")
 
     apply_rc()
     fig, axes = plt.subplots(1, 2, figsize=(11.2, 4.6))
@@ -151,37 +134,37 @@ def main() -> None:
         ax.axhline(ref, color=INK["muted"], lw=1, ls=(0, (4, 3)), zorder=1)
 
         ends = []
-        for key, _cell, label, color, emph, linestyle, marker in JUDGES:
-            xs = steps_of[key]
-            ys = [r[field] for r in data[key]]
+        for j in CURVE_JUDGES:
+            xs = steps_of[j.key]
+            ys = [r[field] for r in data[j.key]]
             ax.plot(xs, ys,
-                    color=color,
-                    linestyle=linestyle,
-                    lw=3.2 if emph else 2.0,
-                    marker=marker, markersize=9 if emph else 7,
-                    markerfacecolor=color,
+                    color=j.color,
+                    linestyle=j.linestyle,
+                    lw=3.2 if j.emph else 2.0,
+                    marker=j.marker, markersize=j.size,
+                    markerfacecolor=j.color,
                     # 2px surface ring keeps overlapping markers separable.
                     markeredgecolor=INK["surface"], markeredgewidth=2,
-                    zorder=5 if emph else 3,
-                    label=f"{label} judge" + ("  (trained against)" if emph else ""),
+                    zorder=5 if j.emph else 3,
+                    label=f"{j.label} judge" + ("  (trained against)" if j.emph else ""),
                     solid_capstyle="round")
-            ends.append((ys[-1], label, emph, xs[-1]))
+            ends.append((ys[-1], j.label, j.emph, xs[-1]))
 
-        for cell, pj in points.items():
-            xs = [r["step"] for r in pj["rows"]]
-            ys = [r[field] for r in pj["rows"]]
+        for cell, (j, rows) in points.items():
+            xs = [r["step"] for r in rows]
+            ys = [r[field] for r in rows]
             ax.plot(xs, ys,
                     # Faint dotted connector once there is more than one point:
                     # readable as a trend, still unmistakably not one of the
-                    # solid 880-pair curves.
-                    color=pj["color"],
+                    # solid full-pair-set curves.
+                    color=j.color,
                     linestyle=(0, (2, 3)) if len(xs) > 1 else "none", lw=1.4,
-                    marker=pj["marker"], markersize=pj["size"],
+                    marker=j.marker, markersize=j.size,
                     markerfacecolor="none",
-                    markeredgecolor=pj["color"], markeredgewidth=2.2,
+                    markeredgecolor=j.color, markeredgewidth=2.2,
                     zorder=7,
-                    label=f"{pj['label']} judge  ({pj['rows'][0]['n_scored']} pairs)")
-            ends.append((ys[-1], pj["label"], False, xs[-1]))
+                    label=f"{j.label} judge  ({rows[0]['n_scored']} pairs)")
+            ends.append((ys[-1], j.label, False, xs[-1]))
 
         # Anchor the note to the RIGHT end of the reference line: at the last step
         # every curve sits well above it in both panels, so nothing overprints the
@@ -194,7 +177,7 @@ def main() -> None:
         lo, hi = ax.get_ylim()
         placed = declutter([(y - lo) / (hi - lo) for y, _, _, _ in ends])
         for (y, label, emph, xend), yf in zip(ends, placed):
-            ax.annotate(label + ("*" if emph else "") + ("" if xend == steps[-1] else " →"),
+            ax.annotate(label + ("*" if emph else "") + ("" if xend == steps[-1] else " →"),
                         xy=(xend, lo + yf * (hi - lo)),
                         xytext=(9, 0), textcoords="offset points",
                         color=INK["primary"] if emph else INK["secondary"],
@@ -205,16 +188,13 @@ def main() -> None:
         ax.set_xlim(steps[0] - 1.5, steps[-1] + 4.5)   # headroom for the direct labels
 
     handles, labels = axes[0].get_legend_handles_labels()
-    # Legend order follows the Qwen size ladder, then the separate Gemma family,
-    # then any point judges (which are not in LEGEND_ORDER) last.
-    key_for_label = {
-        f"{label} judge" + ("  (trained against)" if emph else ""): key
-        for key, _cell, label, _color, emph, _linestyle, _marker in JUDGES
-    }
-    def _rank(lbl):
-        key = key_for_label.get(lbl)
-        return LEGEND_ORDER.index(key) if key in LEGEND_ORDER else len(LEGEND_ORDER)
-    idx = sorted(range(len(labels)), key=lambda i: _rank(labels[i]))
+    # Legend order follows the Qwen size ladder, then Gemma, then point judges.
+    rank = {}
+    for j in CURVE_JUDGES:
+        rank[f"{j.label} judge" + ("  (trained against)" if j.emph else "")] = j.legend_rank
+    for cell, (j, rows) in points.items():
+        rank[f"{j.label} judge  ({rows[0]['n_scored']} pairs)"] = j.legend_rank
+    idx = sorted(range(len(labels)), key=lambda i: rank.get(labels[i], 99))
     leg = fig.legend([handles[i] for i in idx], [labels[i] for i in idx],
                      loc="lower center", ncol=4, frameon=False,
                      bbox_to_anchor=(0.5, -0.015), fontsize=10.5)
@@ -223,21 +203,21 @@ def main() -> None:
 
     fig.suptitle(a.title, x=0.008, ha="left",
                  color=INK["primary"], fontsize=14, fontweight="bold", y=0.995)
-    default_subtitle = (f"{n} pairs per checkpoint, 128 unseen users. All five judges "
+    default_subtitle = (f"{n} pairs per checkpoint, 128 unseen users. All curve judges "
                         f"score the same generations.  * = judge the run was trained against.")
     subtitle = a.subtitle.format(n=n) if a.subtitle else default_subtitle
     if points:
         # Stated unconditionally. A reader comparing a hollow marker against a
-        # curve is comparing 100 pairs against 880, and the figure has to say so
+        # curve is comparing different pair counts, and the figure has to say so
         # even when the caller passed their own --subtitle.
         bits = ", ".join(
-            f"{pj['label']} {pj['rows'][0]['n_scored']} pairs at step "
-            f"{', '.join(str(r['step']) for r in pj['rows'])}"
-            for pj in points.values())
-        subtitle += (f"\nHollow markers are single-checkpoint judges on a SMALLER pair "
+            f"{j.label} {rows[0]['n_scored']} pairs at step "
+            f"{', '.join(str(r['step']) for r in rows)}"
+            for j, rows in points.values())
+        subtitle += (f"\nHollow markers are selected-checkpoint judges on a SMALLER pair "
                      f"set ({bits}); not on the {n}-pair curve basis.")
     if partial:
-        names = {k: l for k, _c, l, _col, _e, _ls, _m in JUDGES}
+        names = {j.key: j.label for j in CURVE_JUDGES}
         bits = ", ".join(f"{names[k]} to step {v[-1]}" for k, v in sorted(partial.items()))
         subtitle += (f"\nIN PROGRESS: {bits}; their later cells are still queued, so those "
                      f"curves stop early (arrow = more coming).")

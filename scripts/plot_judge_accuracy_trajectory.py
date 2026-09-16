@@ -27,7 +27,9 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 
-from plotstyle import INK, SLOT, apply_rc, declutter, style_axes  # noqa: E402
+from judges import CURVE_JUDGES, POINT_JUDGES  # noqa: E402
+from plotstyle import INK, apply_rc, declutter, style_axes  # noqa: E402
+
 
 def _repo_root() -> Path:
     """Locate the checkout holding scripts/eval_rl_generator.py.
@@ -50,33 +52,10 @@ REPO_ROOT = _repo_root()
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from eval.claude_judge_run import row_from_incumbent  # noqa: E402
 from scripts.eval_rl_generator import directional_accuracy  # noqa: E402
 
-INCUMBENTS = [
-    ("qwen35-4b", "4B", SLOT[1], "-", "o", False),
-    ("qwen35-27b", "27B", SLOT[3], "-", "o", False),
-    ("gemma4-12b", "Gemma 4 12B", INK["secondary"], "--", "D", False),
-    ("gemma4-31b", "Gemma 4 31B", "#8b5fbf", "-", "s", False),
-    ("qwen35-9b", "9B", SLOT[2], "-", "o", True),
-]
-FRONTIER = {
-    "claude-opus-5": ("Opus 5", "#b5451f", "*", 18),
-    "claude-sonnet-5": ("Sonnet 5", "#1f6f8b", "P", 11),
-}
 STEP_RE = re.compile(r"pairs_step(\d+)_")
-
-
-def rows_from_pairs(recs, cell):
-    out = []
-    for rec in recs:
-        inc = rec["incumbent"][cell]
-        out.append({
-            "generated_is_b": rec["generated_is_b"],
-            "human_side": "A" if rec["generated_is_b"] else "B",
-            "rating_gt_first": inc.get("rating_gt_first"),
-            "rating_gen_first": inc.get("rating_gen_first"),
-        })
-    return out
 
 
 def main() -> None:
@@ -111,31 +90,32 @@ def main() -> None:
     n = n_pairs.pop()
 
     series, table = {}, []
-    for cell, label, *_ in INCUMBENTS:
+    for j in CURVE_JUDGES:
         pts = []
         for s in steps:
-            acc = directional_accuracy(rows_from_pairs(per_step[s], cell))
+            rows = [row_from_incumbent(rec, j.cell) for rec in per_step[s]]
+            acc = directional_accuracy(rows)
             pts.append((s, acc["accuracy"]))
-            table.append({"judge": label, "cell": cell, "step": s,
+            table.append({"judge": j.label, "cell": j.cell, "step": s,
                           "judge_accuracy": round(acc["accuracy"], 4),
                           "n_nontie": acc["n_nontie"], "n_tie": acc["n_tie"]})
-        series[cell] = pts
+        series[j.cell] = pts
 
-    for cell in FRONTIER:
+    for j in POINT_JUDGES:
         pts = []
         for s in steps:
-            f = (root / "raw" / f"{a.gen_prefix}{s}" / "sweep" / cell / "on"
+            f = (root / "raw" / f"{a.gen_prefix}{s}" / "sweep" / j.cell / "on"
                  / "reward" / "scores.jsonl")
             if not f.is_file():
                 continue
             rows = [json.loads(l) for l in open(f) if l.strip()]
             acc = directional_accuracy(rows)
             pts.append((s, acc["accuracy"]))
-            table.append({"judge": FRONTIER[cell][0], "cell": cell, "step": s,
+            table.append({"judge": j.label, "cell": j.cell, "step": s,
                           "judge_accuracy": round(acc["accuracy"], 4),
                           "n_nontie": acc["n_nontie"], "n_tie": acc["n_tie"]})
         if pts:
-            series[cell] = pts
+            series[j.cell] = pts
 
     csv_path = root / f"{a.stem}.csv"
     with open(csv_path, "w", newline="") as fh:
@@ -152,28 +132,28 @@ def main() -> None:
                 va="bottom", ha="right", zorder=1)
 
     ends = []
-    for cell, label, color, ls, marker, emph in INCUMBENTS:
-        xs = [s for s, _ in series[cell]]
-        ys = [v for _, v in series[cell]]
-        ax.plot(xs, ys, color=color, linestyle=ls, lw=3.0 if emph else 2.0,
-                marker=marker, markersize=9 if emph else 7, markerfacecolor=color,
+    for j in CURVE_JUDGES:
+        xs = [s for s, _ in series[j.cell]]
+        ys = [v for _, v in series[j.cell]]
+        ax.plot(xs, ys, color=j.color, linestyle=j.linestyle, lw=3.0 if j.emph else 2.0,
+                marker=j.marker, markersize=j.size, markerfacecolor=j.color,
                 markeredgecolor=INK["surface"], markeredgewidth=2,
-                zorder=5 if emph else 3,
-                label=f"{label} judge" + ("  (trained against)" if emph else ""))
-        ends.append((ys[-1], label, emph, color))
+                zorder=5 if j.emph else 3,
+                label=f"{j.label} judge" + ("  (trained against)" if j.emph else ""))
+        ends.append((ys[-1], j.label, j.emph, j.color))
 
-    for cell, (label, color, marker, size) in FRONTIER.items():
-        if cell not in series:
+    for j in POINT_JUDGES:
+        if j.cell not in series:
             continue
-        xs = [s for s, _ in series[cell]]
-        ys = [v for _, v in series[cell]]
+        xs = [s for s, _ in series[j.cell]]
+        ys = [v for _, v in series[j.cell]]
         # Thin dashed connector when there is more than one point: still clearly
         # distinct from the solid curves, but the trajectory is readable.
-        ax.plot(xs, ys, color=color, linestyle=(0, (2, 2)) if len(xs) > 1 else "none",
-                lw=1.6, marker=marker, markersize=size, markerfacecolor="none",
-                markeredgecolor=color, markeredgewidth=2.2, zorder=7,
-                label=f"{label} judge")
-        ends.append((ys[-1], label, False, color))
+        ax.plot(xs, ys, color=j.color, linestyle=(0, (2, 2)) if len(xs) > 1 else "none",
+                lw=1.6, marker=j.marker, markersize=j.size, markerfacecolor="none",
+                markeredgecolor=j.color, markeredgewidth=2.2, zorder=7,
+                label=f"{j.label} judge")
+        ends.append((ys[-1], j.label, False, j.color))
 
     # Direct labels in the SERIES colour, not ink. The house style puts them in
     # ink because the adjacent mark carries identity -- but six endpoints inside

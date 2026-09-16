@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from eval.claude_judge_run import build_row, oriented_score
+from eval.claude_judge_run import build_row, oriented_score, row_from_incumbent
 from scripts.eval_rl_generator import directional_accuracy
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -198,6 +198,21 @@ def test_low_oriented_score_means_the_judge_picked_the_human():
 
 
 @needs_data
+@pytest.mark.parametrize("cell", CELLS)
+def test_incumbent_row_builder_agrees_with_build_row(cell):
+    # row_from_incumbent (used by the comparison table and the trajectory plot)
+    # passes the stored orientation through; build_row (used for the frontier
+    # judges) derives it. They must not drift, or frontier and incumbent numbers
+    # stop being comparable while both still look fine.
+    for rec in _slim_rows():
+        got = row_from_incumbent(rec, cell)
+        want = build_row(rec, _canonical(rec["incumbent"][cell]))
+        for field in ("generated_is_b", "human_side", "rating_gt_first",
+                      "rating_gen_first", "turing_judge_score_raw"):
+            assert got[field] == want[field], (cell, field, rec["user_id"])
+
+
+@needs_data
 def test_both_orientations_are_represented_in_the_real_data():
     # A flip bug is invisible if every pair happens to sit on one side.
     gib = [rec["generated_is_b"] for rec in _slim_rows()]
@@ -209,16 +224,15 @@ def test_both_orientations_are_represented_in_the_real_data():
 # --------------------------------------------------------------------------
 
 PLOT = REPO_ROOT / "scripts" / "plot_test_eval_judges.py"
-FROZEN_PLOT_DIR = PUBLISHED / "plot"
 
 
 def _run_plot(eval_root, out_dir, *extra):
+    # No PYTHONPATH needed: plotstyle.py and judges.py are siblings of the
+    # script, so running it puts scripts/ on sys.path[0] and both resolve.
     return subprocess.run(
         [sys.executable, str(PLOT), "--eval_root", str(eval_root),
          "--out_dir", str(out_dir), "--stem", "t", *extra],
         capture_output=True, text=True,
-        # plotstyle.py is a sibling of the frozen script, imported by bare name.
-        env={**__import__("os").environ, "PYTHONPATH": str(FROZEN_PLOT_DIR)},
     )
 
 

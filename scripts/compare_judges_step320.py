@@ -28,17 +28,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+sys.path.insert(0, str(REPO_ROOT / "scripts"))  # judges.py imports plotstyle by name
+
+from eval.claude_judge_run import row_from_incumbent  # noqa: E402
+from judges import CURVE_JUDGES, label_for  # noqa: E402
 from scripts.eval_rl_generator import _canonical_rating, _picked_human  # noqa: E402
 from scripts.eval_rl_generator import directional_accuracy  # noqa: E402
 from scripts.summarize_test_eval import likerts  # noqa: E402
 
 GEN_KEY = "9b-full5ep-step320"
-INCUMBENTS = ["qwen35-4b", "qwen35-9b", "qwen35-27b", "gemma4-12b", "gemma4-31b"]
-LABELS = {
-    "qwen35-4b": "Qwen3.5 4B", "qwen35-9b": "Qwen3.5 9B *", "qwen35-27b": "Qwen3.5 27B",
-    "gemma4-12b": "Gemma 4 12B", "gemma4-31b": "Gemma 4 31B",
-    "claude-opus-5": "Claude Opus 5", "claude-sonnet-5": "Claude Sonnet 5",
-}
 KEY_FIELDS = ("user_id", "post_id", "target_idx")
 Z = 1.959963985  # 95%
 
@@ -156,8 +154,11 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--eval_root", required=True)
     ap.add_argument("--pairs", required=True)
-    ap.add_argument("--published", default=str(
-        Path.home() / "Projects/turing-rl/results/2026-08-10-test-eval-9b-full5ep-full-schema"))
+    # Sibling of --eval_root by default: both live under results/. Missing is
+    # tolerated -- published() returns {} and the _880 reference columns blank.
+    ap.add_argument("--published", default=None,
+                    help="eval package holding the published full-pair-set "
+                         "summary_<cell>.csv (default: sibling of --eval_root)")
     ap.add_argument("--claude_cells", nargs="*", default=["claude-opus-5", "claude-sonnet-5"])
     ap.add_argument("--retest_of", default="claude-opus-5",
                     help="cell that --retest_cell is a second pass of")
@@ -167,28 +168,18 @@ def main():
     a = ap.parse_args()
 
     root = Path(a.eval_root)
-    pub_dir = Path(a.published)
+    pub_dir = (Path(a.published) if a.published
+               else root.resolve().parent / "2026-08-10-test-eval-9b-full5ep-full-schema")
     pairs = [json.loads(line) for line in open(a.pairs) if line.strip()]
     keys = {key_of(p) for p in pairs}
 
     table, claude_rows = [], {}
 
     # Incumbents, re-scored on the SAME 100 keys.
-    for cell in INCUMBENTS:
-        rows = []
-        for rec in pairs:
-            inc = rec["incumbent"][cell]
-            rows.append({
-                "user_id": rec["user_id"], "post_id": rec["post_id"],
-                "target_idx": rec["target_idx"],
-                "generated_is_b": rec["generated_is_b"],
-                "human_side": "A" if rec["generated_is_b"] else "B",
-                "rating_gt_first": inc.get("rating_gt_first"),
-                "rating_gen_first": inc.get("rating_gen_first"),
-                "turing_judge_score_raw": inc.get("turing_judge_score_raw"),
-            })
-        pub = published(pub_dir, cell)
-        table.append({"judge": LABELS[cell], "cell": cell, "n_pairs": len(rows),
+    for j in CURVE_JUDGES:
+        rows = [row_from_incumbent(rec, j.cell) for rec in pairs]
+        pub = published(pub_dir, j.cell)
+        table.append({"judge": j.long_label, "cell": j.cell, "n_pairs": len(rows),
                       **summarise(rows),
                       "judge_accuracy_880": pub.get("judge_accuracy"),
                       "win_rate_ge5_880": pub.get("win_rate_ge5")})
@@ -200,7 +191,7 @@ def main():
             continue
         rows = [r for r in rows if key_of(r) in keys]
         claude_rows[cell] = rows
-        table.append({"judge": LABELS.get(cell, cell), "cell": cell, "n_pairs": len(rows),
+        table.append({"judge": label_for(cell, long=True), "cell": cell, "n_pairs": len(rows),
                       **summarise(rows),
                       "judge_accuracy_880": "", "win_rate_ge5_880": ""})
 
@@ -245,7 +236,7 @@ def main():
         ca, cb = a.claude_cells[0], a.claude_cells[1]
         ag = pair_agreement(claude_rows[ca], claude_rows[cb])
         lines += [
-            "", f"## {LABELS.get(ca, ca)} vs {LABELS.get(cb, cb)}", "",
+            "", f"## {label_for(ca, long=True)} vs {label_for(cb, long=True)}", "",
             f"- pairs both scored: {ag['n_shared']}",
             f"- identical rating: {ag['exact_match']:.1%}",
             f"- mean |rating difference|: {ag['mean_abs_rating_diff']:.2f}",
@@ -267,7 +258,7 @@ def main():
         retest_keys = {key_of(r) for r in retest}
         ag = pair_agreement([r for r in base if key_of(r) in retest_keys], retest)
         lines += [
-            "", f"## Noise floor: {LABELS.get(a.retest_of, a.retest_of)} scored twice", "",
+            "", f"## Noise floor: {label_for(a.retest_of, long=True)} scored twice", "",
             f"- pairs rescored: {ag['n_shared']}",
             f"- identical rating: {ag['exact_match']:.1%}",
             f"- mean |rating difference|: {ag['mean_abs_rating_diff']:.2f}",
@@ -282,7 +273,7 @@ def main():
     for cell, rows in claude_rows.items():
         c = cost_summary(rows)
         if c:
-            lines.append(f"- {LABELS.get(cell, cell)}: ${c['total']:.2f} over "
+            lines.append(f"- {label_for(cell, long=True)}: ${c['total']:.2f} over "
                          f"{c['n']} calls (${c['mean']:.4f}/call)")
 
     # What fools the frontier judge, in its own words -- the most actionable
@@ -291,7 +282,7 @@ def main():
         fooled = [r for r in rows if _picked_human(r) == 0 and r.get("judge_reasoning")]
         if not fooled:
             continue
-        lines += ["", f"## {LABELS.get(cell, cell)}: 3 pairs where it picked the "
+        lines += ["", f"## {label_for(cell, long=True)}: 3 pairs where it picked the "
                       f"generation over the human", ""]
         for r in fooled[:3]:
             reason = " ".join(str(r["judge_reasoning"]).split())[:600]

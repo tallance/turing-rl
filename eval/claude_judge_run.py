@@ -87,6 +87,29 @@ def build_row(rec, rating, *, verdict=None, envelope=None, judge_model="", effor
     }
 
 
+def row_from_incumbent(rec, cell):
+    """Scoring row for one of the open-weight judges recorded in a pairs file.
+
+    Lives next to build_row on purpose: both produce rows for
+    directional_accuracy under the same orientation convention, and the two
+    drifting apart would make the frontier and incumbent numbers silently
+    incomparable. The incumbent already stored its rating in whichever field
+    matches the pair's orientation, so it is passed through, not re-derived.
+    """
+    inc = rec["incumbent"][cell]
+    gib = bool(rec["generated_is_b"])
+    return {
+        "user_id": rec["user_id"],
+        "post_id": rec["post_id"],
+        "target_idx": rec["target_idx"],
+        "generated_is_b": gib,
+        "human_side": "A" if gib else "B",
+        "rating_gt_first": inc.get("rating_gt_first"),
+        "rating_gen_first": inc.get("rating_gen_first"),
+        "turing_judge_score_raw": inc.get("turing_judge_score_raw"),
+    }
+
+
 def key_of(rec):
     return tuple(str(rec.get(f, "")) for f in KEY_FIELDS)
 
