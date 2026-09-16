@@ -242,23 +242,44 @@ case "$MODE" in
     # no traceback). SAVE_EVERY_EPOCHS=2 halves that to 10 checkpoints / ~190 GB. 6 steps per
     # epoch, so save_freq = 6 * N. Default 1 reproduces the every-epoch behaviour exactly.
     SAVE_EVERY_EPOCHS=${SAVE_EVERY_EPOCHS:-1}
-    _SAVE_FREQ=$((6 * SAVE_EVERY_EPOCHS))
+    #
+    # Steps per epoch = train_max_samples / data.train_batch_size, and the batch size is 64
+    # (qwen3_9b_grpo_turing.yaml, pinned by tests/test_grpo_config.py). Every round so far ran
+    # 6 x 64 = 384.
+    #
+    # This is overridable for ONE reason: the disjoint hash pool is exhausted. Slices consumed
+    # everything below 0.9212, leaving ~325 rows, and 325 is not a multiple of 64 -- at 384 the
+    # loader would get 325, drop_last would give 5 steps/epoch, and the guard below would still
+    # check against 6*_EPOCHS, pass, and silently never write the final checkpoint. The last
+    # round therefore runs STEPS_PER_EPOCH=5 (320 rows) with the grid moved to match.
+    #
+    # DO NOT set this for a normal round: 6 is what makes runs comparable, and the default
+    # keeps every prior frac10 launch byte-identical.
+    STEPS_PER_EPOCH=${STEPS_PER_EPOCH:-6}
+    case "$STEPS_PER_EPOCH" in
+      ''|*[!0-9]*) echo "ERROR: STEPS_PER_EPOCH must be a positive integer, got '$STEPS_PER_EPOCH'" >&2
+                   exit 5 ;;
+    esac
+    [ "$STEPS_PER_EPOCH" -ge 1 ] || {
+      echo "ERROR: STEPS_PER_EPOCH must be >= 1, got '$STEPS_PER_EPOCH'" >&2; exit 5; }
+    _MAX_SAMPLES=$((STEPS_PER_EPOCH * 64))
+    _SAVE_FREQ=$((STEPS_PER_EPOCH * SAVE_EVERY_EPOCHS))
     # The final step must land on the save grid, or the last checkpoint -- the one every
     # downstream eval wants -- is silently never written.
-    [ $(( (6 * _EPOCHS) % _SAVE_FREQ )) -eq 0 ] || {
+    [ $(( (STEPS_PER_EPOCH * _EPOCHS) % _SAVE_FREQ )) -eq 0 ] || {
       echo "ERROR: SAVE_EVERY_EPOCHS=$SAVE_EVERY_EPOCHS gives save_freq=$_SAVE_FREQ, which does not" >&2
-      echo "       divide the $((6 * _EPOCHS)) total steps of MODE=$MODE -- the final checkpoint" >&2
-      echo "       would be lost. Pick a value dividing $_EPOCHS epochs." >&2
+      echo "       divide the $((STEPS_PER_EPOCH * _EPOCHS)) total steps of MODE=$MODE -- the final" >&2
+      echo "       checkpoint would be lost. Pick a value dividing $_EPOCHS epochs." >&2
       exit 5; }
     # test_freq stays at one epoch: validation is cheap (352 rows at n=1) and finer val curves
     # are worth keeping. _SAVE_FREQ is a multiple of 6, so every saved ckpt still has a val
     # score -- the property this arm is built around.
     OVR+=(
-      data.train_max_samples=384
+      data.train_max_samples=$_MAX_SAMPLES
       data.val_max_samples=352
       trainer.total_epochs=$_EPOCHS
       trainer.save_freq=$_SAVE_FREQ
-      trainer.test_freq=6
+      trainer.test_freq=$STEPS_PER_EPOCH
       trainer.val_before_train=True
       trainer.max_actor_ckpt_to_keep=null
     )

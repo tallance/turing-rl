@@ -102,11 +102,11 @@ def test_frac10_modes_pin_the_subsets_and_the_per_epoch_cadence():
     for mode in ("frac10ep3", "frac10ep10", "frac10ep20"):
         arm = mode_arm(mode)
         for k in (
-            "data.train_max_samples=384",
+            "data.train_max_samples=$_MAX_SAMPLES",
             "data.val_max_samples=352",
             "trainer.total_epochs=$_EPOCHS",
             "trainer.save_freq=$_SAVE_FREQ",
-            "trainer.test_freq=6",
+            "trainer.test_freq=$STEPS_PER_EPOCH",
             "trainer.val_before_train=True",
             "trainer.max_actor_ckpt_to_keep=null",
         ):
@@ -116,7 +116,10 @@ def test_frac10_modes_pin_the_subsets_and_the_per_epoch_cadence():
         # Derived from an epoch count, never a bare literal: 6 steps/epoch is the one place
         # that relationship is written down.
         assert "SAVE_EVERY_EPOCHS=${SAVE_EVERY_EPOCHS:-1}" in arm
-        assert "_SAVE_FREQ=$((6 * SAVE_EVERY_EPOCHS))" in arm
+        assert "_SAVE_FREQ=$((STEPS_PER_EPOCH * SAVE_EVERY_EPOCHS))" in arm
+        assert "STEPS_PER_EPOCH=${STEPS_PER_EPOCH:-6}" in arm, (
+            "the 6-steps-per-epoch default must stay the default"
+        )
         # Batch size comes from the 9B config, not this arm; setting it here would add a
         # second variable versus full5.
         assert "data.train_batch_size=" not in arm
@@ -154,7 +157,7 @@ def assert_judge_is_accepted(judge: str) -> None:
     assert judge in guard.group(1).split("|"), f"{judge} is not an accepted JUDGE"
 
 
-def _save_freq(save_every, epochs):
+def _save_freq(save_every, epochs, steps_per_epoch=None):
     """Run the ARM'S OWN save-cadence lines; returns (stdout, exit code).
 
     Lifted verbatim out of the script rather than reimplemented here. An earlier version of
@@ -162,16 +165,22 @@ def _save_freq(save_every, epochs):
     script left every one of these tests passing -- it was checking the transcription.
     """
     arm = mode_arm("frac10ep20")
+    # Greedy on purpose: the arm now contains earlier `exit 5; }` blocks (STEPS_PER_EPOCH
+    # validation), and a non-greedy match stops at those, before _SAVE_FREQ exists.
     block = re.search(
-        r"(SAVE_EVERY_EPOCHS=\$\{SAVE_EVERY_EPOCHS:-1\}.*?exit 5; \})", arm, re.S
+        r"(SAVE_EVERY_EPOCHS=\$\{SAVE_EVERY_EPOCHS:-1\}.*exit 5; \})", arm, re.S
     )
     assert block, "the frac10 arm no longer contains a save-cadence block to exercise"
-    script = f'MODE=frac10ep20\n_EPOCHS={epochs}\n{block.group(1)}\necho "$_SAVE_FREQ"\n'
-    env = None
+    script = (f'MODE=frac10ep20\n_EPOCHS={epochs}\n{block.group(1)}\n'
+              'echo "$_SAVE_FREQ|$_MAX_SAMPLES|$STEPS_PER_EPOCH"\n')
+    env = {**os.environ}
+    env.pop("STEPS_PER_EPOCH", None)
     if save_every is not None:
-        env = {**os.environ, "SAVE_EVERY_EPOCHS": save_every}
+        env["SAVE_EVERY_EPOCHS"] = save_every
+    if steps_per_epoch is not None:
+        env["STEPS_PER_EPOCH"] = steps_per_epoch
     proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
-    return proc.stdout.strip(), proc.returncode
+    return proc.stdout.strip().split("|")[0], proc.returncode
 
 
 def test_save_every_epochs_defaults_to_one_epoch():
@@ -768,3 +777,57 @@ def test_named_judges_still_pin_their_parser(tmp_path):
     assert "REASONING_PARSER=gemma4" in out, "the gemma alias stopped pinning its parser"
     out, rc = _resolve_judge("9b-ce3", REASONING_PARSER="gemma4")
     assert "REASONING_PARSER=qwen3" in out, "a CE alias stopped pinning its parser"
+
+
+def _resolve_grid(**env):
+    """Resolved (save_freq, max_samples, steps_per_epoch) from the arm's own lines."""
+    arm = mode_arm("frac10ep20")
+    block = re.search(
+        r"(SAVE_EVERY_EPOCHS=\$\{SAVE_EVERY_EPOCHS:-1\}.*exit 5; \})", arm, re.S
+    )
+    assert block
+    script = ('MODE=frac10ep20\n_EPOCHS=3\n' + block.group(1)
+              + '\necho "$_SAVE_FREQ|$_MAX_SAMPLES|$STEPS_PER_EPOCH"\n')
+    e = {k: v for k, v in os.environ.items() if k not in ("STEPS_PER_EPOCH", "SAVE_EVERY_EPOCHS")}
+    e.update(env)
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=e)
+    return proc.stdout.strip(), proc.returncode
+
+
+def test_the_default_grid_is_still_384_rows_at_6_steps_per_epoch():
+    """The regression that matters: four generator rounds ran 384/6 and their results are only
+    comparable to each other if the default never moves."""
+    out, rc = _resolve_grid()
+    assert rc == 0, out
+    assert out == "6|384|6", out
+
+
+def test_steps_per_epoch_5_gives_the_320_row_grid_for_the_exhausted_pool():
+    """The disjoint hash pool is spent below 0.9212, leaving ~325 rows. 325 is not a multiple
+    of 64, so the last round runs 5 x 64 = 320 with save_freq/test_freq moved to match --
+    otherwise drop_last yields 5 steps/epoch while the guard checks 6 and the final
+    checkpoint is silently never written."""
+    out, rc = _resolve_grid(STEPS_PER_EPOCH="5")
+    assert rc == 0, out
+    assert out == "5|320|5", out
+
+
+def test_steps_per_epoch_rejects_nonsense():
+    for bad in ("0", "-1", "six", "6.5"):
+        out, rc = _resolve_grid(STEPS_PER_EPOCH=bad)
+        assert rc == 5, f"STEPS_PER_EPOCH={bad!r} was accepted: {out!r}"
+
+
+def test_an_empty_steps_per_epoch_falls_back_to_the_default():
+    """sbatch --export=ALL propagates the submitting shell, so an empty value is a real
+    possibility. ${VAR:-6} treats it as unset -- the same convention every other knob here
+    uses, and the safe direction: fall back to the comparable default rather than abort."""
+    out, rc = _resolve_grid(STEPS_PER_EPOCH="")
+    assert rc == 0, out
+    assert out == "6|384|6", out
+
+
+def test_steps_per_epoch_still_guards_the_save_grid():
+    # 5 steps/epoch x 3 epochs = 15 steps; saving every 2 epochs (10) would strand step 15.
+    _, rc = _resolve_grid(STEPS_PER_EPOCH="5", SAVE_EVERY_EPOCHS="2")
+    assert rc == 5, "a save grid that drops the final checkpoint must be refused"
