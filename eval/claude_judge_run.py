@@ -121,22 +121,38 @@ def check_flip_against_incumbents(pairs):
           "rows skipped)" % (checked, skipped), file=sys.stderr)
 
 
-def score_one(rec, model, effort, timeout):
-    """One pair -> (row, cost). Retries once on a parse failure, as the
-    production judge path does, then records the failure and moves on."""
-    last_env, last_verdict = {}, {}
-    for _ in range(2):
-        env = ask(rec["judge_prompt"], model=model, effort=effort, full=True,
-                  timeout=timeout)
+def score_one(rec, model, effort, timeout, attempts=3):
+    """One pair -> (row, cost).
+
+    Retries BOTH failure modes, because they are equally transient here:
+      * a parse failure, as the production judge path does;
+      * the CLI exiting non-zero. Measured at roughly 1 call in 400, with no
+        detail beyond the banner on stderr, and the same prompt succeeding on a
+        later attempt. Without this retry a flaky call silently costs a pair,
+        which quietly breaks the identical-pair-set property the whole
+        comparison rests on.
+    """
+    last_env, last_verdict, last_error = {}, {}, None
+    for _ in range(attempts):
+        try:
+            env = ask(rec["judge_prompt"], model=model, effort=effort, full=True,
+                      timeout=timeout)
+        except Exception as exc:  # transient CLI/gateway failure
+            last_error = repr(exc)
+            time.sleep(2)
+            continue
         verdict = _parse_turing_response(env["result"])
-        last_env, last_verdict = env, verdict
+        last_env, last_verdict, last_error = env, verdict, None
         if not verdict.get("parse_error") and verdict.get("rating") is not None:
             rating = int(verdict["rating"])
             if 1 <= rating <= 7:
                 return build_row(rec, rating, verdict=verdict, envelope=env,
                                  judge_model=model, effort=effort), env.get("total_cost_usd") or 0.0
-    return build_row(rec, None, verdict=last_verdict, envelope=last_env,
-                     judge_model=model, effort=effort), last_env.get("total_cost_usd") or 0.0
+    row = build_row(rec, None, verdict=last_verdict, envelope=last_env,
+                    judge_model=model, effort=effort)
+    if last_error:
+        row["error"] = last_error
+    return row, last_env.get("total_cost_usd") or 0.0
 
 
 def main():
