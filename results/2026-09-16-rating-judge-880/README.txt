@@ -1,7 +1,7 @@
 rating_only judge on the frozen 880-pair held-out set
 =====================================================
-Four cells added to the judge-accuracy chart: the rating_only thinking-ON judge (J1', GRPO
-step 52) and its zero-shot control, each decoded at T=0.7 and T=1.0.
+Two cells added to the judge-accuracy chart: the rating_only thinking-ON judge (J1', GRPO
+step 52) and its zero-shot control.
 
 Date: 2026-09-16
 Code: branch worktree-thinking-judge, commit 65c1894 (snapshot
@@ -10,20 +10,22 @@ Code: branch worktree-thinking-judge, commit 65c1894 (snapshot
 
 WHICH RUN IS PLOTTED
 --------------------
-The four cells were run twice, differing ONLY in presence_penalty. The figures plot the
-presence_penalty=0 run (jobs 23603-23606); presence_penalty=1.5 (jobs 23585-23588) is kept in
-rating_880_clean.csv. 0 was chosen because no other cell on the chart uses a presence penalty:
-training rollouts pin PERSONA_VLLM_PRESENCE_PENALTY=0, and veRL validation has no
-presence-penalty field in its SamplingConfig.
+The MATCHED-DECODE run, jobs 23646-23647: no JUDGE_SAMPLING at all, so vLLM uses each model's
+generation_config.json defaults. That is what the other 26 cells record
+(sampling = "generation_config_defaults (no wire override)"), so the prompt is the only
+judge-side variable on the figure.
+
+Two earlier runs of the same two models are retained but NOT plotted; they differ only in
+decode. See ARTIFACTS.
 
 Metric: accuracy_half_tie = (correct + 0.5*ties)/880, parse failures in the denominator at 0.
-n=880 and failure_rate 0.000 for all eight runs. Values are in the CSVs and the figures.
+n=880 for every cell. Values are in the CSVs and on the figures.
 
 
 FIRST ATTEMPT, DISCARDED
 ------------------------
-Jobs 23558-23561 ran the same four cells against the WRONG pair set. Their numbers are in
-rating_880.csv and are not plotted.
+Jobs 23558-23561 ran against the WRONG pair set. Their numbers are in rating_880.csv and are
+not plotted.
 
 Cause: scripts/slurm/judge_sweep_cell.sh defaulted PAIRS to
 results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet, and that default was taken.
@@ -38,16 +40,18 @@ files are kept.
 
 ARTIFACTS
 ---------
-comparison.csv          30 rows: 26 copied verbatim from
-                        results/2026-09-01-gemma-single-token-judge/comparison.csv
-                        plus the 4 rows in rating_880_nopp.csv. All 30 share one
-                        pair_source; the merge refuses otherwise.
-rating_880_nopp.csv     the 4 cells PLOTTED (jobs 23603-23606, presence_penalty 0)
-rating_880_clean.csv    the same 4 cells at presence_penalty 1.5 (jobs 23585-23588)
-rating_880.csv          the 4 DISCARDED cells (jobs 23558-23561, wrong pair set)
-judge_accuracy_880.png  accuracy_half_tie
-judge_a_rate_880.png    a_rate_half_tie
-make_plot.py            renders both figures from comparison.csv
+comparison.csv            28 rows: 26 copied verbatim from
+                          results/2026-09-01-gemma-single-token-judge/comparison.csv plus the
+                          2 rows in rating_880_matched.csv. All 28 share one pair_source; the
+                          merge refuses otherwise.
+rating_880_matched.csv    the 2 cells PLOTTED (jobs 23646-23647, no wire override)
+rating_880_nopp.csv       4 cells, T in {0.7,1.0} + top_p 0.95/top_k 20/min_p 0/
+                          repetition_penalty 1.0, presence_penalty 0 (jobs 23603-23606)
+rating_880_clean.csv      the same 4 cells at presence_penalty 1.5 (jobs 23585-23588)
+rating_880.csv            the 4 DISCARDED cells (jobs 23558-23561, wrong pair set)
+judge_accuracy_880.png    accuracy_half_tie
+judge_a_rate_880.png      a_rate_half_tie
+make_plot.py              renders both figures from comparison.csv
 
 
 UPSTREAM CHAIN
@@ -68,27 +72,19 @@ merge to dense          job 23551, gate PASS (A targets=128 scaling=0.5; B 128/1
                         (23549/23550 are earlier failed attempts, retained)
 
 
-EVAL CELLS (used)
------------------
-job    cell                          model                              T
-23585  judge-9b-rating-trained-t10   .../step52/hf_dense                1.0
-23586  judge-9b-rating-trained-t07   .../step52/hf_dense                0.7
-23587  judge-9b-rating-zeroshot-t10  Qwen/Qwen3.5-9B                    1.0
-23588  judge-9b-rating-zeroshot-t07  Qwen/Qwen3.5-9B                    0.7
+EVAL CELLS (plotted)
+--------------------
+job    cell                      model
+23646  judge-9b-rating-trained   .../2026-09-16-rating-judge-j1-merge2/models/step52/hf_dense
+23647  judge-9b-rating-zeroshot  Qwen/Qwen3.5-9B
 
-All COMPLETED 0:0, 9m19s-14m27s. JUDGE_PROMPT_STYLE=rating_only, THINKING_MODE=on, TP=1,
-REPLICAS=8.
+Both COMPLETED 0:0 (7m35s, 12m27s). JUDGE_PROMPT_STYLE=rating_only, THINKING_MODE=on, TP=1,
+REPLICAS=8, no JUDGE_SAMPLING.
 
 pairs   results/2026-08-10-test-eval-9b-full5ep-full-schema/raw/pairs/gen_9b-full5ep-step0_880.parquet
-dumps   results/2026-09-16-rating-judge-880-clean/raw/sweep/<cell>/on/rating_only/reward/
-
-DECODE (differs from the other 26 bars; the pair set does not)
-  these 4:        {"temperature":<T>,"top_p":0.95,"top_k":20,"min_p":0.0,
-                   "presence_penalty":1.5,"repetition_penalty":1.0}
-                  via JUDGE_SAMPLING -> PERSONA_JUDGE_SAMPLING (opt-in override added in
-                  commit 0a4c34e; unset reproduces the frozen no-wire-override policy)
-  other 26 bars:  T=0.6, repetition_penalty=1.1, no other wire override
-The figures carry this as a footnote.
+        AI turns generated by job 13940 from the SFT model at --temperature 0.7 --top_p 0.8
+        --top_k 20, gen_num 1 (raw/generator/9b-grpo-step0/gen_metadata.json)
+dumps   results/2026-09-16-rating-judge-880-matched/raw/sweep/<cell>/on/rating_only/reward/
 
 
 REPRODUCE
@@ -101,25 +97,25 @@ bash scripts/cluster_launch.sh --dependency-profile training --run-root <RUNROOT
   --env MERGED_EP3=/home/lancewicki/data/hf_cache/models--Qwen--Qwen3.5-9B/snapshots/c202236235762e1c871ad0ccb60c8ee5ba337b9a \
   scripts/submit_snapshot_job.sh --export=ALL -- scripts/slurm/merge_grpo_ckpt.sh
 
-# one eval cell per (model, temperature); repeat 4x. PAIRS is explicit ON PURPOSE.
+# one eval cell per model; repeat 2x. PAIRS is explicit ON PURPOSE. No JUDGE_SAMPLING: an
+# unset JUDGE_SAMPLING is what reproduces the frozen no-wire-override policy the other cells used.
 bash scripts/cluster_launch.sh --dependency-profile eval --run-root <EVALROOT> \
   --env MODEL=<dense path | Qwen/Qwen3.5-9B> --env TP=1 --env REPLICAS=8 \
   --env THINKING_MODE=on --env CELL_NAME=<cell> --env JUDGE_PROMPT_STYLE=rating_only \
-  --env 'JUDGE_SAMPLING={"temperature":1.0,"top_p":0.95,"top_k":20,"min_p":0.0,"presence_penalty":1.5,"repetition_penalty":1.0}' \
   --env PAIRS=<...>/2026-08-10-test-eval-9b-full5ep-full-schema/raw/pairs/gen_9b-full5ep-step0_880.parquet \
   --env SWEEP_ROOT=<EVALROOT>/raw/sweep \
   scripts/submit_snapshot_job.sh --gres=gpu:8 --export=ALL -- scripts/slurm/judge_sweep_cell.sh
 
 python <SNAP>/scripts/build_single_token_comparison.py \
-  --sweep-root <EVALROOT>/raw/sweep --out <EVALROOT>/rating_880_clean.csv
+  --sweep-root <EVALROOT>/raw/sweep --out <EVALROOT>/rating_880_matched.csv
 python make_plot.py
 
 
 VALIDATION
 ----------
 - merge gate PASS, exit 0
-- all 4 cells exit 0:0, n_pairs=880, failure_rate 0.000
-- comparison.csv: all 30 rows carry the same pair_source (asserted at merge time)
+- both plotted cells exit 0:0, n_pairs=880
+- comparison.csv: all 28 rows carry the same pair_source (asserted at merge time)
 - 26 historical rows copied unmodified; their plotted values are unchanged against
   results/2026-09-01-gemma-single-token-judge/judge_accuracy_880.png
-- local test suite at commit 4b82124: 975 passed, 28 skipped
+- local test suite at commit f64738d: 1003 passed, 28 skipped

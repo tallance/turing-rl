@@ -1,20 +1,17 @@
 """Judge plots on the frozen 880-pair held-out set, from comparison.csv.
 
 Copied from results/2026-09-01-gemma-single-token-judge/make_plot.py and extended with the
-rating_only thinking-ON judge (J1', GRPO step 52) and its zero-shot control, each at two
-decode temperatures.
+rating_only thinking-ON judge (J1', GRPO step 52) and its zero-shot control.
 
-Two structural changes against the original:
+One structural change against the original: GROUPS maps a series key to a cell name, so a
+group can carry any number of bars. The original hard-coded three (thinking OFF / ON / single
+token) and centred them with a fixed ``offset - 1``; the rating groups have one, so the offset
+is computed from how many bars a group actually has.
 
-* GROUPS now maps a series key to a cell name, so a group can carry any number of bars. The
-  original hard-coded three (thinking OFF / ON / single token) and centred them with a fixed
-  ``offset - 1``; the rating groups have two, so the offset is computed from how many bars a
-  group actually has.
-* The four rating bars were scored under a DIFFERENT DECODE POLICY from every other bar --
-  the Qwen3.5 thinking-mode recommendation (top_p 0.95, top_k 20, min_p 0, presence_penalty
-  1.5, repetition_penalty 1.0) at T in {0.7, 1.0}, whereas the historical cells used T=0.6
-  with repetition_penalty 1.1 and no other wire override. They are therefore NOT decode-
-  comparable with the bars above them, which the footnote states on the figure itself.
+All 28 cells share one pair set and one decode policy (each model's generation_config.json
+defaults, no wire override), so the prompt is the only judge-side variable on the figure.
+Earlier runs of these two cells at other decode settings are kept in the sibling CSVs; see
+README.txt.
 
 Error bars are a normal approximation, 1.96*sqrt(p(1-p)/n); with the half-tie rule the
 outcome is not strictly Bernoulli, so read them as indicative.
@@ -46,12 +43,11 @@ SERIES_SPEC = {
     "off": ("full", "off"),
     "on": ("full", "on"),
     "st": ("single_token", "off"),
-    "r07": ("rating_only", "on"),
-    "r10": ("rating_only", "on"),
+    "r": ("rating_only", "on"),
 }
 # Draw order within a group, bottom to top.
 FULL_SET = ["off", "on", "st"]
-RATING_SET = ["r07", "r10"]
+RATING_SET = ["r"]
 
 # Bottom-to-top: zero-shot by model size, then the trained judges.
 # (row label, {series key: cell name}, arm, draw order)
@@ -61,47 +57,44 @@ GROUPS = [
     ("Gemma-4-12B", {"off": "gemma4-12b", "on": "gemma4-12b", "st": "gemma4-12b-st"}, "zero", FULL_SET),
     ("Qwen3.5-27B", {"off": "qwen35-27b", "on": "qwen35-27b", "st": "qwen35-27b-st"}, "zero", FULL_SET),
     ("Gemma-4-31B", {"off": "gemma4-31b", "on": "gemma4-31b", "st": "gemma4-31b-st"}, "zero", FULL_SET),
-    ("Qwen3.5-9B\nrating-only", {"r07": "judge-9b-rating-zeroshot-t07",
-                                 "r10": "judge-9b-rating-zeroshot-t10"}, "zero", RATING_SET),
+    ("Qwen3.5-9B\nrating-only", {"r": "judge-9b-rating-zeroshot"}, "zero", RATING_SET),
     ("Qwen3.5-4B judge", {"off": "judge-4b-graded-step52", "on": "judge-4b-graded-step52",
                           "st": "judge-4b-ce-st"}, "trained", FULL_SET),
     ("Qwen3.5-9B judge", {"off": "judge-9b-graded-step52", "on": "judge-9b-graded-step52",
                           "st": "judge-9b-ce-st"}, "trained", FULL_SET),
     # Single-token only: there is no trained full-schema Gemma judge.
     ("Gemma-4-12B judge", {"st": "judge-gemma12b-ce-st"}, "trained", ["st"]),
-    ("Qwen3.5-9B judge\nrating-only", {"r07": "judge-9b-rating-trained-t07",
-                                       "r10": "judge-9b-rating-trained-t10"}, "trained", RATING_SET),
+    ("Qwen3.5-9B judge\nrating-only", {"r": "judge-9b-rating-trained"}, "trained", RATING_SET),
 ]
 
-# Warm = trained, cold = zero-shot. Rating-only gets its own hues so the different decode
-# policy is visible at a glance rather than blending into the full-schema series.
+# Warm = trained, cold = zero-shot. Rating-only keeps its own hue so the newest protocol is
+# distinguishable from the three it is being compared against.
 COLOURS = {
     ("zero", "off"): "#1f77b4", ("zero", "on"): "#7d5bd0", ("zero", "st"): "#12a1a1",
-    ("zero", "r07"): "#2e7d32", ("zero", "r10"): "#8bc34a",
+    ("zero", "r"): "#2e7d32",
     ("trained", "off"): "#d1402f", ("trained", "on"): "#f2952e", ("trained", "st"): "#8e1b4d",
-    ("trained", "r07"): "#5d4037", ("trained", "r10"): "#a1887f",
+    ("trained", "r"): "#5d4037",
 }
 LEGEND = [
     ("trained", "off", "trained — full schema, thinking OFF"),
     ("trained", "on",  "trained — full schema, thinking ON"),
     ("trained", "st",  "trained — single token"),
-    ("trained", "r07", "trained — rating only, thinking ON, T=0.7"),
-    ("trained", "r10", "trained — rating only, thinking ON, T=1.0"),
+    ("trained", "r",   "trained — rating only, thinking ON"),
     ("zero", "off", "zero-shot — full schema, thinking OFF"),
     ("zero", "on",  "zero-shot — full schema, thinking ON"),
     ("zero", "st",  "zero-shot — single token"),
-    ("zero", "r07", "zero-shot — rating only, thinking ON, T=0.7"),
-    ("zero", "r10", "zero-shot — rating only, thinking ON, T=1.0"),
+    ("zero", "r",   "zero-shot — rating only, thinking ON"),
 ]
 
 # Between the last zero-shot group and the first trained one.
 DIVIDER_AFTER = 5
 
 FOOTNOTE = (
-    "All 30 cells are scored on the same pair set (gen_9b-full5ep-step0_880.parquet), and none "
-    "uses a presence penalty. The rating-only bars still differ in decode: T as stated with "
-    "top_p 0.95 / top_k 20 / min_p 0 / repetition_penalty 1.0, against T=0.6 / "
-    "repetition_penalty 1.1 for every other bar."
+    "All 28 cells share one pair set (gen_9b-full5ep-step0_880.parquet; its AI turns were "
+    "sampled at T=0.7) and one decode policy (each model's generation_config.json defaults, no "
+    "wire override). Training data differs: the trained rating-only judge saw a mixed-"
+    "temperature corpus (2 of 4 fakes per context at T=1.0), every other trained judge saw "
+    "T=0.7 only."
 )
 
 FIGURES = [
