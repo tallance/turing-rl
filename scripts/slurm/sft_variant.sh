@@ -226,6 +226,15 @@ if [ -n "$BASE_ADAPTER" ]; then
   ARGS+=(--base_adapter "$BASE_ADAPTER")
 fi
 
+# Held-out eval. build_judge_ce_dataset.py writes a --val-out split on every judge iteration;
+# without this it was never consumed, so the only number a run reported was a train loss that
+# reaches ~3e-06 (memorised) and says nothing about generalisation.
+EVAL_DATA=${EVAL_DATA:-}
+if [ -n "$EVAL_DATA" ]; then
+  [ -f "$EVAL_DATA" ] || { echo "ERROR: EVAL_DATA=$EVAL_DATA does not exist" >&2; exit 2; }
+  ARGS+=(--eval_data_path "$EVAL_DATA")
+fi
+
 [ "$SMOKE" = "1" ] && ARGS+=(--exit_after_trainer_build)
 # SMOKE's own cap yields to an explicit MAX_TRAIN_EXAMPLES so --max_train_examples is never
 # passed twice; SMOKE=1 on its own still emits the same 64 it always did.

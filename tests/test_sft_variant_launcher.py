@@ -606,3 +606,46 @@ def test_generated_data_never_resolves_through_the_source_snapshot():
     assert "TURING_RL_DATA_ROOT" not in _text(SCRIPT).replace(
         "TURING_RL_GENERATED_DATA_ROOT", ""
     )
+
+def test_eval_data_is_absent_unless_asked_for():
+    # Every run before this change trained with no eval path. Unset must stay byte-identical.
+    args = _resolve(MODEL="qwen35-9b-judge", VARIANT="bf16_fsdp", DATA="/d.jsonl", OUT="/o")["ARGS"]
+    assert "--eval_data_path" not in args
+
+
+def test_eval_data_is_forwarded_once_when_the_file_exists(tmp_path):
+    val = tmp_path / "ce_val.jsonl"
+    val.write_text('{"messages": []}\n')
+    args = _resolve(
+        MODEL="qwen35-9b-judge", VARIANT="bf16_fsdp", DATA="/d.jsonl", OUT="/o",
+        EVAL_DATA=str(val),
+    )["ARGS"]
+    assert args.count("--eval_data_path") == 1
+    assert args[args.index("--eval_data_path") + 1] == str(val)
+
+
+def test_eval_data_pointing_at_nothing_refuses_to_launch(tmp_path):
+    """A typo must fail at the launcher, not silently train with no eval and leave us reading
+    a train loss that reaches ~3e-06 while telling us nothing about generalisation."""
+    try:
+        _resolve(MODEL="qwen35-9b-judge", VARIANT="bf16_fsdp", DATA="/d.jsonl", OUT="/o",
+                 EVAL_DATA=str(tmp_path / "missing.jsonl"))
+    except ResolveError as exc:
+        assert exc.result.returncode == 2, exc
+        assert "EVAL_DATA" in exc.result.stderr
+    else:
+        raise AssertionError("a missing EVAL_DATA should have exited 2")
+
+
+def test_ce_train_launcher_forwards_eval_data_only_when_set():
+    text = (ROOT / "scripts" / "launch_judge_ce_train.sh").read_text()
+    assert '[ -n "${EVAL_DATA:-}" ] && EXPORTS="$EXPORTS,EVAL_DATA=$EVAL_DATA"' in text
+
+
+def test_trainer_wires_eval_dataset_and_turns_evaluation_on():
+    """The three lines that make eval_loss actually appear. Without eval_strategy the dataset
+    is accepted and never evaluated, which looks identical in the log."""
+    src = (ROOT / "training" / "sft" / "lora_sft.py").read_text()
+    assert '"--eval_data_path"' in src
+    assert "eval_dataset=eval_dataset" in src
+    assert 'eval_strategy=("epoch" if eval_dataset is not None else "no")' in src

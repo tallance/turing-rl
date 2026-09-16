@@ -76,6 +76,8 @@ EXPORTS="ALL,MODEL=$MODEL,VARIANT=$VARIANT,DATA=$DATA,OUT=$OUT"
 # Iterative SFT (judge iter2+): a previous adapter merged into the base before a fresh LoRA
 # is trained on top. sft_variant.sh refuses a path with no adapter_config.json.
 [ -n "${BASE_ADAPTER:-}" ] && EXPORTS="$EXPORTS,BASE_ADAPTER=$BASE_ADAPTER"
+# The ce_val.jsonl that build_judge_ce_dataset.py already writes alongside ce_train.jsonl.
+[ -n "${EVAL_DATA:-}" ] && EXPORTS="$EXPORTS,EVAL_DATA=$EVAL_DATA"
 
 echo "=== judge CE train: model=$MODEL variant=$VARIANT data=$DATA out=$OUT ==="
 # Echoed separately so the ordinary from-base banner is unchanged, and so a run that MEANT

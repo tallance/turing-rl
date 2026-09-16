@@ -417,6 +417,14 @@ def parse_args() -> argparse.Namespace:
         help="Path to LoRA adapter to merge before training (for iterative SFT)",
     )
     parser.add_argument(
+        "--eval_data_path",
+        type=str,
+        default=None,
+        help="Held-out JSONL to report eval_loss on. Without it the only visible number is "
+             "the train loss, which for the judge CE runs reaches ~3e-06 -- i.e. memorised "
+             "-- while telling you nothing about generalisation.",
+    )
+    parser.add_argument(
         "--batch_size",
         type=int,
         default=None,
@@ -561,6 +569,13 @@ def main():
         log(f"Selected {len(dataset)} / {original_len} examples for smoke run")
     log(f"Training examples: {len(dataset)}")
 
+    # build_judge_ce_dataset.py has always written a --val-out split; until now nothing could
+    # consume it, so five judge iterations trained with no generalisation signal at all.
+    eval_dataset = None
+    if args.eval_data_path:
+        eval_dataset = load_dataset("json", data_files=args.eval_data_path, split="train")
+        log(f"Eval examples: {len(eval_dataset)} from {args.eval_data_path}")
+
     if uses_generation_prefix_masking(args.model):
         log("completion-mask builder: generation-prefix (supervises the target only)")
     else:
@@ -642,6 +657,9 @@ def main():
         weight_decay=config.get("weight_decay", 0.01),
         bf16=True,
         logging_steps=config.get("logging_steps", 10),
+        # Evaluate on the same grid the checkpoints land on, so every saved adapter has an
+        # eval_loss next to it. "no" keeps runs without --eval_data_path byte-identical.
+        eval_strategy=("epoch" if eval_dataset is not None else "no"),
         **save_kwargs_from_config(config),
         max_length=args.max_seq_length,
         packing=not args.no_packing,
@@ -664,6 +682,7 @@ def main():
         model=model,
         args=training_args,
         train_dataset=dataset,
+        eval_dataset=eval_dataset,
         processing_class=tokenizer,
         peft_config=peft_config,
     )
