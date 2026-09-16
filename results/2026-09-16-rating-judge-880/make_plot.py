@@ -98,10 +98,10 @@ LEGEND = [
 DIVIDER_AFTER = 5
 
 FOOTNOTE = (
-    "All 30 cells are scored on the same pair set (gen_9b-full5ep-step0_880.parquet). "
-    "The rating-only bars differ only in DECODE: Qwen3.5 thinking-mode sampling "
-    "(top_p 0.95, top_k 20, min_p 0, presence_penalty 1.5, repetition_penalty 1.0) at the "
-    "stated T, against T=0.6 / repetition_penalty 1.1 for every other bar."
+    "All 30 cells are scored on the same pair set (gen_9b-full5ep-step0_880.parquet), and none "
+    "uses a presence penalty. The rating-only bars still differ in decode: T as stated with "
+    "top_p 0.95 / top_k 20 / min_p 0 / repetition_penalty 1.0, against T=0.6 / "
+    "repetition_penalty 1.1 for every other bar."
 )
 
 FIGURES = [

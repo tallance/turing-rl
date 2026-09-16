@@ -8,46 +8,43 @@ Code: branch worktree-thinking-judge, commit 65c1894 (snapshot
       /home/lancewicki/projects/turing-rl-sources/65c189424fa1a3378fc1a06d0123418f9a511c49)
 
 
-RESULTS (n=880 each, failure_rate 0.000)
-----------------------------------------
-judge-9b-rating-trained-t07    0.609
-judge-9b-rating-trained-t10    0.595
-judge-9b-rating-zeroshot-t10   0.541
-judge-9b-rating-zeroshot-t07   0.510
+WHICH RUN IS PLOTTED
+--------------------
+The four cells were run twice, differing ONLY in presence_penalty. The figures plot the
+presence_penalty=0 run (jobs 23603-23606); presence_penalty=1.5 (jobs 23585-23588) is kept in
+rating_880_clean.csv. 0 was chosen because no other cell on the chart uses a presence penalty:
+training rollouts pin PERSONA_VLLM_PRESENCE_PENALTY=0, and veRL validation has no
+presence-penalty field in its SamplingConfig.
 
-accuracy_half_tie = (correct + 0.5*ties)/880, parse failures in the denominator at 0.
+Metric: accuracy_half_tie = (correct + 0.5*ties)/880, parse failures in the denominator at 0.
+n=880 and failure_rate 0.000 for all eight runs. Values are in the CSVs and the figures.
 
 
 FIRST ATTEMPT, DISCARDED
 ------------------------
-Jobs 23558-23561 ran the same four cells and produced 0.691 / 0.700 / 0.716 / 0.728. They were
-scored against the WRONG pair set and are not used here.
+Jobs 23558-23561 ran the same four cells against the WRONG pair set. Their numbers are in
+rating_880.csv and are not plotted.
 
 Cause: scripts/slurm/judge_sweep_cell.sh defaulted PAIRS to
 results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet, and that default was taken.
-That set's AI turns come from the Qwen3-8B SFT carrying the stop-token masking bug: 267/880
-exceed 1000 chars (p50 7803 chars, 1545 words, max repeated 8-gram count p50 88 -- a decoding
-loop) against a paired human turn of ~67 chars, and 36% exceed 5x the human length. The chart's
-other 26 cells were never scored on it; they use gen_9b-full5ep-step0_880.parquet (gen mean
-50.5 chars vs human 67.3, zero generations over 1000 chars, 1.9% over 5x).
+Its AI turns come from the Qwen3-8B SFT carrying the stop-token masking bug (non-terminating
+generations); the chart's other 26 cells use gen_9b-full5ep-step0_880.parquet, which does not.
 
 The default was changed to the clean set in commit 4b82124, with tests
 (tests/test_judge_sweep_default_pairs.py). The July parquet and its generations pickle, and the
 Qwen3-8B SFT checkpoint (22G), were deleted from the cluster on 2026-09-16; their .meta.json
 files are kept.
 
-Measured difference between the two runs of the same cells, same code, same decode, pair set
-the only variable: trained 0.728 -> 0.609, zero-shot 0.691 -> 0.510.
-
 
 ARTIFACTS
 ---------
 comparison.csv          30 rows: 26 copied verbatim from
                         results/2026-09-01-gemma-single-token-judge/comparison.csv
-                        plus the 4 rows in rating_880_clean.csv. All 30 share one
+                        plus the 4 rows in rating_880_nopp.csv. All 30 share one
                         pair_source; the merge refuses otherwise.
-rating_880_clean.csv    the 4 cells used here (jobs 23585-23588)
-rating_880.csv          the 4 DISCARDED cells (jobs 23558-23561), retained for the record
+rating_880_nopp.csv     the 4 cells PLOTTED (jobs 23603-23606, presence_penalty 0)
+rating_880_clean.csv    the same 4 cells at presence_penalty 1.5 (jobs 23585-23588)
+rating_880.csv          the 4 DISCARDED cells (jobs 23558-23561, wrong pair set)
 judge_accuracy_880.png  accuracy_half_tie
 judge_a_rate_880.png    a_rate_half_tie
 make_plot.py            renders both figures from comparison.csv
