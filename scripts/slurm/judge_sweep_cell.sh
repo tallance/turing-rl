@@ -149,7 +149,19 @@ PY_CLIENT=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 
 # Default full 880 pair-set; override with PAIRS=<parquet> (e.g. a missing-pairs
 # subset for a targeted re-run of timed-out pairs).
-PAIRS=${PAIRS:-$REPO/results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet}
+#
+# This is gen_9b-full5ep-step0_880.parquet, which is what every cell on the published
+# judge-accuracy chart was scored against. It used to default to the July set,
+# results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet, and that was a trap:
+# the July set's fake turns come from the Qwen3-8B SFT with the stop-token masking bug, so
+# 36% of them run past 5x the paired human turn (mean 2444 chars against 67) and a judge
+# scores mostly by LENGTH -- on its length-matched subset a zero-shot 9B sits at 0.500, and a
+# length-only rule scores 0.561 against the judge's 0.564. Four rating_only cells were scored
+# against it by taking this default (jobs 23558-23561) and had to be thrown away.
+#
+# The set below is length-matched (gen mean 50.5 vs human 67.3, zero generations over 1000
+# chars, 1.9% over 5x). The July parquet and its generations pickle have since been deleted.
+PAIRS=${PAIRS:-$REPO/results/2026-08-10-test-eval-9b-full5ep-full-schema/raw/pairs/gen_9b-full5ep-step0_880.parquet}
 [ -f "$PAIRS" ] || { echo "ERROR: pair-set not found: $PAIRS" >&2; exit 2; }
 
 # The client appends $CELL_NAME/$THINKING_MODE to --out_dir, so pass the sweep ROOT.
