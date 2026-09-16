@@ -32,6 +32,39 @@ from shared.prompt_utils import (
 
 TURING_FIELDS: tuple[str, ...] = tuple(TURING_RESPONSE_PROPERTIES)
 
+# The rating_only prompt asks for one object holding one field. "rating" is already part of the
+# 37-field schema, so its type and 1-7 bound come from TURING_RESPONSE_PROPERTIES for free.
+RATING_ONLY_FIELDS: tuple[str, ...] = ("rating",)
+
+# A hand copy of training.grpo.reward's constants. That module pulls aiohttp and veRL at import
+# time and this one must stay importable anywhere, so the names cannot be shared by import;
+# tests/test_judge_format_rating_only.py pins the two copies equal. single_token is deliberately
+# absent: it has no <think> block and no JSON body, so nothing here can score it.
+PROMPT_STYLE_FULL = "full"
+PROMPT_STYLE_RATING_ONLY = "rating_only"
+PROMPT_STYLES = (PROMPT_STYLE_FULL, PROMPT_STYLE_RATING_ONLY)
+
+_STYLE_FIELDS = {
+    PROMPT_STYLE_FULL: TURING_FIELDS,
+    PROMPT_STYLE_RATING_ONLY: RATING_ONLY_FIELDS,
+}
+
+
+def resolve_prompt_style() -> str:
+    """Which schema this rollout is scored against. Same env var the rest of the pipeline uses.
+
+    Raises on an unknown value rather than defaulting to "full", for the reason resolve_arm does:
+    a typo'd style would score a rating_only run against the 37-field schema, pinning every
+    rollout's format term at 0.10 and producing a complete, healthy-looking run of a dead term.
+    """
+    style = os.environ.get("JUDGE_PROMPT_STYLE", PROMPT_STYLE_FULL).strip() or PROMPT_STYLE_FULL
+    if style not in PROMPT_STYLES:
+        raise ValueError(
+            f"JUDGE_PROMPT_STYLE must be one of {list(PROMPT_STYLES)}, got {style!r}"
+        )
+    return style
+
+
 _JSON_FENCE_RE = re.compile(r"```json\s*(.*?)\s*```", re.DOTALL)
 
 
@@ -189,7 +222,10 @@ def _value_conforms(name: str, raw: str) -> bool:
     return _values_are_well_formed({name: value})
 
 
-def ordered_prefix_coverage(entries: list[tuple[str, str]] | list[str]) -> float:
+def ordered_prefix_coverage(
+    entries: list[tuple[str, str]] | list[str],
+    fields: tuple[str, ...] = TURING_FIELDS,
+) -> float:
     """Fraction of TURING_FIELDS emitted, in canonical order, with a schema-conforming value.
 
     Order is load-bearing: the schema puts the dimension primitives first and ``rating`` last,
@@ -205,12 +241,12 @@ def ordered_prefix_coverage(entries: list[tuple[str, str]] | list[str]) -> float
     matched = 0
     for entry in entries:
         key, raw = entry if isinstance(entry, tuple) else (entry, None)
-        if matched >= len(TURING_FIELDS) or key != TURING_FIELDS[matched]:
+        if matched >= len(fields) or key != fields[matched]:
             break
         if raw is not None and not _value_conforms(key, raw):
             break
         matched += 1
-    return matched / len(TURING_FIELDS)
+    return matched / len(fields)
 
 
 # Constraints come from the schema, not a hand-maintained list: 15 of the 37 fields are strings
@@ -259,7 +295,9 @@ def _reject_non_finite(constant: str) -> float:
     raise ValueError(f"non-finite JSON constant: {constant}")
 
 
-def strict_parse_answer(answer_text: str | None) -> tuple[dict | None, bool]:
+def strict_parse_answer(
+    answer_text: str | None, fields: tuple[str, ...] = TURING_FIELDS
+) -> tuple[dict | None, bool]:
     """Parse the answer strictly: whole-string json.loads, no fence stripping, no brace slicing.
 
     Returns ``(parsed_or_None, exact_ordered_schema)``. The tolerant ``extract_json_object`` is
@@ -275,7 +313,7 @@ def strict_parse_answer(answer_text: str | None) -> tuple[dict | None, bool]:
         return None, False
     if not isinstance(parsed, dict):
         return None, False
-    exact = tuple(parsed.keys()) == TURING_FIELDS and _values_are_well_formed(parsed)
+    exact = tuple(parsed.keys()) == fields and _values_are_well_formed(parsed)
     return parsed, exact
 
 
@@ -325,6 +363,7 @@ class JudgeVerdict:
     fmt_ordered_coverage: float = 0.0
     fmt_exact_schema: bool = False
     fmt_strict_json: bool = False
+    prompt_style: str = PROMPT_STYLE_FULL
 
     @property
     def recovered(self) -> bool:
@@ -340,7 +379,28 @@ class JudgeVerdict:
         shortcut: fmt_all_fields fell to 0.000 while the aggregate format reward *rose*.
         Coverage now dominates, widening the compact-vs-full gap to ~0.09 without touching the
         0.9/0.1 task/format balance that produced the 9B's 0.752.
+
+        rating_only is scored on a DIFFERENT AXIS, not with reweighted versions of these terms.
+        The weights above grade completeness -- how far along a 37-field ordered schema a verdict
+        got -- and a one-field answer makes that binary, measuring nothing. What varies there is
+        packaging: on job 23152 fmt_strict_json ranged 0.906-1.0 while judge_recovered stayed
+        0.957-1.0, i.e. ~5% of rollouts produced a usable rating in an untidy wrapper. Those keep
+        full TASK credit (the verdict was there) and are docked only on tidiness.
+
+            0.5 strict_json   the answer is nothing but a JSON object
+            0.3 exact_schema  its keys are exactly ("rating",), value inside the declared 1-7
+            0.2 rating_range  a rating survives the TOLERANT parse -- this is the term that pays
+                              partial credit for a fenced or prose-wrapped answer
+
+        fmt_arith has no derived fields to check under this schema and is excluded rather than
+        left in as a permanently-unreachable 0.10.
         """
+        if self.prompt_style == PROMPT_STYLE_RATING_ONLY:
+            return (
+                0.5 * float(self.fmt_strict_json)
+                + 0.3 * float(self.fmt_exact_schema)
+                + 0.2 * float(self.fmt_rating_range)
+            )
         return (
             0.60 * self.fmt_ordered_coverage
             + 0.20 * float(self.fmt_exact_schema)
@@ -419,8 +479,22 @@ def resolve_answer_text(completion: str, thinking_enabled: bool | None = None) -
     return split_after_hidden_thinking(completion)
 
 
-def parse_judge_verdict(completion: str | None, *, thinking_enabled: bool | None = None) -> JudgeVerdict:
-    """Recover a rating and score format quality from one rollout completion."""
+def parse_judge_verdict(
+    completion: str | None,
+    *,
+    thinking_enabled: bool | None = None,
+    prompt_style: str | None = None,
+) -> JudgeVerdict:
+    """Recover a rating and score format quality from one rollout completion.
+
+    ``prompt_style`` selects the schema the FORMAT half is scored against; the rating-recovery
+    ladder is identical either way, since a rating is a rating however it was packaged. Defaults
+    to the propagated JUDGE_PROMPT_STYLE, same as ``thinking_enabled`` defaults to the
+    propagated thinking mode.
+    """
+    if prompt_style is None:
+        prompt_style = resolve_prompt_style()
+    fields = _STYLE_FIELDS[prompt_style]
     text = completion if isinstance(completion, str) else ""
 
     # Format is scored on the ANSWER only. With thinking enabled the completion is
@@ -438,10 +512,11 @@ def parse_judge_verdict(completion: str | None, *, thinking_enabled: bool | None
             fmt_all_fields=False,
             fmt_arith=False,
             fmt_rating_range=False,
+            prompt_style=prompt_style,
         )
     answer_text = resolved
-    ordered_coverage = ordered_prefix_coverage(top_level_json_entries(answer_text))
-    strict_parsed, exact_schema = strict_parse_answer(answer_text)
+    ordered_coverage = ordered_prefix_coverage(top_level_json_entries(answer_text), fields)
+    strict_parsed, exact_schema = strict_parse_answer(answer_text, fields)
     strict_json = strict_parsed is not None
 
     # The task-reward ladder stays lenient about FORM -- prose around the object, a fenced block,
@@ -468,9 +543,10 @@ def parse_judge_verdict(completion: str | None, *, thinking_enabled: bool | None
             fmt_ordered_coverage=ordered_coverage,
             fmt_exact_schema=exact_schema,
             fmt_strict_json=strict_json,
+            prompt_style=prompt_style,
         )
 
-    fmt_all_fields = set(data) == set(TURING_FIELDS)
+    fmt_all_fields = set(data) == set(fields)
     explicit_rating = _coerce_turing_rating(data.get("rating"))
     fmt_rating_range = explicit_rating is not None
     # Answer-scoped components are identical on every rung below; the rung only decides how the
@@ -479,6 +555,7 @@ def parse_judge_verdict(completion: str | None, *, thinking_enabled: bool | None
         "fmt_ordered_coverage": ordered_coverage,
         "fmt_exact_schema": exact_schema,
         "fmt_strict_json": strict_json,
+        "prompt_style": prompt_style,
     }
 
     if all(field in data for field in _PRIMITIVE_FIELDS):

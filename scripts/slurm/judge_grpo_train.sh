@@ -120,10 +120,17 @@ OVR=(
 # full-schema rubric and runs roughly 5k tokens shorter. Both configs are real files rather
 # than an override string, so the numbers stay reviewable next to the comments explaining them.
 JUDGE_CONFIG_NAME=${JUDGE_CONFIG_NAME:-qwen35_judge_grpo}
+# The prompt style is DERIVED from the config name, never accepted separately. The two describe
+# the same fact -- which schema the pair parquet was rendered with -- and the reward reads the
+# style while the trainer reads the config, so letting them be set independently creates a
+# combination where the format term silently scores a rating_only corpus against the 37-field
+# schema: every rollout pinned near the floor, and a run that looks entirely healthy.
 case "$JUDGE_CONFIG_NAME" in
-  qwen35_judge_grpo|qwen35_judge_rating_grpo) ;;
+  qwen35_judge_grpo)        export JUDGE_PROMPT_STYLE=full ;;
+  qwen35_judge_rating_grpo) export JUDGE_PROMPT_STYLE=rating_only ;;
   *) echo "ERROR: JUDGE_CONFIG_NAME must be qwen35_judge_grpo or qwen35_judge_rating_grpo, got $JUDGE_CONFIG_NAME" >&2; exit 2 ;;
 esac
+echo "=== judge schema: config=$JUDGE_CONFIG_NAME prompt_style=$JUDGE_PROMPT_STYLE ==="
 
 # --config-dir is NOT optional: without it Hydra resolves --config-name against veRL's own
 # packaged config directory and the job dies immediately with
