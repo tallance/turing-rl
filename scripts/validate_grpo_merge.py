@@ -266,16 +266,42 @@ def main() -> None:
         if n_allowlisted:
             notes.append(f"D: {n_allowlisted} allowlisted keys absent from hf_base (prefixes {allow})")
 
-        mismatched = []
+        # Bit-exact is the rule, with ONE bf16 step of slack.
+        #
+        # veRL holds some frozen params in fp32 and writes bf16 on save, so those cannot come
+        # back bit-identical. Measured on judge job 23152/23549: all 24 Qwen3.5 Gated-DeltaNet
+        # `linear_attn.norm.weight` tensors differed by exactly 2^-9 or 2^-8 against base
+        # magnitudes of ~0.96-1.17 -- one representable step -- while every other shared tensor,
+        # including the ordinary `input_layernorm.weight`, was bit-identical.
+        #
+        # rtol=2^-7 with atol=0 is exactly "at most one bf16 step apart": consecutive bf16 values
+        # differ by at most 2^-7 relative, so nothing further apart can pass. That cannot hide a
+        # wrong container, which differs on the order of 1e-1, and leaves the other tensors under
+        # strict equality. Anything beyond one step is still a hard failure.
+        one_bf16_step = 2.0 ** -7
+        mismatched, rounding = [], []
         for key in sorted(base.keys() & hf_base.keys()):
-            if not torch.equal(base.get(key), hf_base.get(key)):
+            a, b = base.get(key), hf_base.get(key)
+            if torch.equal(a, b):
+                continue
+            if a.shape == b.shape and torch.isclose(
+                a.float(), b.float(), rtol=one_bf16_step, atol=0.0
+            ).all():
+                rounding.append(key)
+            else:
                 mismatched.append(key)
         if mismatched:
             failures.append(
                 f"D: hf_base differs from base on {len(mismatched)} shared tensors, e.g. {mismatched[:3]} "
                 "-- the reconstructed frozen backbone does not match merged_ep3"
             )
+        if rounding:
+            notes.append(
+                f"D: {len(rounding)} shared tensors differ by <=1 bf16 step (fp32-held frozen "
+                f"params round-tripped through bf16), e.g. {rounding[:2]}"
+            )
         print(f"[D] hf_base shared={len(base.keys() & hf_base.keys())} mismatched={len(mismatched)} "
+              f"rounding={len(rounding)} "
               f"allowlisted_missing={len(missing)} bad_missing={len(bad_missing)} bad_extra={len(bad_extra)}")
 
     # ---- E: distinctness --------------------------------------------------------
