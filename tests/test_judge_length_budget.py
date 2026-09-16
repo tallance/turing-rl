@@ -187,12 +187,15 @@ def test_rating_config_composes_from_the_judge_config():
     assert _loaded(RATING_CONFIG)["defaults"] == ["qwen35_judge_grpo", "_self_"]
 
 
-def test_rating_config_changes_only_the_two_length_keys():
+def test_rating_config_changes_only_the_intended_keys():
     """Minimal delta, enforced rather than trusted.
 
     Everything that makes a judge run work is inherited. Any new key appearing here is either a
     copy of a parent value (which will go stale silently) or an unreviewed change of recipe, and
     both read identically in a diff.
+
+    Two length keys (the shorter rating_only corpus) and two validation keys (the parent leaves
+    validation off entirely, which every prior judge arm inherited).
     """
     parent = _flatten(_loaded(JUDGE_CONFIG))
     child = _flatten(_composed_rating_config())
@@ -202,7 +205,24 @@ def test_rating_config_changes_only_the_two_length_keys():
     assert changed == {
         "data.max_prompt_length",
         "actor_rollout_ref.rollout.max_model_len",
+        "trainer.test_freq",
+        "trainer.val_before_train",
     }, f"unexpected overrides: {sorted(changed)}"
+
+
+def test_rating_config_validates_several_times_per_epoch():
+    """A single before/after gives no curve and no basis for early stopping.
+
+    52 steps / 13 = validations at 0, 13, 26, 39, 52. Measured cost on job 23152: ~8 min for the
+    full 1410-row val split, against ~19 min per training step, so this is ~2% of the run.
+    """
+    trainer = _composed_rating_config()["trainer"]
+
+    assert trainer["val_before_train"] is True
+    assert 0 < trainer["test_freq"] <= 13, (
+        "test_freq must give several validations per epoch; validation is ~8 min, not the ~60 "
+        "a linear scaling from a small val subset suggests"
+    )
 
 
 def test_rating_config_prompt_plus_response_fits_its_context_window():

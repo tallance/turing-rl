@@ -42,3 +42,23 @@ actor_rollout_ref:
     # Held as a literal because OmegaConf cannot do arithmetic; the parent holds 22016 the same
     # way. The test is what keeps the two from drifting.
     max_model_len: 17408
+
+trainer:
+  # Every prior judge GRPO arm ran with test_freq -1 and val_before_train false (jobs 16244 and
+  # 16245), i.e. no held-out measurement at any point -- so an arm could only be judged after the
+  # fact, by merging it and running the 880-pair eval.
+  #
+  # 13 gives a real validation curve: steps 0, 13, 26, 39, 52 on a 52-step epoch. It is affordable
+  # because validation is far cheaper than it looks. MEASURED on job 23152: the full 1410-row val
+  # split completed in ~8 MINUTES (engines up 23:57:38, validation end 00:05:56), against a
+  # ~19 min training step. Cost is dominated by fixed overhead and parallel throughput across the
+  # eight rollout engines, NOT by row count -- the 200-row valsmoke took about the same ~8 min.
+  # So four validations add ~24 min to a ~19h run, and a reduced val subset buys nothing.
+  #
+  # Do not re-derive this from a small-sample validation and scale it linearly; that is what
+  # produced the 60-min-per-validation estimate behind job 23152's test_freq=52, and it was ~7x
+  # too high.
+  test_freq: 13
+  # The step-0 reading is the baseline every later point is read against, and it measures the
+  # starting model under the real rollout path before any gradient step can confound it.
+  val_before_train: true
