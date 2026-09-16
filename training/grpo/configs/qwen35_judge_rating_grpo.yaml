@@ -44,20 +44,24 @@ actor_rollout_ref:
     max_model_len: 17408
 
 trainer:
-  # Every prior judge GRPO arm ran with test_freq -1 and val_before_train false (jobs 16244 and
-  # 16245), i.e. no held-out measurement at any point -- so an arm could only be judged after the
-  # fact, by merging it and running the 880-pair eval.
+  # 13 with val_before_train is what every full judge GRPO arm has used since the 2B/4B R1 runs
+  # -- jobs 17888, 17893, 18635, 18914, and most directly job 18920
+  # (Qwen3.5-9B_graded_thinkon_10752), which is this configuration minus the prompt: 9B, graded,
+  # thinking on, 10752 response budget, total_epochs 1. Only the three oldest 4B arms
+  # (16145/16244/16269) and the alternating-round judge trains ran test_freq -1.
   #
-  # 13 gives a real validation curve: steps 0, 13, 26, 39, 52 on a 52-step epoch. It is affordable
-  # because validation is far cheaper than it looks. MEASURED on job 23152: the full 1410-row val
-  # split completed in ~8 MINUTES (engines up 23:57:38, validation end 00:05:56), against a
-  # ~19 min training step. Cost is dominated by fixed overhead and parallel throughput across the
-  # eight rollout engines, NOT by row count -- the 200-row valsmoke took about the same ~8 min.
-  # So four validations add ~24 min to a ~19h run, and a reduced val subset buys nothing.
+  # It is set HERE because the parent config declares neither key, so the value lives only in
+  # whatever the submit line happens to carry. Job 23152 was launched with test_freq=52 on the
+  # mistaken belief that no precedent existed -- that came from sampling three prior logs and
+  # generalising, and it cost that run its validation curve.
   #
-  # Do not re-derive this from a small-sample validation and scale it linearly; that is what
-  # produced the 60-min-per-validation estimate behind job 23152's test_freq=52, and it was ~7x
-  # too high.
+  # Affordability, since the 52 was also defended on cost: MEASURED on job 23152, the full
+  # 1410-row val split completed in ~8 MINUTES (engines up 23:57:38, validation end 00:05:56)
+  # against a ~19 min training step. Cost is dominated by fixed overhead and parallel throughput
+  # across the eight rollout engines, NOT by row count -- the 200-row valsmoke took the same
+  # ~8 min. Four validations add ~24 min to a ~19h run; a reduced val subset buys nothing.
+  # Do not re-derive this by scaling a small-sample validation linearly, which is what produced
+  # the ~7x-too-high 60-min estimate.
   test_freq: 13
   # The step-0 reading is the baseline every later point is read against, and it measures the
   # starting model under the real rollout path before any gradient step can confound it.
