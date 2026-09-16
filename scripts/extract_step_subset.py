@@ -35,14 +35,29 @@ ROOT = os.environ.get("STEP320_ROOT", "%s/raw/%s/sweep" % (EVAL_ROOT, GEN_KEY))
 # so a change between checkpoints cannot be a change of sample. Without it the
 # keys are sampled fresh from this checkpoint.
 KEYS_JSON = os.environ.get("KEYS_JSON")
-CELLS = ["qwen35-4b", "qwen35-9b", "qwen35-27b", "gemma4-12b", "gemma4-31b"]
+# KEYS_FILE is the same list read from a path instead of the environment. A
+# 200-key list is ~15 KB of JSON; passing that inline through an ssh command
+# string is where quoting bugs live, and a silently truncated list would just
+# look like a smaller sample rather than an error.
+if not KEYS_JSON and os.environ.get("KEYS_FILE"):
+    KEYS_JSON = open(os.environ["KEYS_FILE"]).read()
+# Which cells must be present, and which to cross-check against each other. The
+# default is the five open-weight judges of the step-320 sweep. Override it for a
+# root that ran a different set: the alternating-lineage roots have exactly one
+# full-schema `on` cell (gemma4-12b), so CELLS=gemma4-12b. With a single cell the
+# cross-cell comparisons below degenerate to no-ops, while the per-pair
+# judge_prompt presence check -- the one that actually matters for replay -- still
+# fires.
+CELLS = os.environ.get(
+    "CELLS", "qwen35-4b,qwen35-9b,qwen35-27b,gemma4-12b,gemma4-31b").split(",")
 # Which cell to lift the replayed prompt from, in preference order. No single
 # cell records one for every pair and which cells do varies by checkpoint
 # (at step 320 qwen35-4b stores none; at step 0 it stores all 880 while
 # qwen35-9b misses 10). Since every cell that records a prompt records a
 # byte-identical one -- asserted below, per pair -- taking the first available
 # is safe, and preferring the trained-against judge keeps it stable where it can.
-PROMPT_CELLS = ["qwen35-9b", "qwen35-27b", "gemma4-31b", "gemma4-12b", "qwen35-4b"]
+PROMPT_CELLS = os.environ.get(
+    "PROMPT_CELLS", "qwen35-9b,qwen35-27b,gemma4-31b,gemma4-12b,qwen35-4b").split(",")
 MODE = "on"
 N_SAMPLE = int(os.environ.get("N_SAMPLE", "100"))
 EXPECT_PAIRS = int(os.environ.get("EXPECT_PAIRS", "880"))
