@@ -236,6 +236,33 @@ def _run_plot(eval_root, out_dir, *extra):
     )
 
 
+def test_win_rate_tie_half_scores_a_tie_as_half_a_win(tmp_path):
+    # win_rate_ge5 counts a tie as a LOSS for the generator; the third panel
+    # scores it 0.5. Derived from n_likert/n_tie rather than recomputed from
+    # raw rows, so the arithmetic gets pinned here.
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    from plot_test_eval_judges import read_summary
+
+    p = tmp_path / "summary_x.csv"
+    # 100 scored, 60 wins, 20 ties -> ties=loss 0.60, ties=half (60+10)/100 = 0.70
+    p.write_text("checkpoint,n_scored,n_likert,likert_mean,win_rate_ge5,n_tie\n"
+                 "run-step320,100,100,4.5,0.6,20\n")
+    row = read_summary(p)[0]
+    assert row["win_rate_ge5"] == 0.6
+    assert row["win_rate_tie_half"] == 0.7
+
+    # No ties -> the two conventions must agree exactly.
+    p.write_text("checkpoint,n_scored,n_likert,likert_mean,win_rate_ge5,n_tie\n"
+                 "run-step320,100,100,4.5,0.35,0\n")
+    row = read_summary(p)[0]
+    assert row["win_rate_tie_half"] == row["win_rate_ge5"] == 0.35
+
+    # All ties -> exactly parity, which is what a tie asserts.
+    p.write_text("checkpoint,n_scored,n_likert,likert_mean,win_rate_ge5,n_tie\n"
+                 "run-step320,100,100,4.0,0.0,100\n")
+    assert read_summary(p)[0]["win_rate_tie_half"] == 0.5
+
+
 @needs_data
 def test_original_five_judge_figure_still_renders(tmp_path):
     proc = _run_plot(PUBLISHED, tmp_path)
@@ -267,9 +294,10 @@ def test_point_judge_is_exempt_and_disclosed(tmp_path):
         (tmp_path / f"summary_{cell}.csv").write_text(
             (PUBLISHED / f"summary_{cell}.csv").read_text())
     # A single-checkpoint, 100-pair cell: rejected as a curve, fine as a point.
+    # n_likert/n_tie are required -- the tie-as-0.5 panel is derived from them.
     (tmp_path / "summary_claude-opus-5.csv").write_text(
-        "checkpoint,n_scored,likert_mean,win_rate_ge5\n"
-        f"{GEN_KEY},100,3.2,0.27\n")
+        "checkpoint,n_scored,n_likert,likert_mean,win_rate_ge5,n_tie\n"
+        f"{GEN_KEY},100,100,3.2,0.27,0\n")
     proc = _run_plot(tmp_path, tmp_path, "--point_cell", "claude-opus-5")
     assert proc.returncode == 0, proc.stderr
     assert (tmp_path / "t.png").is_file()

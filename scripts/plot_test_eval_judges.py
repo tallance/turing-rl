@@ -1,11 +1,15 @@
-"""Plot the held-out test-set eval: one figure, five judge curves, two panels.
+"""Plot the held-out test-set eval: one figure, five judge curves, three panels.
 
 Reads the per-judge tables written by scripts/summarize_test_eval.py
-(summary_<cell>.csv) and draws GRPO step on x against two panels:
+(summary_<cell>.csv) and draws GRPO step on x against three panels:
 
-  left   mean judge Likert rating (1-7); 4 = "cannot tell", the tie point
-  right  win rate, i.e. fraction of pairs rated >= 5 (judge prefers the
-         generated turn); 0.5 = parity
+  1  mean judge Likert rating (1-7); 4 = "cannot tell", the tie point
+  2  win rate counting a tie as a LOSS for the generator: fraction rated >= 5
+  3  win rate counting a tie as HALF a win; 0.5 = parity in both
+
+Panels 2 and 3 differ only in how ties are scored, and the gap between them is
+a judge's tie rate. Panel 2 is the published convention; it is not neutral,
+because tie rates differ sharply between judges.
 
 The 9B curve is emphasised because that is the judge the GRPO run was trained
 against; the others are held-out judges. Judge identities, labels and colours
@@ -49,24 +53,42 @@ from plotstyle import INK, apply_rc, declutter, style_axes  # noqa: E402
 
 PANELS = [
     ("likert_mean", "Mean judge rating", "Likert 1-7", 4.0, "4 = cannot tell"),
-    ("win_rate_ge5", "Generator win rate", "fraction rated >= 5", 0.5, "0.5 = parity"),
+    ("win_rate_ge5", "Generator win rate (ties = loss)",
+     "fraction rated >= 5", 0.5, "0.5 = parity"),
+    ("win_rate_tie_half", "Generator win rate (ties = 0.5)",
+     "(rated >= 5, + half the ties) / scored", 0.5, "0.5 = parity"),
 ]
 
 STEP_RE = re.compile(r"step(\d+)$")
 
 
 def read_summary(path: Path) -> list[dict]:
-    """Return [{step, likert_mean, win_rate_ge5}, ...] sorted by step."""
+    """Return [{step, likert_mean, win_rate_ge5, win_rate_tie_half}, ...] by step.
+
+    win_rate_ge5 counts a tie (rating 4) as a LOSS for the generator: ties sit in
+    the denominator and score zero. That is not neutral, because tie rates differ
+    sharply between judges. win_rate_tie_half scores a tie as half a win instead,
+    which is what a tie asserts.
+
+    It is derived here rather than added to summarize_test_eval.py: n_likert and
+    n_tie are already columns in every summary CSV, including the frozen 880-pair
+    ones, so no production code and no existing artifact has to change.
+    """
     rows = []
     with open(path, newline="") as fh:
         for r in csv.DictReader(fh):
             m = STEP_RE.search(r["checkpoint"])
             if not m:
                 raise SystemExit(f"FAIL: cannot parse a step from {r['checkpoint']!r} in {path}")
+            n_likert = int(r["n_likert"])
+            n_tie = int(r["n_tie"])
+            win_rate = float(r["win_rate_ge5"])
+            wins = round(win_rate * n_likert)   # the CSV stores the rate, not the count
             rows.append({
                 "step": int(m.group(1)),
                 "likert_mean": float(r["likert_mean"]),
-                "win_rate_ge5": float(r["win_rate_ge5"]),
+                "win_rate_ge5": win_rate,
+                "win_rate_tie_half": (wins + 0.5 * n_tie) / n_likert if n_likert else 0.0,
                 "n_scored": int(r["n_scored"]),
             })
     return sorted(rows, key=lambda d: d["step"])
@@ -127,7 +149,7 @@ def main() -> None:
                              f"so every figure labels and colours it the same way")
 
     apply_rc()
-    fig, axes = plt.subplots(1, 2, figsize=(11.2, 4.6))
+    fig, axes = plt.subplots(1, len(PANELS), figsize=(5.6 * len(PANELS), 4.8))
 
     for ax, (field, title, ylab, ref, ref_note) in zip(axes, PANELS):
         # Reference line first, so data marks draw over it.
