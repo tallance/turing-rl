@@ -168,6 +168,41 @@ case "$MODE" in
       trainer.save_freq="${OVERFIT_SAVE_FREQ:-100000}"   # effectively disable mid-run saves for overfit
     ) ;;
   epoch1) OVR+=( trainer.total_epochs=1 ) ;;
+  ladder6)
+    # Non-alternating CONTROL for the judge<->generator loop: one pass against a FIXED judge,
+    # with six evenly spaced checkpoints as the data-budget comparison points.
+    #
+    #   ckpt 3 = 30 steps x 64 = 1920 samples -- EXACTLY the alternating generator's total
+    #            (5 rounds x 384 rows). Same generator data, one judge instead of five.
+    #   ckpt 6 = 60 steps x 64 = 3840 samples -- roughly the whole alternating pipeline's data
+    #            (generator 5x384 = 1920 plus judge 5x416 = 2080, so ~4000).
+    #
+    # 3840 rather than the full 4174-row split, deliberately. The final checkpoint is the one
+    # every downstream eval wants, and it is written ONLY if the last step lands on the save
+    # grid -- the same trap the frac10 arm guards against explicitly. 4174 rows is 65 steps
+    # under drop_last, and 65 has no divisor yielding 6 checkpoints (it is 5 x 13). The
+    # epoch-end hook cannot rescue the last one either: _resolve_epoch_aligned_save_freq
+    # returns None when total_epochs <= 1 (verl_runtime_patch.py:675), so it is inert for a
+    # single-pass run and save_freq=11 would give five checkpoints and silently drop step 65.
+    # 3840 = 60 x 64 divides by 6 exactly, and lands ckpt 3 on the alternating generator's
+    # budget to the sample -- which is the comparison this arm exists to make.
+    #
+    # The epoch-end hook is left alone rather than exported to 0 like the other arms: at one
+    # epoch it is already inert, and a redundant export would imply it was doing something.
+    #
+    # val_max_samples=352 is the SAME 50% val subset the frac10 rounds used, so the val curve
+    # here is comparable to theirs rather than measured on a different split.
+    OVR+=(
+      data.train_max_samples=3840
+      data.val_max_samples=352
+      trainer.total_epochs=1
+      trainer.save_freq=10
+      trainer.test_freq=10
+      trainer.val_before_train=True
+      # 6 checkpoints x 19 GB = 114 GB. veRL's default is null (keep all); 13634 was submitted
+      # with 6, and any pruning here would break the ladder this arm is built around.
+      trainer.max_actor_ckpt_to_keep=null
+    ) ;;
   full)   : ;;   # base config (few epochs)
   full5)
     # Full-dataset production run: 4174 train rows / batch 64 = 65 steps/epoch, 325 steps total.

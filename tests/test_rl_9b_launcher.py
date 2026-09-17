@@ -75,7 +75,7 @@ def test_full5_mode_pins_the_whole_cadence_and_keeps_every_checkpoint():
     # leaving it on would add 5 near-duplicate saves 1-5 steps after the save_freq=32 ones.
     assert "export PERSONA_ENABLE_EPOCH_END_CHECKPOINTING=0" in S
     # The driver validates MODE separately -- an unlisted mode is rejected before the trainer runs.
-    assert "overfit|full|epoch1|full5" in RUN_2NODE
+    assert "overfit|full|epoch1|ladder6|full5" in RUN_2NODE
 
 
 def test_full5_does_not_cap_the_dataset():
@@ -121,7 +121,7 @@ def test_frac10_modes_pin_the_subsets_and_the_per_epoch_cadence():
         # second variable versus full5.
         assert "data.train_batch_size=" not in arm
         assert "_EPOCHS=${MODE#frac10ep}" in arm
-    assert "overfit|full|epoch1|full5|frac10ep3|frac10ep10|frac10ep20" in RUN_2NODE
+    assert "overfit|full|epoch1|ladder6|full5|frac10ep3|frac10ep10|frac10ep20" in RUN_2NODE
 
 
 def test_frac10_epoch_count_comes_from_the_mode_name():
