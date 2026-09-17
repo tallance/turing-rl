@@ -40,7 +40,16 @@ export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 STEP=${STEP:?set STEP (GRPO global_step to merge, e.g. 8)}
 RUN_TAG=${RUN_TAG:-9b_half_kl1e4_lr1e4_temp1}
 EVAL_ROOT=${EVAL_ROOT:-$REPO/results/2026-08-03-test-eval-9b-half}
-MERGED_EP3=${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}
+# The dense model this LoRA was trained ON TOP OF -- NOT "the SFT checkpoint". It equals
+# merged_ep3 only for a round-1 generator; from round 2 on it is the PREVIOUS round's dense
+# model, and passing the default there folds a whole round of training onto the wrong backbone.
+# That is not hypothetical: job 19897 did exactly that and only gate D caught it, with
+# mismatched=128.
+#
+# Renamed from MERGED_EP3, which named this and judge_train_gen.sh's *generation* model the
+# same thing despite them being unrelated. The old name is still honoured, because other
+# sessions have in-flight commands passing it.
+MERGE_CONTAINER=${MERGE_CONTAINER:-${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}}
 DISTINCT_FROM=${DISTINCT_FROM:-}
 
 # verl.model_merger must run in the Arm-B env: the checkpoint config is transformers 5.4.
@@ -49,13 +58,16 @@ PY_MERGE=/home/lancewicki/miniconda3/envs/turing-rl-rl-qwen35/bin/python
 # proves the artifacts are readable by the env that will actually serve them).
 PY_EVAL=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 
-ACTOR=$REPO/results/grpo/rl-generator/$RUN_TAG/checkpoints/global_step_${STEP}/actor
+# Default is the GENERATOR layout. A judge GRPO run writes its checkpoints under its own
+# run root (RL_CKPT_DIR), so pass ACTOR_DIR to point at one directly -- every step below is
+# model-agnostic tensor math and does not care which policy produced the shards.
+ACTOR=${ACTOR_DIR:-$REPO/results/grpo/rl-generator/$RUN_TAG/checkpoints/global_step_${STEP}/actor}
 OUT=$EVAL_ROOT/models/step${STEP}
 HF_BASE=$OUT/hf_base
 HF_DENSE=$OUT/hf_dense
 
 [ -d "$ACTOR" ] || { echo "ERROR: no actor dir at $ACTOR" >&2; exit 2; }
-[ -d "$MERGED_EP3" ] || { echo "ERROR: no merged_ep3 at $MERGED_EP3" >&2; exit 2; }
+[ -d "$MERGE_CONTAINER" ] || { echo "ERROR: no merge container at $MERGE_CONTAINER" >&2; exit 2; }
 mkdir -p "$OUT"
 
 echo "=== merge_grpo_ckpt: STEP=$STEP RUN_TAG=$RUN_TAG ==="
@@ -103,11 +115,11 @@ PROV
 echo "--- step 2: fold the GRPO delta into the merged_ep3 container -> hf_dense ---"
 rm -rf "$HF_DENSE"
 $PY_EVAL scripts/merge_grpo_adapter.py \
-    --base "$MERGED_EP3" --adapter "$HF_BASE/lora_adapter" --out "$HF_DENSE" \
+    --base "$MERGE_CONTAINER" --adapter "$HF_BASE/lora_adapter" --out "$HF_DENSE" \
     || { echo "FAIL: merge_grpo_adapter" >&2; exit 4; }
 
 echo "--- step 3: HARD GATE (scripts/validate_grpo_merge.py) ---"
-GATE=(--base "$MERGED_EP3" --dense "$HF_DENSE" --adapter "$HF_BASE/lora_adapter" --hf_base "$HF_BASE")
+GATE=(--base "$MERGE_CONTAINER" --dense "$HF_DENSE" --adapter "$HF_BASE/lora_adapter" --hf_base "$HF_BASE")
 [ -n "$DISTINCT_FROM" ] && GATE+=(--distinct_from "$DISTINCT_FROM")
 $PY_EVAL scripts/validate_grpo_merge.py "${GATE[@]}"
 RC=$?

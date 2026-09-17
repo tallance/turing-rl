@@ -17,6 +17,16 @@ source "${TURING_RL_CODE_ROOT:?}/scripts/cluster_job_bootstrap.sh"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY no_proxy NO_PROXY
 export HF_HOME=/home/lancewicki/data/hf_cache HF_HUB_CACHE=/home/lancewicki/data/hf_cache
 export HF_HUB_DISABLE_XET=1 PYTHONUNBUFFERED=1
+# A cached model still revalidates against the Hub on load. ONE job is already a burst here:
+# eight AgentLoopWorkers plus eight vLLM engine processes all resolve the same repo within a few
+# seconds, and the 429 that comes back surfaces as `OSError: Unable to load vocabulary from file
+# ... not corrupted`, which reads like a broken cache rather than rate limiting (job 23086, dead
+# at step-0 validation after 9 minutes). Every sibling serving/inference script already does this
+# -- generator_infer.sh names it "the concurrent-rank hub-check race".
+#
+# Overridable, unlike those siblings, because JUDGE_MODEL_PATH may legitimately be an uncached
+# Hub model: pass HF_HUB_OFFLINE=0 for the one run that has to populate the cache.
+export HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1} TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
 # TMPDIR is shared on purpose -- this is what job 18701 ran. A per-job TMPDIR was tried (6bb1b18)
 # to dodge an Errno 16 pymp teardown collision; it dodged nothing (18915 hit the same collision
 # inside its own per-job dir) and it moved TorchInductor's cache, which defaults to
@@ -105,13 +115,30 @@ OVR=(
   trainer.project_name=grpo-judge
 )
 
+# Which prompt style this judge trains on. The prompt is baked into the pair parquet, so this
+# selects only the LENGTH profile that corpus needs -- a rating_only prompt carries none of the
+# full-schema rubric and runs roughly 5k tokens shorter. Both configs are real files rather
+# than an override string, so the numbers stay reviewable next to the comments explaining them.
+JUDGE_CONFIG_NAME=${JUDGE_CONFIG_NAME:-qwen35_judge_grpo}
+# The prompt style is DERIVED from the config name, never accepted separately. The two describe
+# the same fact -- which schema the pair parquet was rendered with -- and the reward reads the
+# style while the trainer reads the config, so letting them be set independently creates a
+# combination where the format term silently scores a rating_only corpus against the 37-field
+# schema: every rollout pinned near the floor, and a run that looks entirely healthy.
+case "$JUDGE_CONFIG_NAME" in
+  qwen35_judge_grpo)        export JUDGE_PROMPT_STYLE=full ;;
+  qwen35_judge_rating_grpo) export JUDGE_PROMPT_STYLE=rating_only ;;
+  *) echo "ERROR: JUDGE_CONFIG_NAME must be qwen35_judge_grpo or qwen35_judge_rating_grpo, got $JUDGE_CONFIG_NAME" >&2; exit 2 ;;
+esac
+echo "=== judge schema: config=$JUDGE_CONFIG_NAME prompt_style=$JUDGE_PROMPT_STYLE ==="
+
 # --config-dir is NOT optional: without it Hydra resolves --config-name against veRL's own
 # packaged config directory and the job dies immediately with
 # "Cannot find primary config 'qwen35_judge_grpo'". Both working trainers pass it.
-echo "+ $PY -u -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name qwen35_judge_grpo hydra.run.dir=$TURING_RL_HYDRA_DIR hydra.job.chdir=false ${OVR[*]} ${EXTRA_OVERRIDES:-}"
+echo "+ $PY -u -m training.grpo.run_verl_main_ppo --config-dir training/grpo/configs --config-name $JUDGE_CONFIG_NAME hydra.run.dir=$TURING_RL_HYDRA_DIR hydra.job.chdir=false ${OVR[*]} ${EXTRA_OVERRIDES:-}"
 $PY -u -m training.grpo.run_verl_main_ppo \
   --config-dir training/grpo/configs \
-  --config-name qwen35_judge_grpo \
+  --config-name "$JUDGE_CONFIG_NAME" \
   hydra.run.dir="$TURING_RL_HYDRA_DIR" \
   hydra.job.chdir=false \
   "${OVR[@]}" ${EXTRA_OVERRIDES:-}

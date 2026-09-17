@@ -99,6 +99,12 @@ fi
 RUN_TAG=${JUDGE_RUN_TAG:-$(basename "$JUDGE_MODEL_PATH")_${JUDGE_REWARD_ARM}_${MODE}}
 EXPORTS="ALL,JUDGE_MODEL_PATH=$JUDGE_MODEL_PATH,JUDGE_REWARD_ARM=$JUDGE_REWARD_ARM"
 EXPORTS="$EXPORTS,TRAIN_FILE=$TRAIN_FILE,VAL_FILE=$VAL_FILE,JUDGE_RUN_TAG=$RUN_TAG"
+# Named explicitly rather than left to the leading ALL. A dropped JUDGE_CONFIG_NAME falls back
+# to qwen35_judge_grpo, whose length profile is built for the full-schema corpus (11264/22016).
+# That run would not fail -- nothing is truncated by an allowance that is too LARGE -- it would
+# simply train the rating_only judge under the wrong context window while every log line looked
+# right, which is the same silent-fallback shape as the MERGED_EP3 default.
+[ -n "${JUDGE_CONFIG_NAME:-}" ] && EXPORTS="$EXPORTS,JUDGE_CONFIG_NAME=$JUDGE_CONFIG_NAME"
 
 echo "=== judge train: model=$JUDGE_MODEL_PATH arm=$JUDGE_REWARD_ARM mode=$MODE tag=$RUN_TAG ==="
 echo "=== train=$TRAIN_FILE ==="

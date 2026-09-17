@@ -28,8 +28,8 @@ done
 case "$THINKING_MODE" in on|off) ;; *) echo "ERROR: THINKING_MODE must be on|off" >&2; exit 2 ;; esac
 JUDGE_PROMPT_STYLE=${JUDGE_PROMPT_STYLE:-full}
 case "$JUDGE_PROMPT_STYLE" in
-  full|single_token) ;;
-  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token, got '$JUDGE_PROMPT_STYLE'" >&2; exit 2 ;;
+  full|single_token|rating_only) ;;
+  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token|rating_only, got '$JUDGE_PROMPT_STYLE'" >&2; exit 2 ;;
 esac
 # --- BEGIN style-mode guard ---
 # Also enforced in launch_judge_eval_matrix.sh, and deliberately duplicated here: a single
@@ -40,6 +40,11 @@ esac
 # thinking_mode=on into timing.json and run_metadata.json for a thinking-off request.
 # Rejected rather than silently rewritten -- an altered submission is as hard to notice as
 # the mislabel it fixes. tests/test_judge_sweep_cell_paths.py executes this block.
+#
+# Scoped to single_token, NOT to every non-full style. The guard exists because that scorer
+# pins enable_thinking=False in CODE, so the env cannot be believed. rating_only has no such
+# pin -- it honours THINKING_MODE -- so both modes are real configurations there and running
+# it thinking-off is a legitimate ablation, not a mislabel.
 if [ "$JUDGE_PROMPT_STYLE" = "single_token" ] && [ "$THINKING_MODE" != "off" ]; then
   echo "ERROR: JUDGE_PROMPT_STYLE=single_token requires THINKING_MODE=off, got THINKING_MODE=$THINKING_MODE" >&2
   echo "       The single-token judge always serves with thinking disabled, so every" >&2
@@ -144,7 +149,19 @@ PY_CLIENT=/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python
 
 # Default full 880 pair-set; override with PAIRS=<parquet> (e.g. a missing-pairs
 # subset for a targeted re-run of timed-out pairs).
-PAIRS=${PAIRS:-$REPO/results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet}
+#
+# This is gen_9b-full5ep-step0_880.parquet, which is what every cell on the published
+# judge-accuracy chart was scored against. It used to default to the July set,
+# results/2026-07-08-judge-sweep/raw/pairs/prism_heldout_880.parquet, and that was a trap:
+# the July set's fake turns come from the Qwen3-8B SFT with the stop-token masking bug, so
+# 36% of them run past 5x the paired human turn (mean 2444 chars against 67) and a judge
+# scores mostly by LENGTH -- on its length-matched subset a zero-shot 9B sits at 0.500, and a
+# length-only rule scores 0.561 against the judge's 0.564. Four rating_only cells were scored
+# against it by taking this default (jobs 23558-23561) and had to be thrown away.
+#
+# The set below is length-matched (gen mean 50.5 vs human 67.3, zero generations over 1000
+# chars, 1.9% over 5x). The July parquet and its generations pickle have since been deleted.
+PAIRS=${PAIRS:-$REPO/results/2026-08-10-test-eval-9b-full5ep-full-schema/raw/pairs/gen_9b-full5ep-step0_880.parquet}
 [ -f "$PAIRS" ] || { echo "ERROR: pair-set not found: $PAIRS" >&2; exit 2; }
 
 # The client appends $CELL_NAME/$THINKING_MODE to --out_dir, so pass the sweep ROOT.
@@ -262,6 +279,10 @@ TIMING_SERVERS_READY_UTC=$(date -u +%Y-%m-%dT%H:%M:%S.%NZ)
 
 ENDPOINTS=$(IFS=,; echo "${URLS[*]}")
 EXTRA=(); [ -n "$MAX_PAIRS" ] && EXTRA=(--max_pairs "$MAX_PAIRS")
+# Opt-in decode override. Unset leaves the frozen "no wire override" sweep policy intact, so
+# every historical cell is reproduced byte-for-byte; set, it is recorded in run_metadata.json
+# and the resulting cells are a separate series from the matrix.
+[ -n "${JUDGE_SAMPLING:-}" ] && EXTRA+=(--judge_sampling "$JUDGE_SAMPLING")
 
 cd "$REPO"
 CLIENT_PIDS=()

@@ -141,3 +141,51 @@ def test_out_of_range_rating_field_fails_the_range_component():
     v = parse_judge_verdict(json.dumps({"rating": 99, "reasoning": "x"}))
     assert not v.fmt_rating_range
     assert v.recovery_rung == "none"
+
+
+# --- rating_only: a one-field answer must parse with no parser change --------------------
+
+
+def test_rating_only_answer_recovers_on_the_rating_field_rung():
+    """`{"rating": N}` after a closed think block is a complete verdict.
+
+    The rating_only judge ships no dimension fields and no score_gap, so the whole design
+    rests on this ladder rung already existing. Asserted here rather than assumed, because
+    the alternative -- falling through to `rating_text` or `none` -- would zero the task
+    reward for every correct answer while the run looked healthy.
+    """
+    verdict = parse_judge_verdict('some reasoning</think>{"rating": 6}', thinking_enabled=True)
+
+    assert verdict.rating == 6
+    assert verdict.recovery_rung == "rating_field"
+    assert verdict.recovered
+
+
+def test_rating_only_answer_survives_prose_and_a_json_fence():
+    for completion in (
+        'r</think>Here is my verdict: {"rating": 2}',
+        'r</think>```json\n{"rating": 2}\n```',
+    ):
+        verdict = parse_judge_verdict(completion, thinking_enabled=True)
+        assert verdict.rating == 2, completion
+
+
+def test_rating_only_unclosed_thinking_is_not_recovered():
+    """An answer that never left the think block is not an answer.
+
+    This is the only thing keeping a rating_only run honest once JUDGE_FORMAT_WEIGHT is 0:
+    with no format term, `unclosed_thinking` -> task 0.0 is the entire pressure to stop
+    reasoning and commit to a number.
+    """
+    verdict = parse_judge_verdict('reasoning that rambles {"rating": 7}', thinking_enabled=True)
+
+    assert verdict.rating is None
+    assert verdict.recovery_rung == "unclosed_thinking"
+    assert not verdict.recovered
+
+
+def test_rating_only_out_of_range_rating_is_refused():
+    verdict = parse_judge_verdict('r</think>{"rating": 9}', thinking_enabled=True)
+
+    assert verdict.rating is None
+    assert not verdict.recovered

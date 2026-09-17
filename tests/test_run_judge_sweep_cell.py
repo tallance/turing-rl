@@ -110,6 +110,24 @@ def test_full_style_env_is_unchanged():
     assert env["JUDGE_PROMPT_STYLE"] == "full"
 
 
+def test_rating_only_env_drops_only_the_schema():
+    """The 37-field schema would force a body this judge was never trained to emit; the
+    fallback `{"type":"json_object"}` is the right constraint for a one-field answer."""
+    env = cell_env(model_id="Qwen/Qwen3-8B", mode="on", out_dir="/tmp/x", style="rating_only")
+    assert "PERSONA_JUDGE_JSON_SCHEMA" not in env
+    assert env["JUDGE_PROMPT_STYLE"] == "rating_only"
+    # Everything else stays as the full arm has it: this judge reasons and needs the budget.
+    assert env["PERSONA_JUDGE_MAX_COMPLETION_TOKENS"] == "8192"
+    assert env["PERSONA_JUDGE_ENABLE_THINKING"] == "1"
+
+
+def test_rating_only_honours_the_requested_thinking_mode():
+    """Unlike single_token, nothing is pinned in code here, so a thinking-off cell is a real
+    ablation rather than a mislabel -- and the env must say what was actually sent."""
+    off = cell_env(model_id="Qwen/Qwen3-8B", mode="off", out_dir="/tmp/x", style="rating_only")
+    assert off["PERSONA_JUDGE_ENABLE_THINKING"] == "0"
+
+
 def test_final_metadata_emits_consumer_keys():
     # Producer must emit the keys calibration_report.py reads (n_pairs, wall_seconds).
     base = {"cell_name": "qwen3-8b", "n_pairs_total": 100}

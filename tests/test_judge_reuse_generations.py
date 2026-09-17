@@ -349,3 +349,67 @@ def test_both_modes_reach_the_builder_with_the_same_prompt_style(tmp_path: Path)
         return [token for token in line.split() if token.startswith("--")]
 
     assert _flags(builds["generate"]) == _flags(builds["reuse"])
+
+
+# --- mixed sampling temperatures ---------------------------------------------------------
+
+
+def test_no_second_temperature_means_one_generation_pass(tmp_path: Path) -> None:
+    """GEN_TEMPERATURE_B unset must leave the single-pass path untouched, flags included.
+
+    The single-token/CE flow is mid-run against this script. A stray extra pass, a renamed
+    pickle, or a gen_temperature column appearing in its parquets would all be silent.
+    """
+    calls, env = _harness(tmp_path)
+    out_dir = tmp_path / "pairs"
+    env["OUT_DIR"] = str(out_dir)
+
+    result, recorded = _run(env, calls)
+
+    assert result.returncode == 0, result.stderr
+    assert len(_step(recorded, "eval.generate_trained")) == 1
+    (generate,) = _step(recorded, "eval.generate_trained")
+    assert f"--output {out_dir}/raw/train_generations.pkl" in generate
+    (build,) = _step(recorded, "build_judge_train_pairs.py")
+    assert "--gen_temperature" not in build
+
+
+def test_second_temperature_splits_gen_num_across_two_passes(tmp_path: Path) -> None:
+    """GEN_NUM=4 with a second temperature is two passes of k=2, merged by the builder."""
+    calls, env = _harness(tmp_path)
+    out_dir = tmp_path / "pairs"
+    env["OUT_DIR"] = str(out_dir)
+    env["GEN_NUM"] = "4"
+    env["GEN_TEMPERATURE"] = "0.7"
+    env["GEN_TEMPERATURE_B"] = "1.0"
+
+    result, recorded = _run(env, calls)
+
+    assert result.returncode == 0, result.stderr
+    passes = _step(recorded, "eval.generate_trained")
+    assert len(passes) == 2
+    for generated, temperature in zip(passes, ("0.7", "1.0")):
+        assert f"--temperature {temperature}" in generated
+        assert "--gen_num 2" in generated, "GEN_NUM must be split, not repeated in full"
+        assert f"--output {out_dir}/raw/train_generations_t{temperature}.pkl" in generated
+
+    # Both pickles reach the builder, in order, tagged with the temperature behind each.
+    (build,) = _step(recorded, "build_judge_train_pairs.py")
+    assert (f"--inference_pkl {out_dir}/raw/train_generations_t0.7.pkl "
+            f"{out_dir}/raw/train_generations_t1.0.pkl") in build
+    assert "--gen_temperature 0.7 1.0" in build
+
+
+def test_odd_gen_num_with_a_temperature_mix_is_refused(tmp_path: Path) -> None:
+    """An odd split cannot be even, and rounding it would silently over-weight one
+    temperature in every downstream accuracy number."""
+    calls, env = _harness(tmp_path)
+    env["OUT_DIR"] = str(tmp_path / "pairs")
+    env["GEN_NUM"] = "5"
+    env["GEN_TEMPERATURE_B"] = "1.0"
+
+    result, recorded = _run(env, calls)
+
+    assert result.returncode == 2, result.stdout
+    assert "even GEN_NUM" in result.stderr
+    assert not _step(recorded, "eval.generate_trained"), "must refuse before burning a GPU"

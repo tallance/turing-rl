@@ -239,6 +239,30 @@ def _collect_reward_metric_names(non_tensor_batch: dict[str, Any]) -> set[str]:
     return metric_names
 
 
+def append_per_temperature_accuracy(metrics: dict[str, Any]) -> None:
+    """Turn the per-temperature sum/count pairs into an accuracy that reads correctly on a chart.
+
+    judge_acc_tXX has to be a SUM: every judge_* key is reduced with a plain np.mean over the
+    batch, and each step draws a different temperature mix (n_t07 swung 0.36-0.67 across steps
+    of J2'), so a conditional key would be averaged against the wrong denominator. The cost is
+    that the raw series is accuracy x composition -- it reads about half the true value and
+    carries the mix's noise on top of the judge's.
+
+    The ratio cannot be formed per row, because the mean of per-row ratios is not the ratio of
+    means. It is formed here instead, once the batch means already exist.
+
+    A bucket with no rows emits NOTHING rather than 0.0: the val split carries no
+    gen_temperature, and a flat zero there is indistinguishable from a measured accuracy of
+    zero.
+    """
+    for label in ("t07", "t10"):
+        total = metrics.get(f"reward/judge_correct_{label}/mean")
+        count = metrics.get(f"reward/judge_n_{label}/mean")
+        if total is None or not count:
+            continue
+        metrics[f"reward/judge_acc_{label}_norm/mean"] = float(total) / float(count)
+
+
 def append_custom_reward_metrics(metrics: dict[str, Any], batch: Any) -> None:
     non_tensor_batch = getattr(batch, "non_tensor_batch", None)
     if non_tensor_batch is None or not hasattr(non_tensor_batch, "get"):
@@ -280,6 +304,9 @@ def append_custom_reward_metrics(metrics: dict[str, Any], batch: Any) -> None:
         metrics["critic/score/mean"] = total_score_mean
     elif score_mean is not None:
         metrics["critic/score/mean"] = score_mean
+
+    # After the batch means exist, and only then -- see the docstring.
+    append_per_temperature_accuracy(metrics)
 
     for key, values in non_tensor_batch.items():
         match = _TRAIN_SCORE_KEY_RE.match(str(key))

@@ -18,9 +18,13 @@
 # [0.0,0.1) hash slice capped at 416 contexts with k=4 generations; the val split takes all
 # 352 contexts at k=1. Those per-split parameters live in judge_train_gen.sh, not here.
 #
-# --env PROMPT_STYLE=<full|single_token> selects the judge prompt template baked into the
-# pair rows: "full" (default, rubric and JSON schema) or one-letter. It reaches
-# build_judge_train_pairs.py --prompt-style and is recorded in the sibling .meta.json.
+# --env PROMPT_STYLE=<full|single_token|rating_only> selects the judge prompt template baked
+# into the pair rows: "full" (default, rubric and JSON schema), one-letter, or a 1-7 rating
+# with thinking on. It reaches build_judge_train_pairs.py --prompt-style and is recorded in the
+# sibling .meta.json.
+#
+# --env GEN_TEMPERATURE_B=<T> splits GEN_NUM across two sampling temperatures (see
+# judge_train_gen.sh). Ignored for the val split, which is pinned to one generation.
 #
 # The style is folded into the default OUT_DIR as a nested segment, and a single_token
 # OUT_DIR must name the style:
@@ -44,8 +48,8 @@ DRY=${DRY:-0}
 # Validated before OUT_DIR because the default path depends on the style.
 PROMPT_STYLE=${PROMPT_STYLE:-full}
 case "$PROMPT_STYLE" in
-  full|single_token) ;;
-  *) echo "FATAL: PROMPT_STYLE must be full|single_token, got '$PROMPT_STYLE'" >&2; exit 2 ;;
+  full|single_token|rating_only) ;;
+  *) echo "FATAL: PROMPT_STYLE must be full|single_token|rating_only, got '$PROMPT_STYLE'" >&2; exit 2 ;;
 esac
 
 # $REPO/data is the immutable source snapshot inside a job; generated data belongs in the
@@ -57,10 +61,13 @@ if [ -z "${OUT_DIR:-}" ]; then
   [ "$PROMPT_STYLE" = "full" ] || OUT_DIR=$OUT_DIR/$PROMPT_STYLE
 fi
 
-if [ "$PROMPT_STYLE" = "single_token" ]; then
+# Applies to every non-default style, not just single_token: the overwrite-destroys-its-own-
+# evidence failure described above is a property of two styles sharing an OUT_DIR, and has
+# nothing to do with which two.
+if [ "$PROMPT_STYLE" != "full" ]; then
   case "$OUT_DIR" in
-    *single_token*|*single-token*) ;;
-    *) echo "FATAL: a single_token OUT_DIR must name the style: $OUT_DIR" >&2; exit 2 ;;
+    *"$PROMPT_STYLE"*|*"${PROMPT_STYLE//_/-}"*) ;;
+    *) echo "FATAL: a $PROMPT_STYLE OUT_DIR must name the style: $OUT_DIR" >&2; exit 2 ;;
   esac
 fi
 
@@ -74,6 +81,9 @@ for split in $SPLITS; do
 
   # Slurm splits --export on commas, so every value here must be comma-free. Paths are.
   EXPORTS="ALL,SPLIT=$split,OUT_DIR=$OUT_DIR,PROMPT_STYLE=$PROMPT_STYLE"
+  # Named explicitly rather than left to ALL: a mixed-temperature run that silently fell back
+  # to one temperature would still produce a complete, plausible pair set.
+  [ -n "${GEN_TEMPERATURE_B:-}" ] && EXPORTS="$EXPORTS,GEN_TEMPERATURE_B=$GEN_TEMPERATURE_B"
 
   if [ "$DRY" = "1" ]; then
     echo "[DRY] $SBATCH --parsable --export=$EXPORTS -- scripts/slurm/judge_train_gen.sh"

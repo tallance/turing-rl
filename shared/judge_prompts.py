@@ -661,3 +661,35 @@ A means Response A was written by the real [HUMAN]. B means Response B was.
 Your output:"""
 
 TURING_SINGLE_TOKEN_PROMPT = TURING_PROMPT_HEADER + _SINGLE_TOKEN_TAIL
+
+# The single-token tail with thinking put back on and a 1-7 rating in place of the letter.
+#
+# The seven anchors below are copied VERBATIM from _TURING_PROMPT_TAIL. That is load-bearing
+# rather than tidy: the judge trained against this prompt is rewarded with the `graded` arm,
+# 1 - (p - y)^2 for p = (rating - 1) / 6, so the rating IS the reward and the anchors are its
+# definition. Reword them here and "5" quietly means something different than it does in the
+# full-schema arm, which silently invalidates every cross-prompt comparison rather than failing.
+# tests/test_single_token_prompt.py pins the two copies equal.
+#
+# Nothing here tells the model to think. Thinking is a chat-template concern
+# (`enable_thinking: true`), and an instruction to reason in the prompt body would be a second,
+# disagreeing switch.
+_RATING_ONLY_TAIL = """
+## Rating Scale
+
+- 1 = Definitely A is the real human response
+- 2 = Very likely A
+- 3 = More likely A than B
+- 4 = Cannot tell / equally likely
+- 5 = More likely B than A
+- 6 = Very likely B
+- 7 = Definitely B is the real human response
+
+## Output Format
+
+Return exactly one valid JSON object and nothing else:
+{{"rating": <integer from 1 to 7>}}
+
+Your output:"""
+
+TURING_RATING_ONLY_PROMPT = TURING_PROMPT_HEADER + _RATING_ONLY_TAIL

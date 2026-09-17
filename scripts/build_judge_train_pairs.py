@@ -28,7 +28,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pandas as pd
 
 from data.judge.slice import select_slice
-from shared.judge_prompts import TURING_PROMPT, TURING_SINGLE_TOKEN_PROMPT
+from shared.judge_prompts import (
+    TURING_PROMPT,
+    TURING_RATING_ONLY_PROMPT,
+    TURING_SINGLE_TOKEN_PROMPT,
+)
 from shared.judge_utils import (
     build_source_copy_warning,
     format_source_copy_watchlist,
@@ -111,6 +115,49 @@ def flatten_all_generations(inference: Any) -> dict[tuple[str, str, str], list[s
     return flat
 
 
+def merge_generation_sets(
+    sets: list[dict[tuple[str, str, str], list[str]]],
+    temperatures: list[float] | None = None,
+) -> tuple[dict[tuple[str, str, str], list[str]], dict[tuple[str, str, str], list[float]] | None]:
+    """Concatenate several flattened generation dicts into one, in the order given.
+
+    Used to mix sampling temperatures within a single judge-training set: one pickle sampled at
+    T=0.7 and one at T=1.0 become four generations per context. Concatenating into ONE list
+    before the builder enumerates it is what keeps ``gen_idx`` globally 0..k-1; building
+    per-pickle would restart it at 0 and make two different generations share a ``pair_id``.
+
+    Key sets must match exactly. Per-key COUNTS are allowed to differ (the flattener drops
+    generations that cleaned to empty), but a whole context missing from one pickle means that
+    pickle is short or stale, and silently falling back to the other one would skew the
+    temperature mix for those contexts with nothing raising.
+    """
+    if not sets:
+        raise ValueError("merge_generation_sets needs at least one generation set")
+    if temperatures is not None and len(temperatures) != len(sets):
+        raise ValueError(
+            f"got {len(sets)} generation set(s) but {len(temperatures)} temperature(s); "
+            "pass exactly one --gen_temperature per --inference_pkl"
+        )
+    for index, other in enumerate(sets[1:], start=1):
+        if set(other) != set(sets[0]):
+            only_first = sorted(set(sets[0]) - set(other))[:3]
+            only_other = sorted(set(other) - set(sets[0]))[:3]
+            raise ValueError(
+                f"generation set {index} covers different contexts than set 0 "
+                f"(missing here: {only_first}; extra here: {only_other})"
+            )
+
+    merged: dict[tuple[str, str, str], list[str]] = {}
+    merged_temps: dict[tuple[str, str, str], list[float]] = {}
+    for key in sets[0]:
+        for index, generation_set in enumerate(sets):
+            texts = generation_set[key]
+            merged.setdefault(key, []).extend(texts)
+            if temperatures is not None:
+                merged_temps.setdefault(key, []).extend([temperatures[index]] * len(texts))
+    return merged, (merged_temps if temperatures is not None else None)
+
+
 def _percentile(sorted_values: list[int], q: float) -> int:
     """Nearest-rank percentile over an already-sorted list."""
     if not sorted_values:
@@ -151,6 +198,7 @@ def prompt_length_stats(prompts: list[str], *, budget_tokens: int) -> dict[str, 
 _PROMPT_TEMPLATES = {
     "full": TURING_PROMPT,
     "single_token": TURING_SINGLE_TOKEN_PROMPT,
+    "rating_only": TURING_RATING_ONLY_PROMPT,
 }
 
 
@@ -212,8 +260,15 @@ def build_judge_rows(
     split: str,
     prompt_budget_tokens: int = DEFAULT_PROMPT_BUDGET_TOKENS,
     prompt_style: str = "full",
+    gen_temperatures: dict[tuple[str, str, str], list[float]] | None = None,
 ) -> tuple[pd.DataFrame, dict]:
-    """Build veRL judge-training rows: two per (context, generation), one per order."""
+    """Build veRL judge-training rows: two per (context, generation), one per order.
+
+    ``gen_temperatures`` is the parallel output of ``merge_generation_sets``: the sampling
+    temperature behind each generation, stamped onto every row. It is the whole point of mixing
+    temperatures -- without it, judge accuracy cannot be split by the temperature the fake turn
+    was drawn at, which is the comparison the mix exists to enable.
+    """
     sliced = select_slice(source_df, lo=lo, hi=hi, limit=limit)
 
     rows: list[dict[str, Any]] = []
@@ -233,8 +288,10 @@ def build_judge_rows(
         user_history = extra.get("user_history", "")
         context = extra.get("context", extra.get("thread_context", ""))
 
+        key_temperatures = (gen_temperatures or {}).get(key)
         for gen_idx, generated in enumerate(generations[key]):
             n_generations += 1
+            gen_temperature = key_temperatures[gen_idx] if key_temperatures else None
             pair_id = f"{user_id}::{post_id}::{target_idx}::g{gen_idx}"
             # human_a: the human occupies slot A. human_b: the human occupies slot B.
             for order, human_is_b in (("human_a", False), ("human_b", True)):
@@ -263,6 +320,7 @@ def build_judge_rows(
                             "post_id": post_id,
                             "target_idx": target_idx,
                             "gen_idx": gen_idx,
+                            "gen_temperature": gen_temperature,
                             "order": order,
                             "human_is_b": human_is_b,
                             "split": split,
@@ -291,13 +349,29 @@ def build_judge_rows(
         "prompt_style": prompt_style,
         "human_is_b_rate": (sum(human_is_b) / len(human_is_b)) if human_is_b else 0.0,
     }
+    if gen_temperatures is not None:
+        # Row counts per temperature. This is the number to eyeball after a mixed run: a
+        # lopsided split means one generation pass came back short, which is otherwise silent.
+        counts: dict[str, int] = {}
+        for row in df["extra_info"] if len(df) else []:
+            counts[str(row["gen_temperature"])] = counts.get(str(row["gen_temperature"]), 0) + 1
+        meta["rows_per_gen_temperature"] = dict(sorted(counts.items()))
     meta.update(prompt_length_stats(prompts, budget_tokens=prompt_budget_tokens))
     return df, meta
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build the judge-training pair parquet")
-    parser.add_argument("--inference_pkl", required=True)
+    parser.add_argument(
+        "--inference_pkl", required=True, nargs="+",
+        help="One or more generation pickles, concatenated per context in the order given. "
+             "Pass several to mix sampling temperatures within one judge-training set.",
+    )
+    parser.add_argument(
+        "--gen_temperature", type=float, nargs="+", default=None,
+        help="Sampling temperature behind each --inference_pkl, same order and count. When "
+             "given, every row records its gen_temperature so accuracy can be split by it.",
+    )
     parser.add_argument("--source_parquet", required=True)
     parser.add_argument("--out", required=True)
     parser.add_argument("--slice_lo", type=float, default=0.0)
@@ -313,29 +387,35 @@ def main() -> None:
              "data.max_prompt_length the training config currently declares.",
     )
     parser.add_argument(
-        "--prompt-style", choices=["full", "single_token"], default="full",
-        help="Judge prompt template. single_token drops the rubric and asks for one letter.",
+        "--prompt-style", choices=sorted(_PROMPT_TEMPLATES), default="full",
+        help="Judge prompt template. single_token drops the rubric and asks for one letter; "
+             "rating_only drops it and asks for a 1-7 rating with thinking on.",
     )
     args = parser.parse_args()
 
-    with open(args.inference_pkl, "rb") as handle:
-        inference = pickle.load(handle)
+    sets = []
+    for path in args.inference_pkl:
+        with open(path, "rb") as handle:
+            sets.append(flatten_all_generations(pickle.load(handle)))
+    generations, gen_temperatures = merge_generation_sets(sets, args.gen_temperature)
     source_df = pd.read_parquet(args.source_parquet)
 
     df, meta = build_judge_rows(
         source_df,
-        flatten_all_generations(inference),
+        generations,
         lo=args.slice_lo,
         hi=args.slice_hi,
         limit=args.limit,
         split=args.split,
         prompt_budget_tokens=args.prompt_budget_tokens,
         prompt_style=args.prompt_style,
+        gen_temperatures=gen_temperatures,
     )
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     df.to_parquet(args.out, index=False)
-    meta["inference_pkl"] = os.path.abspath(args.inference_pkl)
+    meta["inference_pkl"] = [os.path.abspath(p) for p in args.inference_pkl]
+    meta["gen_temperature"] = args.gen_temperature
     meta["source_parquet"] = os.path.abspath(args.source_parquet)
     with open(os.path.splitext(args.out)[0] + ".meta.json", "w", encoding="utf-8") as handle:
         json.dump(meta, handle, indent=2, sort_keys=True)

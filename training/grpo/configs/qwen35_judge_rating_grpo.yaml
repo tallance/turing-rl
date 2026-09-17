@@ -1,0 +1,74 @@
+# veRL GRPO config for the rating_only judge: same protocol as qwen35_judge_grpo, shorter prompts.
+#
+# The rating_only prompt is the single-token prompt with the seven 1-7 anchors added: it keeps the
+# shared header and drops the full-schema rubric entirely. Everything else about the run is
+# unchanged -- thinking ON, the same optimiser recipe, the same merged-dense rollout sync, the same
+# local label-verifiable reward -- so this overrides only what the shorter prompt moves.
+#
+# Selected by scripts/slurm/judge_grpo_train.sh via JUDGE_CONFIG_NAME=qwen35_judge_rating_grpo.
+defaults:
+  - qwen35_judge_grpo
+  - _self_
+
+data:
+  # MEASURED with the real Qwen3.5 tokenizer on the rating_iter1 corpus (jobs 23068/23069,
+  # scripts/measure_prompt_tokens.py):
+  #
+  #            n     p50    p95    p99    max
+  #   train  3328   2154   3840   4935   5375
+  #   val    1410   2108   4144   4923   5866
+  #
+  # Both splits matter -- data.val_files is loaded by this same config, and val is the longer one.
+  # 6656 clears the combined 5866 by 790, matching the parent's own slack (11264 over a measured
+  # 10535, i.e. 729). filter_overlong_prompts is true in the parent and drops over-budget rows
+  # from train AND val silently, biasing the corpus toward short-history users without failing.
+  #
+  # Do NOT set this from the .meta.json's prompt_tokens_est_max: that is chars/3.9 and over-counted
+  # this corpus by ~1.3x (est 7807 against a real 5866). Its n_over_budget field is also computed
+  # against the builder's PROMPT_BUDGET_TOKENS (default 10240), not against this key, so it does
+  # not gate this value unless the pair job passes PROMPT_BUDGET_TOKENS to match.
+  #
+  # Re-measure per slice, as the parent instructs: the observed maximum grows with sample size.
+  max_prompt_length: 6656
+
+actor_rollout_ref:
+  rollout:
+    # max_prompt_length + max_response_length, and nothing else. max_response_length stays at the
+    # parent's 10752: a cap costs nothing by itself (peak memory tracks the ACTUAL sequence
+    # length), and the rating_only answer is ~10 tokens, so the whole budget is thinking room --
+    # strictly more of it than the full-schema arm had, since that arm spent part of the same
+    # budget writing a 37-field body. tests/test_judge_length_budget.py pins the sum.
+    #
+    # Held as a literal because OmegaConf cannot do arithmetic; the parent holds 22016 the same
+    # way. The test is what keeps the two from drifting.
+    max_model_len: 17408
+
+trainer:
+  # 13 with val_before_train is what every full judge GRPO arm has used since the 2B/4B R1 runs
+  # -- jobs 17888, 17893, 18635, 18914, and most directly job 18920
+  # (Qwen3.5-9B_graded_thinkon_10752), which is this configuration minus the prompt: 9B, graded,
+  # thinking on, 10752 response budget, total_epochs 1. Only the three oldest 4B arms
+  # (16145/16244/16269) and the alternating-round judge trains ran test_freq -1.
+  #
+  # It is set HERE because the parent config declares neither key, so the value lives only in
+  # whatever the submit line happens to carry. Job 23152 was launched with test_freq=52 on the
+  # mistaken belief that no precedent existed -- that came from sampling three prior logs and
+  # generalising, and it cost that run its validation curve.
+  #
+  # Affordability, since the 52 was also defended on cost: MEASURED on job 23152, the full
+  # 1410-row val split completed in ~8 MINUTES (engines up 23:57:38, validation end 00:05:56)
+  # against a ~19 min training step. Cost is dominated by fixed overhead and parallel throughput
+  # across the eight rollout engines, NOT by row count -- the 200-row valsmoke took the same
+  # ~8 min. Four validations add ~24 min to a ~19h run; a reduced val subset buys nothing.
+  # Do not re-derive this by scaling a small-sample validation linearly, which is what produced
+  # the ~7x-too-high 60-min estimate.
+  test_freq: 13
+  # The step-0 reading is the baseline every later point is read against, and it measures the
+  # starting model under the real rollout path before any gradient step can confound it.
+  val_before_train: true
+  # The parent says 3. Every full judge GRPO arm has actually run 1 -- jobs 16244, 16245, 17888,
+  # 18920 -- and so did J1' (job 23152), but only because the submit line carried
+  # trainer.total_epochs=1 in EXTRA_OVERRIDES. A dropped override silently turns an ~18h round
+  # into ~54h, which is the same failure shape as the MERGED_EP3 and JUDGE_CONFIG_NAME defaults.
+  # It belongs in the file with the rest of the recipe.
+  total_epochs: 1

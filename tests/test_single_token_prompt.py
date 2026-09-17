@@ -1,6 +1,7 @@
 """The single-token judge prompt shares its inputs with TURING_PROMPT by construction."""
 
 import hashlib
+import re
 
 import pytest
 
@@ -8,6 +9,7 @@ from scripts.build_judge_train_pairs import render_turing_prompt
 from shared.judge_prompts import (
     TURING_PROMPT,
     TURING_PROMPT_HEADER,
+    TURING_RATING_ONLY_PROMPT,
     TURING_SINGLE_TOKEN_PROMPT,
 )
 
@@ -111,3 +113,60 @@ def test_single_token_render_keeps_the_watchlist_block():
 def test_unknown_prompt_style_is_rejected():
     with pytest.raises(ValueError, match="prompt_style"):
         render_turing_prompt(**_FIELDS, prompt_style="nonsense")
+
+
+# --- rating_only: the single-token inputs, thinking on, a 1-7 rating ----------------------
+
+TURING_RATING_ONLY_PROMPT_SHA256 = (
+    "67278bf01a01130ca10496890f0a42d869c2bd416f0d7c3e9b19ffd283e0cf77"
+)
+
+_ANCHOR_RE = re.compile(r"^- [1-7] = .*$", re.MULTILINE)
+
+
+def _rating_anchors(text: str) -> list[str]:
+    """The seven '- N = ...' scale lines, in emission order."""
+    return _ANCHOR_RE.findall(text)
+
+
+def test_rating_only_prompt_text_is_pinned():
+    assert (hashlib.sha256(TURING_RATING_ONLY_PROMPT.encode()).hexdigest()
+            == TURING_RATING_ONLY_PROMPT_SHA256)
+
+
+def test_rating_only_prompt_starts_with_the_shared_header():
+    assert TURING_RATING_ONLY_PROMPT.startswith(TURING_PROMPT_HEADER)
+
+
+def test_rating_only_keeps_the_load_bearing_framing_sentence():
+    sentence = ("One candidate is the real [HUMAN] response. "
+                "The other candidate is AI-generated.")
+    assert sentence in TURING_RATING_ONLY_PROMPT
+
+
+def test_rating_anchors_are_identical_to_the_full_schema_arm():
+    """The seven scale lines must be byte-identical across the two prompts that use them.
+
+    This is the highest-value pin in this file. The rating_only judge is trained with the
+    `graded` reward arm, 1 - (p - y)^2 for p = (rating - 1) / 6, so the anchors ARE the
+    definition of the reward. Reword one here and "5" quietly means something different than
+    it does in the full-schema arm: both judges keep training, both keep producing ratings,
+    and every cross-prompt comparison silently comes to mean nothing. Nothing else in the
+    pipeline would notice.
+    """
+    full = _rating_anchors(TURING_PROMPT)
+    rating_only = _rating_anchors(TURING_RATING_ONLY_PROMPT)
+
+    assert len(rating_only) == 7, f"expected 7 anchors, got {rating_only}"
+    assert rating_only == full
+
+
+def test_rating_only_drops_the_rubric_the_single_token_arm_also_drops():
+    """It is the single-token prompt plus a rating, not the full prompt minus a schema.
+
+    The rubric is ~5k tokens of every full-schema prompt; carrying it here by accident would
+    be invisible in behaviour and expensive on every call.
+    """
+    for rubric_marker in ("immediate_target_score", "## Penalty Checks", "base_score_a"):
+        assert rubric_marker not in TURING_RATING_ONLY_PROMPT
+        assert rubric_marker in TURING_PROMPT

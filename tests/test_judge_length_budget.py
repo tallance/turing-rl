@@ -16,6 +16,7 @@ import yaml
 
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "training" / "grpo" / "configs"
 JUDGE_CONFIG = CONFIG_DIR / "qwen35_judge_grpo.yaml"
+RATING_CONFIG = CONFIG_DIR / "qwen35_judge_rating_grpo.yaml"
 
 
 def _raw(path):
@@ -146,6 +147,149 @@ def test_longest_selection_actually_picks_the_longest_pairs():
     # Both orders of each pair survive, so human_is_b stays balanced.
     assert len(longest) == 4
     assert sum(info["human_is_b"] for info in longest["extra_info"]) * 2 == len(longest)
+
+
+# --- the rating_only child config ---------------------------------------------------------
+
+
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Hydra's defaults-list composition, for the one case this file needs: child over parent."""
+    merged = dict(base)
+    for key, value in override.items():
+        if key == "defaults":
+            continue
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+def _flatten(config: dict, prefix: str = "") -> dict:
+    flat = {}
+    for key, value in config.items():
+        path = f"{prefix}{key}"
+        if isinstance(value, dict):
+            flat.update(_flatten(value, f"{path}."))
+        else:
+            flat[path] = value
+    return flat
+
+
+def _composed_rating_config() -> dict:
+    return _deep_merge(_loaded(JUDGE_CONFIG), _loaded(RATING_CONFIG))
+
+
+def test_rating_config_composes_from_the_judge_config():
+    """It must be a child, not a fork. A standalone copy would drift from the recipe the parent
+    documents -- fused kernels, merged-LoRA rollout sync, use_v1 false, the nested reward block --
+    each of which has its own incident behind it."""
+    assert _loaded(RATING_CONFIG)["defaults"] == ["qwen35_judge_grpo", "_self_"]
+
+
+def test_rating_config_changes_only_the_intended_keys():
+    """Minimal delta, enforced rather than trusted.
+
+    Everything that makes a judge run work is inherited. Any new key appearing here is either a
+    copy of a parent value (which will go stale silently) or an unreviewed change of recipe, and
+    both read identically in a diff.
+
+    Two length keys (the shorter rating_only corpus) and two validation keys (the parent leaves
+    validation off entirely, which every prior judge arm inherited).
+    """
+    parent = _flatten(_loaded(JUDGE_CONFIG))
+    child = _flatten(_composed_rating_config())
+
+    changed = {key for key in child if parent.get(key) != child[key]}
+
+    assert changed == {
+        "data.max_prompt_length",
+        "actor_rollout_ref.rollout.max_model_len",
+        "trainer.test_freq",
+        "trainer.val_before_train",
+        "trainer.total_epochs",
+    }, f"unexpected overrides: {sorted(changed)}"
+
+
+def test_rating_config_pins_one_epoch():
+    """Every full judge GRPO arm has run 1 epoch, but J1' got there via an EXTRA_OVERRIDES
+    string. A dropped override turns an ~18h round into ~54h without failing."""
+    assert _composed_rating_config()["trainer"]["total_epochs"] == 1
+
+
+def test_rating_config_validates_several_times_per_epoch():
+    """A single before/after gives no curve and no basis for early stopping.
+
+    52 steps / 13 = validations at 0, 13, 26, 39, 52. Measured cost on job 23152: ~8 min for the
+    full 1410-row val split, against ~19 min per training step, so this is ~2% of the run.
+    """
+    trainer = _composed_rating_config()["trainer"]
+
+    assert trainer["val_before_train"] is True
+    assert 0 < trainer["test_freq"] <= 13, (
+        "test_freq must give several validations per epoch; validation is ~8 min, not the ~60 "
+        "a linear scaling from a small val subset suggests"
+    )
+
+
+def test_rating_config_prompt_plus_response_fits_its_context_window():
+    config = _composed_rating_config()
+    data = config["data"]
+    max_model_len = config["actor_rollout_ref"]["rollout"]["max_model_len"]
+
+    assert data["max_prompt_length"] + data["max_response_length"] == max_model_len
+
+
+def test_rating_config_keeps_the_parent_response_budget():
+    """The shorter prompt must not be spent shrinking generation: a rating_only answer is ~10
+    tokens, so the whole budget is thinking room, and thinking is the point of this arm."""
+    assert _composed_rating_config()["data"]["max_response_length"] == 10752
+
+
+def test_rating_prompt_allowance_covers_the_measured_corpus():
+    """Real Qwen3.5 tokenizer maxima on rating_iter1 (jobs 23068/23069): train 5375, val 5866.
+
+    val is the binding one and is loaded by the same config as train, so the allowance must
+    clear 5866 -- filter_overlong_prompts drops over-budget rows from both splits silently.
+
+    Bounded above as well, on the parent's reasoning: prompt and response share max_model_len,
+    so unused prompt allowance is taken out of generation.
+
+    This replaced a chars/3.9 PROJECTION, which put the maximum at ~5598 and was wrong in both
+    directions -- the same estimator called the real 5866 maximum 7807.
+    """
+    measured_combined_max = 5866
+
+    allowance = _composed_rating_config()["data"]["max_prompt_length"]
+
+    assert allowance > measured_combined_max, "prompts would be truncated"
+    assert allowance <= measured_combined_max + 1024, (
+        "allowance exceeds the measured corpus by more than the parent's safety margin"
+    )
+
+
+def test_the_trainer_can_select_the_rating_config():
+    launcher = (
+        Path(__file__).resolve().parents[1] / "scripts" / "slurm" / "judge_grpo_train.sh"
+    ).read_text()
+
+    assert "JUDGE_CONFIG_NAME" in launcher
+    assert '--config-name "$JUDGE_CONFIG_NAME"' in launcher
+    # Both names are real files, so a typo cannot reach Hydra as a missing-config crash.
+    for name in ("qwen35_judge_grpo", "qwen35_judge_rating_grpo"):
+        assert (CONFIG_DIR / f"{name}.yaml").is_file()
+        assert name in launcher
+
+
+def test_the_submit_launcher_forwards_the_config_name_explicitly():
+    """Not left to --export=ALL. A dropped JUDGE_CONFIG_NAME silently falls back to the
+    full-schema length profile, and that run does not fail -- an allowance that is too LARGE
+    truncates nothing -- so it would train under the wrong context window while reading clean."""
+    submit = (
+        Path(__file__).resolve().parents[1] / "scripts" / "launch_judge_train.sh"
+    ).read_text()
+
+    assert "EXPORTS=$EXPORTS,JUDGE_CONFIG_NAME=$JUDGE_CONFIG_NAME" in submit.replace('"', "")
 
 
 def test_longest_selection_rejects_an_unknown_mode():

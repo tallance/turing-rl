@@ -31,7 +31,11 @@ from shared.api_client import (
     post_chat_async,
     resolve_judge_api_key,
 )
-from shared.judge_prompts import TURING_PROMPT, TURING_RESPONSE_SCHEMA
+from shared.judge_prompts import (
+    TURING_PROMPT,
+    TURING_RATING_ONLY_PROMPT,
+    TURING_RESPONSE_SCHEMA,
+)
 from training.grpo.single_token_reward import score_turing_single_token_with_info
 from shared.judge_utils import (
     _coerce_turing_rating,
@@ -267,7 +271,18 @@ def build_logprob_reward_result(
 
 PROMPT_STYLE_FULL = "full"
 PROMPT_STYLE_SINGLE_TOKEN = "single_token"
-PROMPT_STYLES = (PROMPT_STYLE_FULL, PROMPT_STYLE_SINGLE_TOKEN)
+# Same inputs as single_token, but thinking ON and a 1-7 rating instead of one letter. It scores
+# through the FULL arm below, not the single-token one: the answer is a rating, so the existing
+# Likert path already handles it end to end.
+PROMPT_STYLE_RATING_ONLY = "rating_only"
+PROMPT_STYLES = (PROMPT_STYLE_FULL, PROMPT_STYLE_SINGLE_TOKEN, PROMPT_STYLE_RATING_ONLY)
+
+# Which template each style sends. single_token is absent on purpose: that style never reaches
+# score_turing_with_info, it is dispatched to single_token_reward.py before this map is read.
+_JUDGE_PROMPT_TEMPLATES = {
+    PROMPT_STYLE_FULL: TURING_PROMPT,
+    PROMPT_STYLE_RATING_ONLY: TURING_RATING_ONLY_PROMPT,
+}
 
 
 def resolve_judge_prompt_style() -> str:
@@ -283,6 +298,28 @@ def resolve_judge_prompt_style() -> str:
             f"JUDGE_PROMPT_STYLE must be one of {list(PROMPT_STYLES)}, got {style!r}"
         )
     return style
+
+
+_TURING_DIMENSION_SCORE_FIELDS = (
+    "immediate_target_score_a",
+    "immediate_target_score_b",
+    "human_goal_score_a",
+    "human_goal_score_b",
+    "communication_style_score_a",
+    "communication_style_score_b",
+)
+
+
+def _turing_body_has_verdict(data: dict) -> bool:
+    """True when a parsed judge body carries something this scorer can turn into a rating.
+
+    Either the dimension scores it derives a rating from, or an explicit rating. NOT score_gap:
+    this path recomputes the gap from the dimensions and never reads data["score_gap"], so a
+    score-gap-only body would be scored as though every dimension were 0.
+    """
+    if any(key in data for key in _TURING_DIMENSION_SCORE_FIELDS):
+        return True
+    return _coerce_turing_rating(data.get("rating")) is not None
 
 
 def adjust_turing_raw_reward(raw_reward: float) -> float:
@@ -640,6 +677,17 @@ async def _score_pairwise_likert_with_info(
             # meta, so the value kept matches the ``text`` we ultimately return.
             judge_meta = get_judge_call_meta() or {}
             data = _extract_json(text)
+            # Parsing is not enough: the body must actually CONTAIN a verdict. Every _coerce_*
+            # below defaults to 0.0, so an object with none of the expected fields yields
+            # base_score_a == base_score_b == 0, a score_gap of 0, and rating 4 -- a confident
+            # "cannot tell" with parse_error unset. Measured: `{}` and `{"foo": 1}` both scored
+            # 4.0. In generator RL that pays a mid-scale reward for a response containing no
+            # judgement, where a real failure earns 0.0.
+            #
+            # Treated as malformed rather than accepted, so it takes the retry and then the
+            # parse-failure path. The raw-text rating fallback below still gets its chance.
+            if data is not None and not _turing_body_has_verdict(data):
+                data = None
             if data is not None:
                 break
             recovered_rating = _extract_turing_rating(text)
@@ -900,7 +948,12 @@ async def score_turing_with_info(
     target_idx: Any = "",
     randomization_seed_material: str = "",
 ) -> dict[str, Any]:
-    """Turing test with judge-returned source-copy metadata."""
+    """Turing test with judge-returned source-copy metadata.
+
+    The template follows JUDGE_PROMPT_STYLE. Only the prompt changes: a rating_only judge
+    answers `{"rating": N}`, and the parser below already prefers an explicit `rating` field
+    when no dimension fields are present, so the scoring path is shared rather than forked.
+    """
     return await _score_pairwise_likert_with_info(
         session,
         api_key,
@@ -908,7 +961,7 @@ async def score_turing_with_info(
         ground_truth,
         user_history,
         context,
-        prompt_template=TURING_PROMPT,
+        prompt_template=_JUDGE_PROMPT_TEMPLATES[resolve_judge_prompt_style()],
         calibration_domain=calibration_domain,
         user_id=user_id,
         post_id=post_id,

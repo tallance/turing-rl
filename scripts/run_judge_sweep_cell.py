@@ -58,7 +58,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-PROMPT_STYLES = ("full", "single_token")
+PROMPT_STYLES = ("full", "single_token", "rating_only")
 
 
 def resolve_prompt_style(raw: str | None = None) -> str:
@@ -78,6 +78,7 @@ def cell_env(
     out_dir: str,
     sampling: dict | None = None,
     style: str = "full",
+    sampling_override: str | None = None,
 ) -> dict[str, str]:
     """Return the locked judge env for one sweep cell.
 
@@ -117,6 +118,22 @@ def cell_env(
         env.pop("PERSONA_JUDGE_JSON_SCHEMA")
         env["PERSONA_JUDGE_MAX_COMPLETION_TOKENS"] = "1"
         env["PERSONA_JUDGE_ENABLE_THINKING"] = "0"
+    if style == "rating_only":
+        # Only the schema is dropped. The 37-field schema would force a body this judge was
+        # never trained to emit; `{"type":"json_object"}` (what reward.py falls back to) is
+        # the right constraint for a one-field answer. Thinking and the token budget are left
+        # exactly as `mode` asked for -- unlike single_token, nothing is pinned in code here,
+        # so both thinking modes are honest configurations.
+        env.pop("PERSONA_JUDGE_JSON_SCHEMA")
+    if sampling_override:
+        # EXPLICIT opt-in only, and never a default. Task 1 froze the sweep policy to "no wire
+        # override; vLLM uses each model's generation_config.json defaults" so that cells stay
+        # comparable across the matrix, and silently emitting sampling here would break every
+        # historical comparison at once. A caller that passes this is deliberately measuring a
+        # different decode policy and owns the fact that its cells are a separate series --
+        # the value is recorded in run_metadata.json, which is what the results are read
+        # against.
+        env["PERSONA_JUDGE_SAMPLING"] = sampling_override
     return env
 
 
@@ -216,6 +233,11 @@ async def async_main() -> None:
                         help="Cap total pairs (applied before sharding) for calibration")
     parser.add_argument("--prompt_style", default=None, choices=[*PROMPT_STYLES],
                         help="Judge protocol (default: $JUDGE_PROMPT_STYLE, else full)")
+    parser.add_argument("--judge_sampling", default=None,
+                        help="JSON sampling params sent on every judge request, e.g. "
+                             "'{\"temperature\":1.0,\"top_p\":0.95}'. Opt-in ONLY: it overrides "
+                             "the frozen no-wire-override sweep policy, so cells using it form "
+                             "a separate series from the historical matrix.")
     args = parser.parse_args()
 
     endpoints = _parse_endpoints(args.endpoints)
@@ -255,7 +277,8 @@ async def async_main() -> None:
     os.makedirs(dirs["http"], exist_ok=True)
 
     # Lock env BEFORE importing the scorer and set this shard's endpoint once.
-    env = cell_env(model_id=args.model, mode=args.thinking_mode, out_dir=mode_dir, style=style)
+    env = cell_env(model_id=args.model, mode=args.thinking_mode, out_dir=mode_dir, style=style,
+                   sampling_override=args.judge_sampling)
     os.environ.update(env)
     if style == "single_token":
         # cell_env omits it, but the job inherits the submitting environment, so an
