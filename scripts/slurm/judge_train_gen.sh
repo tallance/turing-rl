@@ -33,7 +33,14 @@ export PYTHONPATH="$REPO${PYTHONPATH:+:$PYTHONPATH}"
 # against a recording stub and observe which steps it invokes. Unset on the cluster.
 PY=${TURING_RL_JOB_PYTHON:-/home/lancewicki/miniconda3/envs/turing-rl-train/bin/python}
 
-MERGED_EP3=${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}
+# The generator the FAKE TURNS are sampled from: the SFT backbone for round 1, the previous
+# round's merged dense generator after that.
+#
+# Renamed from MERGED_EP3. That name was shared with merge_grpo_ckpt.sh, where it means
+# something unrelated -- the container a LoRA is merged ONTO -- so one name covered two roles
+# and reading either script taught you the wrong thing about the other. The old name is still
+# honoured, because other sessions have in-flight commands passing it.
+GEN_MODEL=${GEN_MODEL:-${MERGED_EP3:-$REPO/checkpoints/sft/qwen35_9b_prism_full_s42_bf16_fsdp_nopack_epochsave/merged_ep3}}
 SPLIT=${SPLIT:-train}
 SLICE_LO=${SLICE_LO:-0.0}
 SLICE_HI=${SLICE_HI:-0.1}
@@ -120,9 +127,9 @@ mkdir -p "$OUT_DIR"
 
 echo "=== judge gen: split=$SPLIT slice=[$SLICE_LO,$SLICE_HI) limit=$LIMIT k=$GEN_NUM style=$PROMPT_STYLE ==="
 if [ "$MIX_TEMPERATURES" = 1 ]; then
-  echo "=== model=$MERGED_EP3 sampling T=${TEMPS[*]} (k=$GEN_NUM_PER_TEMP each) top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
+  echo "=== model=$GEN_MODEL sampling T=${TEMPS[*]} (k=$GEN_NUM_PER_TEMP each) top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
 else
-  echo "=== model=$MERGED_EP3 sampling T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
+  echo "=== model=$GEN_MODEL sampling T=$GEN_TEMPERATURE top_p=$GEN_TOP_P top_k=$GEN_TOP_K ==="
 fi
 if [ "$REUSE_GENERATIONS" = 1 ]; then
   echo "=== generations: REUSE existing (slice and GPU generation skipped) ==="
@@ -164,7 +171,7 @@ else
   for i in "${!PKLS[@]}"; do
     k=${GEN_NUM_PER_TEMP:-$GEN_NUM}
     echo "=== generation pass $((i + 1))/${#PKLS[@]}: T=${TEMPS[$i]} k=$k -> ${PKLS[$i]} ==="
-    $PY -u -m eval.generate_trained --base_model --model_id "$MERGED_EP3" \
+    $PY -u -m eval.generate_trained --base_model --model_id "$GEN_MODEL" \
       --test_parquet "$SLICED_PARQUET" --output "${PKLS[$i]}" --gen_num "$k" \
       --temperature "${TEMPS[$i]}" --top_p "$GEN_TOP_P" --top_k "$GEN_TOP_K" \
       --max_tokens "$GEN_MAX_TOKENS" --backend vllm \

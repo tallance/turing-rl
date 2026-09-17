@@ -256,7 +256,7 @@ def append_per_temperature_accuracy(metrics: dict[str, Any]) -> None:
     zero.
     """
     for label in ("t07", "t10"):
-        total = metrics.get(f"reward/judge_acc_{label}/mean")
+        total = metrics.get(f"reward/judge_correct_{label}/mean")
         count = metrics.get(f"reward/judge_n_{label}/mean")
         if total is None or not count:
             continue

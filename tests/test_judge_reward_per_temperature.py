@@ -10,7 +10,10 @@ Shape matters. verl_metric_patch reduces every judge_-prefixed key with a plain 
 the batch (verl_metric_patch.py: `metric_mean = float(np.mean(values))`), so:
 
   * a key present on only SOME rows would be averaged over the wrong denominator;
-  * the readable quantity is a sum/count PAIR -- mean(judge_acc_tXX) / mean(judge_n_tXX).
+  * the readable quantity is a sum/count PAIR -- mean(judge_correct_tXX) / mean(judge_n_tXX),
+    which verl_metric_patch emits as judge_acc_tXX_norm. The numerator is named CORRECT, not
+    acc: averaged over a batch it is accuracy x share, and calling that an accuracy made a
+    rising ~0.40 read as a flat ~0.20.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ sys.path.insert(0, str(ROOT))
 from training.grpo.judge_reward import compute_score  # noqa: E402
 
 THINK = "reasoning</think>"
-TEMP_KEYS = ("judge_n_t07", "judge_acc_t07", "judge_n_t10", "judge_acc_t10")
+TEMP_KEYS = ("judge_n_t07", "judge_correct_t07", "judge_n_t10", "judge_correct_t10")
 
 
 def _score(rating, human_is_b, gen_temperature, monkeypatch):
@@ -45,18 +48,18 @@ def test_a_warm_row_counts_only_in_the_warm_bucket(monkeypatch):
     got = _score(7, True, 0.7, monkeypatch)  # rating 7 with human on B == correct
 
     assert got["judge_n_t07"] == 1.0
-    assert got["judge_acc_t07"] == 1.0
+    assert got["judge_correct_t07"] == 1.0
     assert got["judge_n_t10"] == 0.0
-    assert got["judge_acc_t10"] == 0.0
+    assert got["judge_correct_t10"] == 0.0
 
 
 def test_a_hot_row_counts_only_in_the_hot_bucket(monkeypatch):
     got = _score(7, True, 1.0, monkeypatch)
 
     assert got["judge_n_t10"] == 1.0
-    assert got["judge_acc_t10"] == 1.0
+    assert got["judge_correct_t10"] == 1.0
     assert got["judge_n_t07"] == 0.0
-    assert got["judge_acc_t07"] == 0.0
+    assert got["judge_correct_t07"] == 0.0
 
 
 def test_a_wrong_answer_counts_in_the_denominator_but_not_the_numerator(monkeypatch):
@@ -64,7 +67,7 @@ def test_a_wrong_answer_counts_in_the_denominator_but_not_the_numerator(monkeypa
     got = _score(1, True, 0.7, monkeypatch)  # says A, human is B -> wrong
 
     assert got["judge_n_t07"] == 1.0
-    assert got["judge_acc_t07"] == 0.0
+    assert got["judge_correct_t07"] == 0.0
 
 
 def test_every_key_is_present_on_every_row(monkeypatch):
@@ -84,8 +87,8 @@ def test_a_single_temperature_corpus_counts_in_neither_bucket(monkeypatch):
 
     assert got["judge_n_t07"] == 0.0
     assert got["judge_n_t10"] == 0.0
-    assert got["judge_acc_t07"] == 0.0
-    assert got["judge_acc_t10"] == 0.0
+    assert got["judge_correct_t07"] == 0.0
+    assert got["judge_correct_t10"] == 0.0
 
 
 def test_subset_accuracy_is_recoverable_from_the_batch_means(monkeypatch):
@@ -105,9 +108,9 @@ def test_subset_accuracy_is_recoverable_from_the_batch_means(monkeypatch):
     def mean(key):
         return sum(row[key] for row in batch) / len(batch)
 
-    assert mean("judge_acc_t07") / mean("judge_n_t07") == pytest.approx(2 / 3)
+    assert mean("judge_correct_t07") / mean("judge_n_t07") == pytest.approx(2 / 3)
     assert mean("judge_n_t07") == pytest.approx(3 / 4)
-    assert mean("judge_acc_t10") / mean("judge_n_t10") == pytest.approx(0.0)
+    assert mean("judge_correct_t10") / mean("judge_n_t10") == pytest.approx(0.0)
     assert mean("judge_n_t10") == pytest.approx(1 / 4)
     # The buckets partition the mixed rows: no row is counted twice or dropped.
     assert mean("judge_n_t07") + mean("judge_n_t10") == pytest.approx(1.0)

@@ -300,6 +300,28 @@ def resolve_judge_prompt_style() -> str:
     return style
 
 
+_TURING_DIMENSION_SCORE_FIELDS = (
+    "immediate_target_score_a",
+    "immediate_target_score_b",
+    "human_goal_score_a",
+    "human_goal_score_b",
+    "communication_style_score_a",
+    "communication_style_score_b",
+)
+
+
+def _turing_body_has_verdict(data: dict) -> bool:
+    """True when a parsed judge body carries something this scorer can turn into a rating.
+
+    Either the dimension scores it derives a rating from, or an explicit rating. NOT score_gap:
+    this path recomputes the gap from the dimensions and never reads data["score_gap"], so a
+    score-gap-only body would be scored as though every dimension were 0.
+    """
+    if any(key in data for key in _TURING_DIMENSION_SCORE_FIELDS):
+        return True
+    return _coerce_turing_rating(data.get("rating")) is not None
+
+
 def adjust_turing_raw_reward(raw_reward: float) -> float:
     """Scale the Turing raw reward before adding format bonuses."""
     return float(raw_reward) * TURING_RAW_REWARD_SCALE
@@ -655,6 +677,17 @@ async def _score_pairwise_likert_with_info(
             # meta, so the value kept matches the ``text`` we ultimately return.
             judge_meta = get_judge_call_meta() or {}
             data = _extract_json(text)
+            # Parsing is not enough: the body must actually CONTAIN a verdict. Every _coerce_*
+            # below defaults to 0.0, so an object with none of the expected fields yields
+            # base_score_a == base_score_b == 0, a score_gap of 0, and rating 4 -- a confident
+            # "cannot tell" with parse_error unset. Measured: `{}` and `{"foo": 1}` both scored
+            # 4.0. In generator RL that pays a mid-scale reward for a response containing no
+            # judgement, where a real failure earns 0.0.
+            #
+            # Treated as malformed rather than accepted, so it takes the retry and then the
+            # parse-failure path. The raw-text rating fallback below still gets its chance.
+            if data is not None and not _turing_body_has_verdict(data):
+                data = None
             if data is not None:
                 break
             recovered_rating = _extract_turing_rating(text)

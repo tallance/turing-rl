@@ -25,9 +25,9 @@ from training.grpo.verl_metric_patch import append_per_temperature_accuracy  # n
 def test_the_ratio_is_the_subset_accuracy():
     """Half the batch at each temperature; T=0.7 right 80% of the time, T=1.0 right 30%."""
     metrics = {
-        "reward/judge_acc_t07/mean": 0.5 * 0.8,
+        "reward/judge_correct_t07/mean": 0.5 * 0.8,
         "reward/judge_n_t07/mean": 0.5,
-        "reward/judge_acc_t10/mean": 0.5 * 0.3,
+        "reward/judge_correct_t10/mean": 0.5 * 0.3,
         "reward/judge_n_t10/mean": 0.5,
     }
 
@@ -41,9 +41,9 @@ def test_an_uneven_batch_mix_is_handled():
     """The composition varies step to step, which is exactly what the raw numerator conflates
     with accuracy. 25% of rows at T=0.7, all correct -> accuracy 1.0, not 0.25."""
     metrics = {
-        "reward/judge_acc_t07/mean": 0.25,
+        "reward/judge_correct_t07/mean": 0.25,
         "reward/judge_n_t07/mean": 0.25,
-        "reward/judge_acc_t10/mean": 0.0,
+        "reward/judge_correct_t10/mean": 0.0,
         "reward/judge_n_t10/mean": 0.75,
     }
 
@@ -58,9 +58,9 @@ def test_an_absent_bucket_emits_nothing_rather_than_zero():
     plot a flat line that looks like a measured accuracy of zero; emitting nothing leaves the
     panel honestly empty."""
     metrics = {
-        "reward/judge_acc_t07/mean": 0.0,
+        "reward/judge_correct_t07/mean": 0.0,
         "reward/judge_n_t07/mean": 0.0,
-        "reward/judge_acc_t10/mean": 0.0,
+        "reward/judge_correct_t10/mean": 0.0,
         "reward/judge_n_t10/mean": 0.0,
     }
 
@@ -82,13 +82,13 @@ def test_missing_counters_are_a_no_op():
 def test_it_does_not_disturb_the_existing_metrics():
     metrics = {
         "reward/judge_acc/mean": 0.42,
-        "reward/judge_acc_t07/mean": 0.2,
+        "reward/judge_correct_t07/mean": 0.2,
         "reward/judge_n_t07/mean": 0.5,
     }
 
     append_per_temperature_accuracy(metrics)
 
     assert metrics["reward/judge_acc/mean"] == 0.42
-    assert metrics["reward/judge_acc_t07/mean"] == 0.2
+    assert metrics["reward/judge_correct_t07/mean"] == 0.2
     assert metrics["reward/judge_n_t07/mean"] == 0.5
     assert metrics["reward/judge_acc_t07_norm/mean"] == pytest.approx(0.4)

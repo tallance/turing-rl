@@ -145,10 +145,13 @@ def _metrics(
     # Two fixed buckets rather than a key derived from the value: 0.7 and 1.0 are the eval and
     # generator-training temperatures, not arbitrary choices. A row with no gen_temperature (the
     # val split, and every pre-mix corpus) counts in neither, so the denominator stays honest.
+    # Named judge_CORRECT, not judge_acc: averaged over a batch this is accuracy x share, which
+    # is not an accuracy and read about half the true value when it was called one. The accuracy
+    # is derived post-aggregation as judge_acc_tXX_norm (verl_metric_patch).
     for label, bucket in (("t07", 0.7), ("t10", 1.0)):
         in_bucket = gen_temperature is not None and abs(float(gen_temperature) - bucket) < 1e-6
         metrics[f"judge_n_{label}"] = 1.0 if in_bucket else 0.0
-        metrics[f"judge_acc_{label}"] = acc if in_bucket else 0.0
+        metrics[f"judge_correct_{label}"] = acc if in_bucket else 0.0
 
     for rung in RECOVERY_RUNGS:
         metrics[f"judge_rung_{rung}"] = 1.0 if verdict.recovery_rung == rung else 0.0
