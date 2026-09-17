@@ -95,7 +95,8 @@ def test_every_opt_in_cell_is_reachable_from_the_launcher():
     from configs.judge_sweep_cells import extra_cell_names
 
     names = extra_cell_names()
-    for required in ("9b-ce", "9b-ce2", "9b-ce3", "9b-ce4", "9b-ce5", "gemma4-12b", "gemma4-31b"):
+    for required in ("9b-ce", "9b-ce2", "9b-ce3", "9b-ce4", "9b-ce5",
+                     "9b-rating-j0", "9b-rating-j1", "gemma4-12b", "gemma4-31b"):
         assert required in names, required
     # Enumerable, not a fixed list: every name must actually resolve.
     for name in names:
@@ -105,6 +106,33 @@ def test_every_opt_in_cell_is_reachable_from_the_launcher():
     assert "extra_cell(n) for n in extra_cell_names()" in launcher
     for stale in ("extra_cell('gemma4-12b')", "extra_cell('gemma4-31b')"):
         assert stale not in launcher, f"launcher still hardcodes {stale}"
+
+
+def test_rating_judge_cells_match_the_ce_serving_shape():
+    """The rating lineage must serve like the CE one it is being compared against.
+
+    Both are 9B on the same backbone; if they were served at different tp/replicas a
+    rating-vs-CE difference could come from sharding rather than from the protocol.
+    """
+    ce = resolve_cell("9b-ce")
+    for name in ("9b-rating-j0", "9b-rating-j1"):
+        cell = resolve_cell(name)
+        assert (cell["tp"], cell["replicas"]) == (ce["tp"], ce["replicas"]), name
+        assert cell["concurrency"] == ce["concurrency"], name
+        assert SIZE_MAP[name] == 9, name
+
+
+def test_rating_judge_paths_are_servable():
+    """j0 is the untrained Hub baseline; every trained judge is an absolute _dense path.
+
+    vLLM cannot serve a PEFT adapter dir, and the cell resolves inside a job whose
+    checkpoints/ is a symlink -- both mistakes surface only after an 8-GPU cell is scheduled.
+    """
+    assert resolve_cell("9b-rating-j0")["model_id"] == "Qwen/Qwen3.5-9B"
+    trained = resolve_cell("9b-rating-j1")["model_id"]
+    assert trained.startswith("/"), trained
+    assert trained.endswith("hf_dense"), trained
+    assert "lora" not in trained and "hf_base" not in trained, trained
 
 
 def test_unknown_opt_in_cell_fails_loudly():

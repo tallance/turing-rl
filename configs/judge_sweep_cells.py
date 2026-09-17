@@ -102,6 +102,29 @@ _EXTRA_CELLS = {
         "quantized": False,
         "concurrency": 32,
     },
+    # The thinking-on rating_only lineage. Same backbone and serving shape as the 9b-ce cells
+    # so a rating-vs-CE difference cannot come from sharding. j0 is the untrained baseline and
+    # is a Hub id, not a path; every trained judge is an absolute path to a merged _dense.
+    "9b-rating-j0": {
+        "cell_name": "9b-rating-j0",
+        "model_id": "Qwen/Qwen3.5-9B",
+        "tp": 1,
+        "replicas": 8,
+        "size_b": 9,
+        "is_moe": False,
+        "quantized": False,
+        "concurrency": 32,
+    },
+    "9b-rating-j1": {
+        "cell_name": "9b-rating-j1",
+        "model_id": "/home/lancewicki/projects/turing-rl/results/2026-09-16-rating-judge-j1-merge2/models/step52/hf_dense",
+        "tp": 1,
+        "replicas": 8,
+        "size_b": 9,
+        "is_moe": False,
+        "quantized": False,
+        "concurrency": 32,
+    },
     "gemma4-31b": {
         "cell_name": "gemma4-31b",
         "model_id": "google/gemma-4-31B-it",
@@ -228,6 +251,8 @@ SIZE_MAP = {
     "9b-ce3": 9,
     "9b-ce4": 9,
     "9b-ce5": 9,
+    "9b-rating-j0": 9,
+    "9b-rating-j1": 9,
     "qwen35-27b": 27,
     "qwen35-35b-a3b": 3,
     "qwen35-122b": 10,  # A10B: 10B active
