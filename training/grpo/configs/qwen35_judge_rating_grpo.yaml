@@ -66,3 +66,9 @@ trainer:
   # The step-0 reading is the baseline every later point is read against, and it measures the
   # starting model under the real rollout path before any gradient step can confound it.
   val_before_train: true
+  # The parent says 3. Every full judge GRPO arm has actually run 1 -- jobs 16244, 16245, 17888,
+  # 18920 -- and so did J1' (job 23152), but only because the submit line carried
+  # trainer.total_epochs=1 in EXTRA_OVERRIDES. A dropped override silently turns an ~18h round
+  # into ~54h, which is the same failure shape as the MERGED_EP3 and JUDGE_CONFIG_NAME defaults.
+  # It belongs in the file with the rest of the recipe.
+  total_epochs: 1

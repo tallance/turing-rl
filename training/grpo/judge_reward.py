@@ -80,7 +80,12 @@ def task_reward(rating: int, human_is_b: bool, arm: str) -> float:
     raise ValueError(f"unknown reward arm {arm!r}; expected one of {ARMS}")
 
 
-def _metrics(verdict: JudgeVerdict, human_is_b: bool, arm: str) -> dict[str, float]:
+def _metrics(
+    verdict: JudgeVerdict,
+    human_is_b: bool,
+    arm: str,
+    gen_temperature: float | None = None,
+) -> dict[str, float]:
     """Per-sample metrics. Every key is judge_-prefixed so verl_metric_patch finds it."""
     rating = verdict.rating
     task = task_reward(rating, human_is_b, arm) if verdict.recovered else 0.0
@@ -126,6 +131,25 @@ def _metrics(verdict: JudgeVerdict, human_is_b: bool, arm: str) -> dict[str, flo
         "judge_human_is_b": y,
         "judge_recovered": float(verdict.recovered),
     }
+    # Accuracy split by the temperature the FAKE TURN was sampled at. The mixed-temperature
+    # corpus is why this judge exists -- a single-temperature judge flipped polarity across the
+    # generator's sampling range -- so the aggregate judge_acc cannot answer whether the mix
+    # works. Judge GRPO logs only aggregate metrics (no per-call dumps like the generator), so
+    # this is not recoverable after a run.
+    #
+    # Emitted as sum/count PAIRS present on EVERY row: verl_metric_patch reduces judge_* keys
+    # with a plain np.mean over the batch, so a key present on only some rows would be averaged
+    # against the wrong denominator. Read the subset accuracy as
+    # mean(judge_acc_tXX) / mean(judge_n_tXX).
+    #
+    # Two fixed buckets rather than a key derived from the value: 0.7 and 1.0 are the eval and
+    # generator-training temperatures, not arbitrary choices. A row with no gen_temperature (the
+    # val split, and every pre-mix corpus) counts in neither, so the denominator stays honest.
+    for label, bucket in (("t07", 0.7), ("t10", 1.0)):
+        in_bucket = gen_temperature is not None and abs(float(gen_temperature) - bucket) < 1e-6
+        metrics[f"judge_n_{label}"] = 1.0 if in_bucket else 0.0
+        metrics[f"judge_acc_{label}"] = acc if in_bucket else 0.0
+
     for rung in RECOVERY_RUNGS:
         metrics[f"judge_rung_{rung}"] = 1.0 if verdict.recovery_rung == rung else 0.0
     for value in range(1, 8):
@@ -150,4 +174,6 @@ async def compute_score(
 
     arm = kwargs.get("arm") or resolve_arm()
     verdict = parse_judge_verdict(solution_str)
-    return _metrics(verdict, human_is_b, arm)
+    # Written per generation by scripts/build_judge_train_pairs.py; absent on single-temperature
+    # corpora, which is handled as "counts in neither bucket" rather than defaulted.
+    return _metrics(verdict, human_is_b, arm, extra_info.get("gen_temperature"))

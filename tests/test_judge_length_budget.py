@@ -207,7 +207,14 @@ def test_rating_config_changes_only_the_intended_keys():
         "actor_rollout_ref.rollout.max_model_len",
         "trainer.test_freq",
         "trainer.val_before_train",
+        "trainer.total_epochs",
     }, f"unexpected overrides: {sorted(changed)}"
+
+
+def test_rating_config_pins_one_epoch():
+    """Every full judge GRPO arm has run 1 epoch, but J1' got there via an EXTRA_OVERRIDES
+    string. A dropped override turns an ~18h round into ~54h without failing."""
+    assert _composed_rating_config()["trainer"]["total_epochs"] == 1
 
 
 def test_rating_config_validates_several_times_per_epoch():
