@@ -59,6 +59,11 @@ CELLS = os.environ.get(
 PROMPT_CELLS = os.environ.get(
     "PROMPT_CELLS", "qwen35-9b,qwen35-27b,gemma4-31b,gemma4-12b,qwen35-4b").split(",")
 MODE = "on"
+# A non-"full" prompt style nests one level deeper: judge_sweep_cell.sh:175 appends the style to
+# the mode dir, so the rating lineage writes on/rating_only/reward. Kept as a separate env rather
+# than folded into MODE so the two stay readable against that line.
+STYLE = os.environ.get("STYLE", "")
+MODE_DIR = MODE if not STYLE else os.path.join(MODE, STYLE)
 N_SAMPLE = int(os.environ.get("N_SAMPLE", "100"))
 EXPECT_PAIRS = int(os.environ.get("EXPECT_PAIRS", "880"))
 SEED = int(os.environ.get("SEED", "0"))
@@ -80,7 +85,7 @@ def key_of(row):
 
 def load_cell(cell):
     """First row per pair key, plus a count of duplicate keys seen."""
-    pattern = os.path.join(ROOT, cell, MODE, "reward", "*.jsonl")
+    pattern = os.path.join(ROOT, cell, MODE_DIR, "reward", "*.jsonl")
     shards = sorted(glob.glob(pattern))
     if not shards:
         raise SystemExit("FAIL: no reward shards at %s" % pattern)

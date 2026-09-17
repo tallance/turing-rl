@@ -20,7 +20,7 @@ STEP320_PROMPT_CELLS = ["qwen35-9b", "qwen35-27b", "gemma4-31b", "gemma4-12b", "
 
 
 def _load(monkeypatch, **env):
-    for k in ("CELLS", "PROMPT_CELLS", "KEYS_JSON", "KEYS_FILE"):
+    for k in ("CELLS", "PROMPT_CELLS", "KEYS_JSON", "KEYS_FILE", "STYLE"):
         monkeypatch.delenv(k, raising=False)
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -66,10 +66,22 @@ def test_keys_json_wins_over_keys_file(monkeypatch, tmp_path):
     assert json.loads(mod.KEYS_JSON) == [["from", "env", "0"]]
 
 
+def test_style_nests_the_mode_dir_like_judge_sweep_cell(monkeypatch):
+    """Mirrors judge_sweep_cell.sh:175 -- a non-full style adds one path level.
+
+    Without this the extractor globs sweep/<cell>/on/reward and silently finds nothing for a
+    rating_only run, which reads as "no shards" rather than "wrong path".
+    """
+    mod = _load(monkeypatch)
+    assert mod.MODE_DIR == "on"
+    mod = _load(monkeypatch, STYLE="rating_only")
+    assert mod.MODE_DIR == "on/rating_only"
+
+
 @pytest.fixture(autouse=True)
 def _restore(monkeypatch):
     """Leave the module in its default state for any later importer."""
     yield
-    for k in ("CELLS", "PROMPT_CELLS", "KEYS_JSON", "KEYS_FILE"):
+    for k in ("CELLS", "PROMPT_CELLS", "KEYS_JSON", "KEYS_FILE", "STYLE"):
         monkeypatch.delenv(k, raising=False)
     importlib.reload(sys.modules["scripts.extract_step_subset"])
