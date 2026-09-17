@@ -57,6 +57,29 @@ from scripts.eval_rl_generator import directional_accuracy  # noqa: E402
 
 STEP_RE = re.compile(r"pairs_step(\d+)_")
 
+# Left panel drops ties; right panel scores them as half a point.
+PANELS = [
+    ("accuracy", "Ties excluded", "correct / non-tie pairs"),
+    ("accuracy_tie_half", "Ties count as 0.5", "(correct + ½·ties) / scored pairs"),
+]
+
+
+def tie_half_accuracy(acc):
+    """Accuracy with a tie scored as half a point, chess style.
+
+    directional_accuracy drops ties from the denominator, which is not neutral
+    across judges: at step 0 Gemma 4 12B ties on 22 of 100 pairs and Sonnet 5
+    on 14, while Opus 5 ties on 0-2. Those accuracies are therefore computed
+    over visibly different denominators, and a judge can look decisive simply
+    by abstaining on the pairs it would have got wrong.
+
+    Scoring a tie as half a point puts every judge on the same denominator and
+    prices indecision at exactly chance, which is what a tie asserts. Parse
+    errors stay excluded -- those are missing data, not expressed indecision.
+    """
+    denom = acc["n_nontie"] + acc["n_tie"]
+    return (acc["correct"] + 0.5 * acc["n_tie"]) / denom if denom else 0.0
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
@@ -95,9 +118,10 @@ def main() -> None:
         for s in steps:
             rows = [row_from_incumbent(rec, j.cell) for rec in per_step[s]]
             acc = directional_accuracy(rows)
-            pts.append((s, acc["accuracy"]))
+            pts.append((s, acc["accuracy"], tie_half_accuracy(acc)))
             table.append({"judge": j.label, "cell": j.cell, "step": s,
                           "judge_accuracy": round(acc["accuracy"], 4),
+                          "judge_accuracy_tie_half": round(tie_half_accuracy(acc), 4),
                           "n_nontie": acc["n_nontie"], "n_tie": acc["n_tie"]})
         series[j.cell] = pts
 
@@ -110,9 +134,10 @@ def main() -> None:
                 continue
             rows = [json.loads(l) for l in open(f) if l.strip()]
             acc = directional_accuracy(rows)
-            pts.append((s, acc["accuracy"]))
+            pts.append((s, acc["accuracy"], tie_half_accuracy(acc)))
             table.append({"judge": j.label, "cell": j.cell, "step": s,
                           "judge_accuracy": round(acc["accuracy"], 4),
+                          "judge_accuracy_tie_half": round(tie_half_accuracy(acc), 4),
                           "n_nontie": acc["n_nontie"], "n_tie": acc["n_tie"]})
         if pts:
             series[j.cell] = pts
@@ -120,67 +145,79 @@ def main() -> None:
     csv_path = root / f"{a.stem}.csv"
     with open(csv_path, "w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=["judge", "cell", "step",
-                                           "judge_accuracy", "n_nontie", "n_tie"])
+                                           "judge_accuracy", "judge_accuracy_tie_half",
+                                           "n_nontie", "n_tie"])
         w.writeheader()
         w.writerows(sorted(table, key=lambda r: (r["cell"], r["step"])))
 
     apply_rc()
-    fig, ax = plt.subplots(figsize=(7.8, 5.0))
-    ax.axhline(0.5, color=INK["primary"], lw=1.2, ls=(0, (4, 3)), zorder=1)
-    ax.annotate("0.5 = chance", xy=(steps[-1], 0.5), xytext=(0, 5),
-                textcoords="offset points", color=INK["primary"], fontsize=9,
-                va="bottom", ha="right", zorder=1)
+    fig, axes = plt.subplots(1, 2, figsize=(13.4, 5.2), sharey=True)
 
-    ends = []
-    for j in CURVE_JUDGES:
-        xs = [s for s, _ in series[j.cell]]
-        ys = [v for _, v in series[j.cell]]
-        ax.plot(xs, ys, color=j.color, linestyle=j.linestyle, lw=3.0 if j.emph else 2.0,
-                marker=j.marker, markersize=j.size, markerfacecolor=j.color,
-                markeredgecolor=INK["surface"], markeredgewidth=2,
-                zorder=5 if j.emph else 3,
-                label=f"{j.label} judge" + ("  (trained against)" if j.emph else ""))
-        ends.append((ys[-1], j.label, j.emph, j.color))
+    # Both panels are drawn from the SAME directional_accuracy call, so they can
+    # only differ in how ties are handled -- not in the underlying judgements.
+    for ax, (idx, (field, title, ylab)) in zip(axes, enumerate(PANELS)):
+        col = 1 + idx  # series tuples are (step, accuracy, accuracy_tie_half)
+        ax.axhline(0.5, color=INK["primary"], lw=1.2, ls=(0, (4, 3)), zorder=1)
+        ax.annotate("0.5 = chance", xy=(steps[-1], 0.5), xytext=(0, 5),
+                    textcoords="offset points", color=INK["primary"], fontsize=9,
+                    va="bottom", ha="right", zorder=1)
 
-    for j in POINT_JUDGES:
-        if j.cell not in series:
-            continue
-        xs = [s for s, _ in series[j.cell]]
-        ys = [v for _, v in series[j.cell]]
-        # Thin dashed connector when there is more than one point: still clearly
-        # distinct from the solid curves, but the trajectory is readable.
-        ax.plot(xs, ys, color=j.color, linestyle=(0, (2, 2)) if len(xs) > 1 else "none",
-                lw=1.6, marker=j.marker, markersize=j.size, markerfacecolor="none",
-                markeredgecolor=j.color, markeredgewidth=2.2, zorder=7,
-                label=f"{j.label} judge")
-        ends.append((ys[-1], j.label, False, j.color))
+        ends = []
+        for j in CURVE_JUDGES:
+            xs = [p[0] for p in series[j.cell]]
+            ys = [p[col] for p in series[j.cell]]
+            ax.plot(xs, ys, color=j.color, linestyle=j.linestyle,
+                    lw=3.0 if j.emph else 2.0,
+                    marker=j.marker, markersize=j.size, markerfacecolor=j.color,
+                    markeredgecolor=INK["surface"], markeredgewidth=2,
+                    zorder=5 if j.emph else 3,
+                    label=f"{j.label} judge" + ("  (trained against)" if j.emph else ""))
+            ends.append((ys[-1], j.label, j.emph, j.color))
 
-    # Direct labels in the SERIES colour, not ink. The house style puts them in
-    # ink because the adjacent mark carries identity -- but six endpoints inside
-    # 0.14-0.42 force declutter to push labels well off their own marks, so
-    # adjacency stops being reliable and the colour has to carry it instead.
-    lo, hi = ax.get_ylim()
-    placed = declutter([(y - lo) / (hi - lo) for y, _, _, _ in ends])
-    for (y, label, emph, color), yf in zip(ends, placed):
-        ax.annotate(label + ("*" if emph else ""),
-                    xy=(steps[-1], lo + yf * (hi - lo)),
-                    xytext=(9, 0), textcoords="offset points",
-                    color=color,
-                    fontsize=10.5, fontweight="bold" if emph else "normal",
-                    va="center", ha="left", zorder=8, annotation_clip=False)
+        for j in POINT_JUDGES:
+            if j.cell not in series:
+                continue
+            xs = [p[0] for p in series[j.cell]]
+            ys = [p[col] for p in series[j.cell]]
+            # Thin dashed connector when there is more than one point: still
+            # clearly distinct from the solid curves, but the trend is readable.
+            ax.plot(xs, ys, color=j.color,
+                    linestyle=(0, (2, 2)) if len(xs) > 1 else "none",
+                    lw=1.6, marker=j.marker, markersize=j.size, markerfacecolor="none",
+                    markeredgecolor=j.color, markeredgewidth=2.2, zorder=7,
+                    label=f"{j.label} judge")
+            ends.append((ys[-1], j.label, False, j.color))
 
-    style_axes(ax, "", "GRPO step", "judge accuracy: picked the real human", steps)
-    ax.set_xlim(steps[0] - 6, steps[-1] + 34)
+        # Direct labels in the SERIES colour, not ink. The house style puts them
+        # in ink because the adjacent mark carries identity -- but six endpoints
+        # packed into a narrow band force declutter to push labels well off their
+        # own marks, so adjacency stops being reliable and colour has to carry it.
+        lo, hi = ax.get_ylim()
+        placed = declutter([(y - lo) / (hi - lo) for y, _, _, _ in ends])
+        for (y, label, emph, color), yf in zip(ends, placed):
+            ax.annotate(label + ("*" if emph else ""),
+                        xy=(steps[-1], lo + yf * (hi - lo)),
+                        xytext=(9, 0), textcoords="offset points",
+                        color=color,
+                        fontsize=10.5, fontweight="bold" if emph else "normal",
+                        va="center", ha="left", zorder=8, annotation_clip=False)
+
+        style_axes(ax, title, "GRPO step",
+                   "judge accuracy: picked the real human" if idx == 0 else "", steps)
+        ax.set_xlim(steps[0] - 6, steps[-1] + 40)
 
     fig.suptitle(a.title, x=0.008, ha="left", color=INK["primary"],
                  fontsize=14, fontweight="bold", y=0.995)
-    fig.text(0.008, 0.925,
+    fig.text(0.008, 0.93,
              f"Held-out test set, {n} pairs, identical pair keys at every step and for "
-             f"every judge.\nBelow the dashed line the judge is not merely noisy -- it "
-             f"reliably prefers the generated turn.\n* = the judge the run was trained "
-             f"against.",
+             f"every judge.  * = the judge the run was trained against.\n"
+             f"Below the dashed line the judge is not merely noisy -- it reliably "
+             f"prefers the generated turn.\n"
+             f"Left: correct / non-tie pairs.   Right: (correct + ½·ties) / scored "
+             f"pairs.  Tie rates differ sharply between judges, so dropping ties lets an "
+             f"indecisive judge look sharper than it is.",
              ha="left", va="top", color=INK["muted"], fontsize=9.5)
-    fig.tight_layout(rect=(0, 0, 1, 0.86))
+    fig.tight_layout(rect=(0, 0, 1, 0.84))
 
     p = root / f"{a.stem}.png"
     fig.savefig(p, dpi=200, bbox_inches="tight")
