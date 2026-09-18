@@ -28,8 +28,8 @@ done
 case "$THINKING_MODE" in on|off) ;; *) echo "ERROR: THINKING_MODE must be on|off" >&2; exit 2 ;; esac
 JUDGE_PROMPT_STYLE=${JUDGE_PROMPT_STYLE:-full}
 case "$JUDGE_PROMPT_STYLE" in
-  full|single_token|rating_only) ;;
-  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token|rating_only, got '$JUDGE_PROMPT_STYLE'" >&2; exit 2 ;;
+  full|single_token|rating_only|letter_only) ;;
+  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token|rating_only|letter_only, got '$JUDGE_PROMPT_STYLE'" >&2; exit 2 ;;
 esac
 # --- BEGIN style-mode guard ---
 # Also enforced in launch_judge_eval_matrix.sh, and deliberately duplicated here: a single

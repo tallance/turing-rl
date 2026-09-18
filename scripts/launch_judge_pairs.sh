@@ -18,7 +18,7 @@
 # [0.0,0.1) hash slice capped at 416 contexts with k=4 generations; the val split takes all
 # 352 contexts at k=1. Those per-split parameters live in judge_train_gen.sh, not here.
 #
-# --env PROMPT_STYLE=<full|single_token|rating_only> selects the judge prompt template baked
+# --env PROMPT_STYLE=<full|single_token|rating_only|letter_only> selects the judge prompt template baked
 # into the pair rows: "full" (default, rubric and JSON schema), one-letter, or a 1-7 rating
 # with thinking on. It reaches build_judge_train_pairs.py --prompt-style and is recorded in the
 # sibling .meta.json.
@@ -48,8 +48,8 @@ DRY=${DRY:-0}
 # Validated before OUT_DIR because the default path depends on the style.
 PROMPT_STYLE=${PROMPT_STYLE:-full}
 case "$PROMPT_STYLE" in
-  full|single_token|rating_only) ;;
-  *) echo "FATAL: PROMPT_STYLE must be full|single_token|rating_only, got '$PROMPT_STYLE'" >&2; exit 2 ;;
+  full|single_token|rating_only|letter_only) ;;
+  *) echo "FATAL: PROMPT_STYLE must be full|single_token|rating_only|letter_only, got '$PROMPT_STYLE'" >&2; exit 2 ;;
 esac
 
 # $REPO/data is the immutable source snapshot inside a job; generated data belongs in the

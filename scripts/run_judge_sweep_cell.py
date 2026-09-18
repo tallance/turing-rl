@@ -58,7 +58,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-PROMPT_STYLES = ("full", "single_token", "rating_only")
+PROMPT_STYLES = ("full", "single_token", "rating_only", "letter_only")
 
 
 def resolve_prompt_style(raw: str | None = None) -> str:
