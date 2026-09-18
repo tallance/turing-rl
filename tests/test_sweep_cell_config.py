@@ -96,7 +96,7 @@ def test_every_opt_in_cell_is_reachable_from_the_launcher():
 
     names = extra_cell_names()
     for required in ("9b-ce", "9b-ce2", "9b-ce3", "9b-ce4", "9b-ce5",
-                     "9b-rating-j0", "9b-rating-j1", "gemma4-12b", "gemma4-31b"):
+                     "9b-rating-j0", "9b-rating-j1", "9b-rating-j2", "gemma4-12b", "gemma4-31b"):
         assert required in names, required
     # Enumerable, not a fixed list: every name must actually resolve.
     for name in names:
@@ -115,7 +115,7 @@ def test_rating_judge_cells_match_the_ce_serving_shape():
     rating-vs-CE difference could come from sharding rather than from the protocol.
     """
     ce = resolve_cell("9b-ce")
-    for name in ("9b-rating-j0", "9b-rating-j1"):
+    for name in ("9b-rating-j0", "9b-rating-j1", "9b-rating-j2"):
         cell = resolve_cell(name)
         assert (cell["tp"], cell["replicas"]) == (ce["tp"], ce["replicas"]), name
         assert cell["concurrency"] == ce["concurrency"], name
@@ -129,10 +129,11 @@ def test_rating_judge_paths_are_servable():
     checkpoints/ is a symlink -- both mistakes surface only after an 8-GPU cell is scheduled.
     """
     assert resolve_cell("9b-rating-j0")["model_id"] == "Qwen/Qwen3.5-9B"
-    trained = resolve_cell("9b-rating-j1")["model_id"]
-    assert trained.startswith("/"), trained
-    assert trained.endswith("hf_dense"), trained
-    assert "lora" not in trained and "hf_base" not in trained, trained
+    for n in ("9b-rating-j1", "9b-rating-j2"):
+        trained = resolve_cell(n)["model_id"]
+        assert trained.startswith("/"), trained
+        assert trained.endswith("hf_dense"), trained
+        assert "lora" not in trained and "hf_base" not in trained, trained
 
 
 def test_unknown_opt_in_cell_fails_loudly():
