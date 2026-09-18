@@ -662,6 +662,27 @@ def _coerce_turing_rating(value: Any) -> int | None:
     return rating if 1 <= rating <= 7 else None
 
 
+def letter_to_rating(value: Any) -> int | None:
+    """Map the letter_only judge's A/B answer onto the shared 1-7 rating axis.
+
+    A -> 1 and B -> 7 are chosen to straddle _TIE_RATING = 4, which is the value
+    directional_task_reward splits on, so the existing arm scores this style unchanged.
+
+    Deliberately strict. Everything downstream treats "no rating" as task 0.0, which is the
+    right outcome for a rollout that did not answer; a lenient parse here would manufacture
+    verdicts out of noise and pay for them. In particular a NUMBER is not an answer -- the whole
+    point of this style is that the 1-7 scale, and with it the tie, is gone.
+    """
+    if not isinstance(value, str):
+        return None
+    letter = value.strip().upper()
+    if letter == "A":
+        return 1
+    if letter == "B":
+        return 7
+    return None
+
+
 def _extract_turing_rating(text: str | None) -> int | None:
     if not isinstance(text, str):
         return None

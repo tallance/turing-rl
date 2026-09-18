@@ -30,6 +30,7 @@ import pandas as pd
 from data.judge.slice import select_slice
 from shared.judge_prompts import (
     TURING_PROMPT,
+    TURING_LETTER_ONLY_PROMPT,
     TURING_RATING_ONLY_PROMPT,
     TURING_SINGLE_TOKEN_PROMPT,
 )
@@ -199,6 +200,7 @@ _PROMPT_TEMPLATES = {
     "full": TURING_PROMPT,
     "single_token": TURING_SINGLE_TOKEN_PROMPT,
     "rating_only": TURING_RATING_ONLY_PROMPT,
+    "letter_only": TURING_LETTER_ONLY_PROMPT,
 }
 
 

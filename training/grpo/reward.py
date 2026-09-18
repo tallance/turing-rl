@@ -32,6 +32,7 @@ from shared.api_client import (
     resolve_judge_api_key,
 )
 from shared.judge_prompts import (
+    TURING_LETTER_ONLY_PROMPT,
     TURING_PROMPT,
     TURING_RATING_ONLY_PROMPT,
     TURING_RESPONSE_SCHEMA,
@@ -45,6 +46,7 @@ from shared.judge_utils import (
     _turing_parse_failure_result,
     build_source_copy_warning,
     format_source_copy_watchlist,
+    letter_to_rating,
     sanitize_prompt_text,
 )
 
@@ -275,13 +277,23 @@ PROMPT_STYLE_SINGLE_TOKEN = "single_token"
 # through the FULL arm below, not the single-token one: the answer is a rating, so the existing
 # Likert path already handles it end to end.
 PROMPT_STYLE_RATING_ONLY = "rating_only"
-PROMPT_STYLES = (PROMPT_STYLE_FULL, PROMPT_STYLE_SINGLE_TOKEN, PROMPT_STYLE_RATING_ONLY)
+# Same inputs again, thinking still ON, but the 1-7 rating replaced by {"answer": "A"|"B"}.
+# Distinct from single_token despite both answering with a letter: this one reasons first and
+# wraps the letter in JSON, so it is served through the normal parse path, NOT the logprob one.
+PROMPT_STYLE_LETTER_ONLY = "letter_only"
+PROMPT_STYLES = (
+    PROMPT_STYLE_FULL,
+    PROMPT_STYLE_SINGLE_TOKEN,
+    PROMPT_STYLE_RATING_ONLY,
+    PROMPT_STYLE_LETTER_ONLY,
+)
 
 # Which template each style sends. single_token is absent on purpose: that style never reaches
 # score_turing_with_info, it is dispatched to single_token_reward.py before this map is read.
 _JUDGE_PROMPT_TEMPLATES = {
     PROMPT_STYLE_FULL: TURING_PROMPT,
     PROMPT_STYLE_RATING_ONLY: TURING_RATING_ONLY_PROMPT,
+    PROMPT_STYLE_LETTER_ONLY: TURING_LETTER_ONLY_PROMPT,
 }
 
 
@@ -319,7 +331,12 @@ def _turing_body_has_verdict(data: dict) -> bool:
     """
     if any(key in data for key in _TURING_DIMENSION_SCORE_FIELDS):
         return True
-    return _coerce_turing_rating(data.get("rating")) is not None
+    if _coerce_turing_rating(data.get("rating")) is not None:
+        return True
+    # letter_only's body. Checked unconditionally rather than behind a style test: a body
+    # carrying a valid A/B answer IS a verdict whoever asked for it, and a style-gated check
+    # here would be a second switch to keep in sync with the template actually sent.
+    return letter_to_rating(data.get("answer")) is not None
 
 
 def adjust_turing_raw_reward(raw_reward: float) -> float:
@@ -720,6 +737,11 @@ async def _score_pairwise_likert_with_info(
             )
         )
         explicit_rating = _coerce_turing_rating(data.get("rating"))
+        if explicit_rating is None:
+            # letter_only answers with {"answer": "A"|"B"}, which maps onto the same 1-7 axis
+            # (A -> 1, B -> 7) so the rest of this function needs no branch. Only consulted when
+            # no numeric rating was given, so a body carrying both keeps the explicit rating.
+            explicit_rating = letter_to_rating(data.get("answer"))
         immediate_target_score_a = _coerce_json_float(data.get("immediate_target_score_a"))
         immediate_target_score_b = _coerce_json_float(data.get("immediate_target_score_b"))
         human_goal_score_a = _coerce_json_float(data.get("human_goal_score_a"))

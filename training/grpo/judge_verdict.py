@@ -23,6 +23,7 @@ from shared.judge_utils import (
     _coerce_turing_rating,
     _extract_turing_rating,
     _rating_from_turing_score_gap,
+    letter_to_rating,
 )
 from shared.prompt_utils import (
     has_hidden_thinking_close,
@@ -36,17 +37,24 @@ TURING_FIELDS: tuple[str, ...] = tuple(TURING_RESPONSE_PROPERTIES)
 # 37-field schema, so its type and 1-7 bound come from TURING_RESPONSE_PROPERTIES for free.
 RATING_ONLY_FIELDS: tuple[str, ...] = ("rating",)
 
+# The letter_only prompt asks for one object holding one field, whose value is "A" or "B".
+# Unlike "rating" this name is not part of the 37-field schema, so it is declared here alone.
+LETTER_ONLY_FIELDS: tuple[str, ...] = ("answer",)
+
 # A hand copy of training.grpo.reward's constants. That module pulls aiohttp and veRL at import
 # time and this one must stay importable anywhere, so the names cannot be shared by import;
 # tests/test_judge_format_rating_only.py pins the two copies equal. single_token is deliberately
-# absent: it has no <think> block and no JSON body, so nothing here can score it.
+# absent: it has no <think> block and no JSON body, so nothing here can score it. letter_only is
+# NOT that style -- it keeps thinking and a JSON body, and only its field differs.
 PROMPT_STYLE_FULL = "full"
 PROMPT_STYLE_RATING_ONLY = "rating_only"
-PROMPT_STYLES = (PROMPT_STYLE_FULL, PROMPT_STYLE_RATING_ONLY)
+PROMPT_STYLE_LETTER_ONLY = "letter_only"
+PROMPT_STYLES = (PROMPT_STYLE_FULL, PROMPT_STYLE_RATING_ONLY, PROMPT_STYLE_LETTER_ONLY)
 
 _STYLE_FIELDS = {
     PROMPT_STYLE_FULL: TURING_FIELDS,
     PROMPT_STYLE_RATING_ONLY: RATING_ONLY_FIELDS,
+    PROMPT_STYLE_LETTER_ONLY: LETTER_ONLY_FIELDS,
 }
 
 
@@ -263,6 +271,14 @@ def _values_are_well_formed(parsed: dict) -> bool:
     maximum, for numbers the rubric cannot produce.
     """
     for name, value in parsed.items():
+        # letter_only's sole field. It is deliberately NOT added to TURING_RESPONSE_PROPERTIES:
+        # that schema is the full-schema judge's contract and must not grow a field one style
+        # uses. Its "range" is the two letters, so an {"answer": "C"} is malformed here exactly
+        # as an out-of-range rating would be.
+        if name == "answer":
+            if letter_to_rating(value) is None:
+                return False
+            continue
         spec = _FIELD_SPECS.get(name)
         if spec is None:
             return False  # not part of the schema at all
@@ -395,7 +411,10 @@ class JudgeVerdict:
         fmt_arith has no derived fields to check under this schema and is excluded rather than
         left in as a permanently-unreachable 0.10.
         """
-        if self.prompt_style == PROMPT_STYLE_RATING_ONLY:
+        if self.prompt_style in (PROMPT_STYLE_RATING_ONLY, PROMPT_STYLE_LETTER_ONLY):
+            # letter_only grades on the same axis as rating_only -- packaging, not completeness
+            # -- because both ask for one object holding one field. Only the meaning of the
+            # third term differs: a rating inside 1-7 there, a valid A/B letter here.
             return (
                 0.5 * float(self.fmt_strict_json)
                 + 0.3 * float(self.fmt_exact_schema)
@@ -530,6 +549,22 @@ def parse_judge_verdict(
     data = extract_json_object(answer_text)
 
     if not isinstance(data, dict):
+        # No JSON at all. For letter_only a bare letter is still a usable verdict, so try that
+        # before the numeric recovery -- which cannot fire for this style anyway.
+        if prompt_style == PROMPT_STYLE_LETTER_ONLY:
+            bare = letter_to_rating(answer_text)
+            return JudgeVerdict(
+                rating=bare,
+                recovery_rung="letter" if bare is not None else "none",
+                fmt_json_valid=False,
+                fmt_all_fields=False,
+                fmt_arith=False,
+                fmt_rating_range=bare is not None,
+                fmt_ordered_coverage=ordered_coverage,
+                fmt_exact_schema=exact_schema,
+                fmt_strict_json=strict_json,
+                prompt_style=prompt_style,
+            )
         recovered = _extract_turing_rating(answer_text)
         return JudgeVerdict(
             rating=recovered,
@@ -557,6 +592,24 @@ def parse_judge_verdict(
         "fmt_strict_json": strict_json,
         "prompt_style": prompt_style,
     }
+
+    # letter_only answers on a two-way axis, so it takes this branch EXCLUSIVELY -- every rung
+    # below recovers a 1-7 rating, and a rating recovered here would put back the tie this style
+    # exists to remove (a judge emitting {"rating": 4} would otherwise score a confident tie).
+    # A body carrying no usable letter is simply not a verdict, and scores task 0.0.
+    if prompt_style == PROMPT_STYLE_LETTER_ONLY:
+        letter_rating = letter_to_rating(data.get("answer"))
+        return JudgeVerdict(
+            rating=letter_rating,
+            recovery_rung="letter" if letter_rating is not None else "none",
+            fmt_json_valid=True,
+            fmt_all_fields=fmt_all_fields,
+            fmt_arith=False,
+            # Reused as "the answer is a valid letter" -- the tolerant term format_score pays
+            # partial credit on, exactly as fmt_rating_range does for rating_only.
+            fmt_rating_range=letter_rating is not None,
+            **answer_fmt,
+        )
 
     if all(field in data for field in _PRIMITIVE_FIELDS):
         rating, score_gap = derive_rating(data)

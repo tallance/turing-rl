@@ -1,0 +1,52 @@
+# veRL GRPO config for the letter_only judge: the rating_only protocol with the 1-7 scale removed.
+#
+# The prompt keeps the shared header and the JSON wrapper and asks for {"answer": "A"|"B"} instead
+# of a rating. Everything else about the run is unchanged -- thinking ON, rollout temperature 1.0,
+# the same optimiser recipe, merged-dense rollout sync, the same local label-verifiable reward --
+# so this overrides only what the shorter prompt moves, exactly as the rating child does.
+#
+# Why the scale is gone: loop 2's rating judge answered 4 on 78.1% of examples (J3' step 1). Under
+# the `graded` arm a tie pays a flat 0.75, well above the 0.5 of information it carries, and that
+# payout is a CONSTANT -- so a GRPO group that ties throughout has zero advantage and yields no
+# gradient at all. This arm runs `directional` over a two-way answer, where no tie is reachable and
+# a hard example resolves 1/0 with real variance inside the group.
+#
+# Selected by scripts/slurm/judge_grpo_train.sh via JUDGE_CONFIG_NAME=qwen35_judge_letter_grpo,
+# which also exports JUDGE_PROMPT_STYLE=letter_only. Run it with JUDGE_REWARD_ARM=directional.
+defaults:
+  - qwen35_judge_grpo
+  - _self_
+
+data:
+  # PLACEHOLDER pending measurement. Set from scripts/measure_prompt_tokens.py on the letter_iter1
+  # corpus BEFORE the first real submit, never from the .meta.json's prompt_tokens_est_max: that
+  # is chars/3.9 and over-counted the rating corpus by ~1.35x (est 7807 against a real 5866). Its
+  # n_over_budget field is computed against the builder's PROMPT_BUDGET_TOKENS (default 10240),
+  # not against this key, so it does not gate this value either.
+  #
+  # 6656 is carried over from the rating child as a safe starting point: this prompt is strictly
+  # SHORTER (the seven rating anchors, ~240 chars, are gone) on the same header and the same
+  # contexts, so the real maximum cannot exceed the rating corpus's measured 5866. Re-measure per
+  # slice anyway -- the observed maximum grows with sample size -- because filter_overlong_prompts
+  # is true in the parent and drops over-budget rows from train AND val silently, biasing the
+  # corpus toward short-history users without failing.
+  max_prompt_length: 6656
+
+actor_rollout_ref:
+  rollout:
+    # max_prompt_length + max_response_length, and nothing else. max_response_length stays at the
+    # parent's 10752: the answer is ~10 tokens, so the whole budget is thinking room. Do NOT cut it
+    # because the answer got shorter -- a cap costs nothing by itself (peak memory tracks the ACTUAL
+    # sequence length), and clipping a judge mid-reasoning scores task 0.0, biasing training
+    # quietly. tests/test_judge_length_budget.py pins the sum.
+    #
+    # Held as a literal because OmegaConf cannot do arithmetic; the parent holds 22016 the same way.
+    max_model_len: 17408
+
+trainer:
+  # Same three as the rating child, for the same reasons: 13 with val_before_train is what every
+  # full judge GRPO arm has used, and total_epochs must live in the file rather than in a submit
+  # string, where a dropped override silently turns an ~18h round into ~54h.
+  test_freq: 13
+  val_before_train: true
+  total_epochs: 1

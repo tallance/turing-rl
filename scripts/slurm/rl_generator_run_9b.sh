@@ -126,14 +126,21 @@ esac
 # The scorer pins enable_thinking=False in code regardless, but leaving the env at 1 here
 # would misreport what the run did.
 #
-# rating_only deliberately takes NO arm of its own: it reasons and returns JSON exactly like
-# the full style, so it wants the family's reasoning parser and thinking left on. Giving it a
-# branch here would be a second place to keep in sync with no difference to express.
+# rating_only and letter_only deliberately take NO arm of their own: both reason and return JSON
+# exactly like the full style, so they want the family's reasoning parser and thinking left on.
+# Giving them a branch here would be a second place to keep in sync with no difference to
+# express.
+#
+# letter_only must NOT be folded into the single_token arm just because both answer with a
+# letter. single_token emits one bare token with no reasoning and is scored from logprobs;
+# letter_only reasons first and wraps the letter in JSON. Putting it in the wrong arm would
+# serve it thinking-OFF -- a run that completes normally and silently tests the very format
+# this loop exists to avoid, because an A/B answer looks identical either way.
 JUDGE_PROMPT_STYLE=${JUDGE_PROMPT_STYLE:-full}
 case "$JUDGE_PROMPT_STYLE" in
-  full|rating_only) ;;
+  full|rating_only|letter_only) ;;
   single_token) REASONING_PARSER=""; PERSONA_JUDGE_ENABLE_THINKING=0 ;;
-  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token|rating_only, got '$JUDGE_PROMPT_STYLE'" >&2
+  *) echo "ERROR: JUDGE_PROMPT_STYLE must be full|single_token|rating_only|letter_only, got '$JUDGE_PROMPT_STYLE'" >&2
      exit 2 ;;
 esac
 

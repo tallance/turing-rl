@@ -683,6 +683,29 @@ def test_unknown_prompt_style_is_rejected_before_any_gpu_is_allocated():
     assert "JUDGE_PROMPT_STYLE must be full|single_token" in RUN_2NODE
 
 
+def test_letter_only_is_served_with_thinking_on():
+    """The highest-value guard in this file.
+
+    letter_only and single_token both answer with A or B, and the two are indistinguishable by
+    looking at the answer -- only the presence of reasoning before it differs. Folding
+    letter_only into the single_token arm would serve it thinking-OFF, produce a run that
+    completes normally with plausible curves, and silently measure the exact format this loop
+    exists to avoid. It must take the full|rating_only arm, which leaves both the family
+    reasoning parser and PERSONA_JUDGE_ENABLE_THINKING alone.
+    """
+    thinking_off_arm = re.search(r"^  single_token\)(.*)$", RUN_2NODE, re.M).group(1)
+    assert "letter_only" not in thinking_off_arm
+
+    m = re.search(r"^  (full\|[a-z_|]*letter_only[a-z_|]*)\)", RUN_2NODE, re.M)
+    assert m, "letter_only must share the thinking-ON arm with full"
+    assert "rating_only" in m.group(1)
+
+
+def test_letter_only_is_an_accepted_style():
+    assert "letter_only" in RUN_2NODE
+    assert "full|single_token|rating_only|letter_only" in RUN_2NODE
+
+
 def test_prompt_style_defaults_to_full():
     assert "JUDGE_PROMPT_STYLE=${JUDGE_PROMPT_STYLE:-full}" in RUN_2NODE
 

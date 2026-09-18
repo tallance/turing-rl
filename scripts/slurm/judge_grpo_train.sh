@@ -128,7 +128,8 @@ JUDGE_CONFIG_NAME=${JUDGE_CONFIG_NAME:-qwen35_judge_grpo}
 case "$JUDGE_CONFIG_NAME" in
   qwen35_judge_grpo)        export JUDGE_PROMPT_STYLE=full ;;
   qwen35_judge_rating_grpo) export JUDGE_PROMPT_STYLE=rating_only ;;
-  *) echo "ERROR: JUDGE_CONFIG_NAME must be qwen35_judge_grpo or qwen35_judge_rating_grpo, got $JUDGE_CONFIG_NAME" >&2; exit 2 ;;
+  qwen35_judge_letter_grpo) export JUDGE_PROMPT_STYLE=letter_only ;;
+  *) echo "ERROR: JUDGE_CONFIG_NAME must be qwen35_judge_grpo, qwen35_judge_rating_grpo or qwen35_judge_letter_grpo, got $JUDGE_CONFIG_NAME" >&2; exit 2 ;;
 esac
 echo "=== judge schema: config=$JUDGE_CONFIG_NAME prompt_style=$JUDGE_PROMPT_STYLE ==="
 

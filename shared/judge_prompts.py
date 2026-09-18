@@ -693,3 +693,34 @@ Return exactly one valid JSON object and nothing else:
 Your output:"""
 
 TURING_RATING_ONLY_PROMPT = TURING_PROMPT_HEADER + _RATING_ONLY_TAIL
+
+# The rating-only tail with the 1-7 scale replaced by a two-way answer.
+#
+# The scale is deleted rather than compressed because the tie it contained is the thing being
+# removed. Loop 2's judge answered 4 on 78.1% of examples: under the `graded` arm a tie pays a
+# flat 0.75, well above the 0.5 of information it carries, and -- worse -- that payout is a
+# CONSTANT, so a GRPO group that ties throughout has zero advantage and produces no gradient at
+# all. With no tie in the output space a hard example resolves 1/0 and the group has variance
+# again. Accuracy is unaffected: a forced guess earns the same 0.5 in expectation the tie did.
+#
+# The answer stays wrapped in JSON rather than emitted as a bare letter (which is what
+# _SINGLE_TOKEN_TAIL above does) so that the existing format-score terms -- strict JSON, exact
+# schema, valid value -- still measure something, and so the `{"type":"json_object"}` serving
+# constraint still applies. A bare letter would be scored against nothing.
+#
+# The letter-meaning line is copied from _SINGLE_TOKEN_TAIL: with the rating anchors gone, it is
+# the only thing defining which way round A and B are.
+#
+# Nothing here tells the model to think. Thinking is a chat-template concern
+# (`enable_thinking: true`); this judge runs with it ON.
+_LETTER_ONLY_TAIL = """
+## Output Format
+
+Return exactly one valid JSON object and nothing else:
+{{"answer": "<A or B>"}}
+
+A means Response A was written by the real [HUMAN]. B means Response B was.
+
+Your output:"""
+
+TURING_LETTER_ONLY_PROMPT = TURING_PROMPT_HEADER + _LETTER_ONLY_TAIL

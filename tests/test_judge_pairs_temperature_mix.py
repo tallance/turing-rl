@@ -190,3 +190,54 @@ def test_rating_only_style_renders_a_rating_prompt():
     assert '{"rating": <integer from 1 to 7>}' in prompt
     assert "immediate_target_score" not in prompt, "the rubric must not come along"
     assert prompt.index("AAA") < prompt.index("BBB")
+
+
+# --- the letter_only template ----------------------------------------------------------------
+
+
+def test_letter_only_style_renders_an_answer_prompt():
+    prompt = render_turing_prompt(
+        user_history="hist",
+        context="ctx",
+        response_a="AAA",
+        response_b="BBB",
+        prompt_style="letter_only",
+    )
+
+    assert '{"answer": "<A or B>"}' in prompt
+    assert "immediate_target_score" not in prompt, "the rubric must not come along"
+    assert prompt.index("AAA") < prompt.index("BBB")
+
+
+def test_letter_only_prompt_carries_no_rating_scale():
+    """A leftover 1-7 scale would invite a rating, which the letter_only parser scores as
+    unrecovered -- task 0.0 on a rollout that reasoned correctly."""
+    prompt = render_turing_prompt(
+        user_history="hist",
+        context="ctx",
+        response_a="AAA",
+        response_b="BBB",
+        prompt_style="letter_only",
+    )
+
+    assert "Rating Scale" not in prompt
+    assert "Cannot tell" not in prompt
+    assert "integer from 1 to 7" not in prompt
+
+
+def test_a_single_temperature_corpus_is_not_stamped():
+    """Loop 3 runs everything at T=1.0 and therefore takes the ORIGINAL single-pass branch,
+    where judge_train_gen.sh sets TEMP_ARG only under a mix.
+
+    The consequence, pinned here so it is not rediscovered as a bug: BOTH per-temperature
+    counters read 0 for loop 3, and no judge_acc_tXX_norm is emitted at all. That is correct.
+    With one temperature the split carries no information -- judge_acc already says everything
+    -- and stamping it anyway would break the byte-identical single-pass output the parent
+    session's single-token/CE flow depends on.
+    """
+    warm, _ = _warm_and_hot()
+
+    df, meta = _rows(generations=warm)
+
+    assert all(row["gen_temperature"] is None for row in df["extra_info"])
+    assert "rows_per_gen_temperature" not in meta

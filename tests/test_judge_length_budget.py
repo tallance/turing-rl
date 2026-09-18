@@ -17,6 +17,7 @@ import yaml
 CONFIG_DIR = Path(__file__).resolve().parents[1] / "training" / "grpo" / "configs"
 JUDGE_CONFIG = CONFIG_DIR / "qwen35_judge_grpo.yaml"
 RATING_CONFIG = CONFIG_DIR / "qwen35_judge_rating_grpo.yaml"
+LETTER_CONFIG = CONFIG_DIR / "qwen35_judge_letter_grpo.yaml"
 
 
 def _raw(path):
@@ -238,6 +239,62 @@ def test_rating_config_prompt_plus_response_fits_its_context_window():
     max_model_len = config["actor_rollout_ref"]["rollout"]["max_model_len"]
 
     assert data["max_prompt_length"] + data["max_response_length"] == max_model_len
+
+
+# --- letter_only child -------------------------------------------------------------------------
+
+
+def _composed_letter_config() -> dict:
+    return _deep_merge(_loaded(JUDGE_CONFIG), _loaded(LETTER_CONFIG))
+
+
+def test_letter_config_composes_from_the_judge_config():
+    assert _loaded(LETTER_CONFIG)["defaults"] == ["qwen35_judge_grpo", "_self_"]
+
+
+def test_letter_config_changes_only_the_intended_keys():
+    """Same minimal-delta discipline as the rating child, and the same five keys."""
+    parent = _flatten(_loaded(JUDGE_CONFIG))
+    child = _flatten(_composed_letter_config())
+
+    changed = {key for key in child if parent.get(key) != child[key]}
+
+    assert changed == {
+        "data.max_prompt_length",
+        "actor_rollout_ref.rollout.max_model_len",
+        "trainer.test_freq",
+        "trainer.val_before_train",
+        "trainer.total_epochs",
+    }, f"unexpected overrides: {sorted(changed)}"
+
+
+def test_letter_config_keeps_thinking_on():
+    """The whole point of this style versus the CE single-token judge. If enable_thinking ever
+    reads false here, the run silently becomes the format this loop exists to avoid."""
+    composed = _composed_letter_config()
+
+    assert composed["data"]["apply_chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_letter_config_keeps_the_full_response_budget():
+    """The answer is ~10 tokens, so the budget is thinking room. Cutting it because the answer
+    got shorter would clip the judge mid-reasoning, which scores task 0.0."""
+    assert _composed_letter_config()["data"]["max_response_length"] == 10752
+
+
+def test_letter_config_rollout_temperature_is_unchanged():
+    """Judge training rollouts have always sampled at 1.0. Loop 3 collapses the FAKE-TURN
+    temperature; this is a different axis and must not move with it."""
+    assert _composed_letter_config()["actor_rollout_ref"]["rollout"]["temperature"] == 1.0
+
+
+def test_letter_config_window_is_the_sum_of_its_budgets():
+    config = _composed_letter_config()
+    data = config["data"]
+
+    assert data["max_prompt_length"] + data["max_response_length"] == (
+        config["actor_rollout_ref"]["rollout"]["max_model_len"]
+    )
 
 
 def test_rating_config_keeps_the_parent_response_budget():
