@@ -18,18 +18,25 @@ defaults:
   - _self_
 
 data:
-  # PLACEHOLDER pending measurement. Set from scripts/measure_prompt_tokens.py on the letter_iter1
-  # corpus BEFORE the first real submit, never from the .meta.json's prompt_tokens_est_max: that
-  # is chars/3.9 and over-counted the rating corpus by ~1.35x (est 7807 against a real 5866). Its
-  # n_over_budget field is computed against the builder's PROMPT_BUDGET_TOKENS (default 10240),
-  # not against this key, so it does not gate this value either.
+  # MEASURED with the real Qwen3.5 tokenizer on the letter_iter1 corpus (jobs 24340/24341,
+  # scripts/measure_prompt_tokens.py):
   #
-  # 6656 is carried over from the rating child as a safe starting point: this prompt is strictly
-  # SHORTER (the seven rating anchors, ~240 chars, are gone) on the same header and the same
-  # contexts, so the real maximum cannot exceed the rating corpus's measured 5866. Re-measure per
-  # slice anyway -- the observed maximum grows with sample size -- because filter_overlong_prompts
-  # is true in the parent and drops over-budget rows from train AND val silently, biasing the
-  # corpus toward short-history users without failing.
+  #            n     p50    p95    p99    max
+  #   train  3328   2098   3794   4876   5324
+  #   val    1410   2052   4091   4920   5812
+  #
+  # Both splits matter -- data.val_files is loaded by this same config, and val is the longer one.
+  # 6656 clears the combined 5812 by 844. The value is unchanged from the rating child, which the
+  # shorter prompt predicted: the seven rating anchors (~240 chars) are gone from the same header
+  # over the same contexts, so this corpus came in just under rating_only's measured 5866.
+  #
+  # Do NOT set this from the .meta.json's prompt_tokens_est_max: that is chars/3.9 and over-counted
+  # the rating corpus by ~1.35x. Its n_over_budget field is computed against the builder's
+  # PROMPT_BUDGET_TOKENS (default 10240), not against this key, so it does not gate this value.
+  #
+  # Re-measure per slice: the observed maximum grows with sample size, and filter_overlong_prompts
+  # is true in the parent, dropping over-budget rows from train AND val silently -- biasing the
+  # corpus toward short-history users without ever failing.
   max_prompt_length: 6656
 
 actor_rollout_ref:
